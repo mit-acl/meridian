@@ -1,0 +1,19 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "gen_seg_match"
+version = "0.0.1"
+dependencies = [
+    "numpy"
+]
+requires-python = ">=3.8"
+authors = [
+    {name = "Mason Peterson", email = "mbpeterson70@gmail.com"}
+]
+description = "Package for matching general segments (object and non-object)."
+readme = "README.md"
+license = "MIT"
+
+
