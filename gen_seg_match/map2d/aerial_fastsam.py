@@ -12,7 +12,7 @@ import shapely
 from roman.map.observation import Observation
 from roman.utils import expandvars_recursive
 
-from gen_seg_match.aerial_segment import AerialSegment
+from gen_seg_match.map2d.aerial_segment import AerialSegment
 
 
 @dataclass
@@ -42,12 +42,12 @@ class AerialFastSAMWrapper():
         """
         Run FastSAM on the given image and return a list of observations.
         """
-        image_rgb = cv.cvtColor(img_bgr, cv.COLOR_BGR2RGB)
         if crop is not None:
-            image_rgb = image_rgb[crop[1]:crop[3], crop[0]:crop[2]]
+            img_bgr = img_bgr[crop[1]:crop[3], crop[0]:crop[2]]
             img_origin = np.array([crop[0], crop[1]])
         else:
             img_origin = np.array([0., 0.])
+        image_rgb = cv.cvtColor(img_bgr, cv.COLOR_BGR2RGB)
             
         if downsample_factor > 1:
             image_rgb = cv.resize(image_rgb, (image_rgb.shape[1] // downsample_factor, image_rgb.shape[0] // downsample_factor), interpolation=cv.INTER_LINEAR)

@@ -4,7 +4,7 @@ import matplotlib.pyplot as plt
 import clipperpy
 from dataclasses import dataclass
 
-from gen_seg_match.segment_types import SegmentPoint, SegmentLine, \
+from gen_seg_match.segment.segment_types import SegmentPoint, SegmentLine, \
     SegmentPlane, GeneralSegment
 
 class InsufficientAssociationsException(Exception):

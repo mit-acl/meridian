@@ -14,7 +14,7 @@ from roman.params.fastsam_params import FastSAMParams
 from roman.object.segment import Segment
 from roman.viz import visualize_segment_on_img
 
-from gen_seg_match.segment_types import GeneralSegment, SegmentPoint, SegmentLine, SegmentPlane
+from gen_seg_match.segment.segment_types import GeneralSegment, SegmentPoint, SegmentLine, SegmentPlane
 
 def is_line(segment: Segment):
     if segment.linearity < 0.9:
