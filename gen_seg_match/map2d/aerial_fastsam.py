@@ -12,7 +12,7 @@ import shapely
 from roman.map.observation import Observation
 from roman.utils import expandvars_recursive
 
-from gen_seg_match.map2d.aerial_segment import AerialSegment
+from gen_seg_match.segment.aerial_segment import AerialSegment
 
 
 @dataclass
