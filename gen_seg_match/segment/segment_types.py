@@ -87,10 +87,16 @@ class SegmentLine(GeneralSegment):
             raise ParallelLinesException(self, other)
         
         # find unit direction vector for line C, which is perpendicular to lines A and B
-        perp = np.linalg.cross(self.get_direction(), other.get_direction())
-        perp /= np.linalg.norm(perp)
-        RHS = other.get_point() - self.get_point()
-        LHS = np.array([self.get_direction(), -other.get_direction(), perp]).T
+        if self.dim == 2:
+            LHS = np.array([self.get_direction(), -other.get_direction()]).T
+            RHS = other.get_point() - self.get_point()
+        elif self.dim == 3:
+            perp = np.cross(self.get_direction(), other.get_direction())
+            perp /= np.linalg.norm(perp)
+            RHS = other.get_point() - self.get_point()
+            LHS = np.array([self.get_direction(), -other.get_direction(), perp]).T
+        else:
+            raise NotImplementedError("Closest points only implemented for 2D and 3D")
         
         # solve the system derived in user2255770's answer from StackExchange: https://math.stackexchange.com/q/1993990
         t = np.linalg.inv(LHS) @ RHS
@@ -151,8 +157,12 @@ class SegmentLine(GeneralSegment):
     
     def min_dist_to(self, other: 'SegmentLine') -> float:
         """Returns the minimum distance between two line segments."""
-        closest_pts = self.closest_points(other)
-        return np.linalg.norm(closest_pts[0] - closest_pts[1])
+        if self.is_parallel_to(other):
+            # can use any point on one line and find closest point on the other
+            return self.min_dist_to_point(other.get_point())
+        else:
+            closest_pts = self.closest_points(other)
+            return np.linalg.norm(closest_pts[0] - closest_pts[1])
 
 
 @dataclass
