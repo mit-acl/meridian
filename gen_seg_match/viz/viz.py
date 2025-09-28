@@ -1,8 +1,7 @@
 import robotdatapy.camera as rdpc
 import cv2 as cv
 import numpy as np
-from gen_seg_match.segment_types import SegmentPoint, SegmentLine
-from gen_seg_match.segment_matcher import SegmentMatcher, SegmentMatcherParams
+from gen_seg_match.segment.segment_types import SegmentPoint, SegmentLine
 
 def draw_infinite_line_on_img(img, line: SegmentLine, camera_params: rdpc.CameraParams, 
                               color=(0,255,0), thickness=2):
