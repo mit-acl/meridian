@@ -1,6 +1,8 @@
 import numpy as np
 from dataclasses import dataclass
 import clipperpy
+from robotdatapy import transform as transform
+from typing import Tuple
 
 class GeneralSegment:
     
@@ -13,6 +15,25 @@ class GeneralSegment:
     
     def get_point(self) -> np.ndarray:
         return self.point.flatten()
+    
+    def transform(self, T: np.ndarray):
+        raise NotImplementedError("transform not implemented")
+    
+    def copy(self):
+        raise NotImplementedError("copy not implemented")
+    
+    def color_from_id(self, order='rgb', num_type=int) -> tuple:
+        """Returns a color tuple based on the segment ID."""
+        np.random.seed(self.id)
+        color_rgb = tuple((np.random.rand(3)))
+        if order == 'bgr':
+            color = color_rgb[::-1]
+        else:
+            color = color_rgb
+        if num_type == int:
+            color = tuple((np.array(color) * 255).astype(int))
+        return color
+        
 
 @dataclass
 class SegmentPoint(GeneralSegment):
@@ -23,6 +44,13 @@ class SegmentPoint(GeneralSegment):
     def to_array(self) -> np.ndarray:
         return np.concatenate([[clipperpy.invariants.GeneralSegmentDistance.POINT.value], 
                                self.get_point()])
+        
+    def transform(self, T):
+        self.point = transform.transform(T, self.point)
+        return self
+
+    def copy(self):
+        return SegmentPoint(self.id, self.point.copy())
 
 @dataclass
 class SegmentLine(GeneralSegment):
@@ -30,7 +58,7 @@ class SegmentLine(GeneralSegment):
     id: int
     point: np.ndarray
     direction: np.ndarray
-    endpoints: np.ndarray = (None, None)
+    endpoints: Tuple[np.ndarray, np.ndarray] = (None, None)
     
     # endpoints can be given such that if only one endpoint is given, it is assumed
     # that the ray extends from that endpoint infinitely along the positive direction vector
@@ -47,6 +75,20 @@ class SegmentLine(GeneralSegment):
 
     def get_direction(self) -> np.ndarray:
         return self.direction.flatten() / np.linalg.norm(self.direction)
+    
+    def transform(self, T: np.ndarray):
+        self.point = transform.transform(T, self.point)
+        self.direction = (T[0:3, 0:3] @ self.direction.reshape((3,1))).flatten()
+        if self.endpoints[0] is not None:
+            self.endpoints = (transform.transform(T, self.endpoints[0]), self.endpoints[1])
+        if self.endpoints[1] is not None:
+            self.endpoints = (self.endpoints[0], transform.transform(T, self.endpoints[1]))
+        return self
+    
+    def copy(self):
+        return SegmentLine(self.id, self.point.copy(), self.direction.copy(), 
+                           (self.endpoints[0].copy() if self.endpoints[0] is not None else None,
+                            self.endpoints[1].copy() if self.endpoints[1] is not None else None))
     
     def is_parallel_to(self, other: 'SegmentLine', tol: float = 1e-3) -> bool:
         assert self.dim == other.dim, "Lines must be in the same dimension"
