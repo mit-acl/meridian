@@ -110,43 +110,45 @@ class SegmentMatcher():
         clipper.score_pairwise_consistency(map1_cl.T, map2_cl.T, A_init)
         return clipper, A_init
     
-    # def get_MCA(self, map1: List[Object], map2: List[Object]):
-    #     clipper = self._setup_clipper()
-    #     clipper, A_init = self._setup_problem(clipper, map1, map2)
-    #     M = clipper.get_affinity_matrix()
-    #     C = clipper.get_constraint_matrix()
-    #     return M, C, A_init
+    def get_MCA(self, points1: List[GeneralSegment], lines1: List[GeneralSegment],
+              points2: List[GeneralSegment], lines2: List[GeneralSegment]):
+        clipper = self._setup_solver()
+        clipper, A_init = self._setup_problem(clipper, points1, lines1, points2, lines2)
+        M = clipper.get_affinity_matrix()
+        C = clipper.get_constraint_matrix()
+        return M, C, A_init
     
-    # def mno_clipper(self, map1: List[Object], map2: List[Object], num_solutions=2):
-    #     M, C, A = self.get_MCA(map1, map2)
-    #     M_orig = M.copy()
-    #     clipper = clipperpy.CLIPPER(clipperpy.invariants.PairwiseInvariant(), clipperpy.Params())
-    #     solutions = []
+    def match_multiple(self, points1: List[GeneralSegment], lines1: List[GeneralSegment],
+              points2: List[GeneralSegment], lines2: List[GeneralSegment], num_solutions=2):
+        M, C, A = self.get_MCA(points1, lines1, points2, lines2)
+        M_orig = M.copy()
+        clipper = clipperpy.CLIPPER(clipperpy.invariants.PairwiseInvariant(), clipperpy.Params())
+        solutions = []
 
-    #     for k in range(num_solutions):
-    #         clipper.set_matrix_data(M=M, C=C)
-    #         clipper.solve()
+        for k in range(num_solutions):
+            clipper.set_matrix_data(M=M, C=C)
+            clipper.solve()
 
-    #         solution_nodes = clipper.get_solution().nodes
-    #         Ain = np.zeros((len(solution_nodes), 2)).astype(np.int64)
-    #         for i in range(len(solution_nodes)):
-    #             Ain[i,:] = A[solution_nodes[i],:]
+            solution_nodes = clipper.get_solution().nodes
+            Ain = np.zeros((len(solution_nodes), 2)).astype(np.int64)
+            for i in range(len(solution_nodes)):
+                Ain[i,:] = A[solution_nodes[i],:]
             
-    #         u_sol = clipper.get_solution().u.copy()
-    #         for i in range(u_sol.shape[0]):
-    #             u_sol[i] = u_sol[i] if i in solution_nodes else 0.0
-    #         if len(solution_nodes) == 0:
-    #             score = 0
-    #         else:
-    #             score = u_sol.T @ M_orig @ u_sol / (u_sol.T @ u_sol)
-    #         solutions.append((Ain.copy(), score))
+            u_sol = clipper.get_solution().u.copy()
+            for i in range(u_sol.shape[0]):
+                u_sol[i] = u_sol[i] if i in solution_nodes else 0.0
+            if len(solution_nodes) == 0:
+                score = 0
+            else:
+                score = u_sol.T @ M_orig @ u_sol / (u_sol.T @ u_sol)
+            solutions.append((Ain.copy(), score))
 
-    #         if k + 1 < num_solutions:
-    #             row_indices, col_indices = np.meshgrid(solution_nodes, solution_nodes, indexing='ij')
-    #             if len(row_indices) != 0 and len(col_indices) != 0:
-    #                 M[row_indices,col_indices] = 0.0
+            if k + 1 < num_solutions:
+                row_indices, col_indices = np.meshgrid(solution_nodes, solution_nodes, indexing='ij')
+                if len(row_indices) != 0 and len(col_indices) != 0:
+                    M[row_indices,col_indices] = 0.0
 
-    #     return solutions
+        return solutions
 
     # def T_align(self, map1: List[Object], map2: List[Object], correspondences: np.array = None):
     #     """
