@@ -70,8 +70,27 @@ class SegmentLine(GeneralSegment):
         return cls(id=id, point=pt1, direction=direction, endpoints=(pt1, pt2))
 
     def to_array(self) -> np.ndarray:
-        return np.concatenate([[clipperpy.invariants.GeneralSegmentDistance.LINE.value], 
-                               self.get_point(), self.get_direction()])
+        endpoints1 = []
+        endpoints2 = []
+        num_endpoints = 0
+        if self.endpoints[0] is not None:
+            endpoints1 = self.endpoints[0]
+            num_endpoints += 1
+        if self.endpoints[1] is not None:
+            if num_endpoints == 0:
+                endpoints1 = self.endpoints[1]
+            else:
+                endpoints2 = self.endpoints[1]
+            num_endpoints += 1
+            
+        return np.concatenate([
+            [clipperpy.invariants.GeneralSegmentDistance.LINE.value], 
+            self.get_point(), 
+            self.get_direction(),
+            [num_endpoints],
+            endpoints1,
+            endpoints2
+    ])
 
     def get_direction(self) -> np.ndarray:
         return self.direction.flatten() / np.linalg.norm(self.direction)
