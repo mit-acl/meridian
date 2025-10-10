@@ -33,6 +33,9 @@ class GeneralSegment:
         if num_type == int:
             color = tuple((np.array(color) * 255).astype(int))
         return color
+    
+    def _copy_optional_array(self, arr: np.ndarray) -> np.ndarray:
+        return arr.copy() if arr is not None else None
         
 
 @dataclass
@@ -40,17 +43,31 @@ class SegmentPoint(GeneralSegment):
 
     id: int
     point: np.ndarray
+    ratio_feature: np.ndarray = None  # optional ratio feature vector
+    cos_feature: np.ndarray = None  # optional cosine feature vector
+    
+    def __post_init__(self):
+        if self.cos_feature is not None:
+            self.cos_feature /= np.linalg.norm(self.cos_feature)
 
     def to_array(self) -> np.ndarray:
-        return np.concatenate([[clipperpy.invariants.GeneralSegmentDistance.POINT.value], 
-                               self.get_point()])
+        cos_feature = self.cos_feature.flatten() if self.cos_feature is not None else []
+        ratio_feature = self.ratio_feature.flatten() if self.ratio_feature is not None else []
+        return np.concatenate([
+            [clipperpy.invariants.GeneralSegmentDistance.POINT.value], 
+            self.get_point(),
+            ratio_feature,
+            cos_feature,
+        ])
         
     def transform(self, T):
         self.point = transform.transform(T, self.point)
         return self
 
     def copy(self):
-        return SegmentPoint(self.id, self.point.copy())
+        return SegmentPoint(self.id, self.point.copy(), 
+            self._copy_optional_array(self.ratio_feature),
+            self._copy_optional_array(self.cos_feature))
 
 @dataclass
 class SegmentLine(GeneralSegment):
@@ -59,15 +76,30 @@ class SegmentLine(GeneralSegment):
     point: np.ndarray
     direction: np.ndarray
     endpoints: Tuple[np.ndarray, np.ndarray] = (None, None)
+    ratio_feature: np.ndarray = None  # optional ratio feature vector
+    cos_feature: np.ndarray = None  # optional cosine feature vector
     
     # endpoints can be given such that if only one endpoint is given, it is assumed
     # that the ray extends from that endpoint infinitely along the positive direction vector
+    
+    def __post_init__(self):
+        if self.cos_feature is not None:
+            self.cos_feature /= np.linalg.norm(self.cos_feature)
+        self.direction = self.direction / np.linalg.norm(self.direction)
 
     @classmethod
     def from_endpoints(cls, id: int, pt1: np.ndarray, pt2: np.ndarray):
         direction = pt2 - pt1
         direction = direction / np.linalg.norm(direction)
         return cls(id=id, point=pt1, direction=direction, endpoints=(pt1, pt2))
+
+    @property
+    def num_endpoints(self) -> int:
+        num_endpoints = 2
+        for ep in self.endpoints:
+            if ep is None:
+                num_endpoints -= 1
+        return num_endpoints
 
     def to_array(self) -> np.ndarray:
         endpoints1 = []
@@ -82,6 +114,8 @@ class SegmentLine(GeneralSegment):
             else:
                 endpoints2 = self.endpoints[1]
             num_endpoints += 1
+        ratio_feature = self.ratio_feature.flatten() if self.ratio_feature is not None else []
+        cos_feature = self.cos_feature.flatten() if self.cos_feature is not None else []
             
         return np.concatenate([
             [clipperpy.invariants.GeneralSegmentDistance.LINE.value], 
@@ -89,7 +123,9 @@ class SegmentLine(GeneralSegment):
             self.get_direction(),
             [num_endpoints],
             endpoints1,
-            endpoints2
+            endpoints2,
+            ratio_feature,
+            cos_feature,
     ])
 
     def get_direction(self) -> np.ndarray:
@@ -107,7 +143,9 @@ class SegmentLine(GeneralSegment):
     def copy(self):
         return SegmentLine(self.id, self.point.copy(), self.direction.copy(), 
                            (self.endpoints[0].copy() if self.endpoints[0] is not None else None,
-                            self.endpoints[1].copy() if self.endpoints[1] is not None else None))
+                            self.endpoints[1].copy() if self.endpoints[1] is not None else None),
+                            self._copy_optional_array(self.ratio_feature),
+                            self._copy_optional_array(self.cos_feature))
     
     def is_parallel_to(self, other: 'SegmentLine', tol: float = 1e-3) -> bool:
         assert self.dim == other.dim, "Lines must be in the same dimension"
@@ -232,10 +270,24 @@ class SegmentPlane(GeneralSegment):
     id: int
     point: np.ndarray
     normal: np.ndarray
-
+    cos_feature: np.ndarray = None  # optional cosine feature vector
+    ratio_feature: np.ndarray = None  # optional ratio feature vector
+    
+    def __post_init__(self):
+        if self.cos_feature is not None:
+            self.cos_feature /= np.linalg.norm(self.cos_feature)
+            
     def to_array(self) -> np.ndarray:
-        return np.concatenate([[clipperpy.invariants.GeneralSegmentDistance.PLANE.value], 
-                               self.get_point(), self.get_normal()])
+        ratio_feature = self.ratio_feature.flatten() if self.ratio_feature is not None else []
+        cos_feature = self.cos_feature.flatten() if self.cos_feature is not None else []
+
+        return np.concatenate([
+            [clipperpy.invariants.GeneralSegmentDistance.PLANE.value], 
+            self.get_point(), 
+            self.get_normal(),
+            ratio_feature,
+            cos_feature,
+        ])
 
     def get_normal(self) -> np.ndarray:
         return self.normal.flatten()
