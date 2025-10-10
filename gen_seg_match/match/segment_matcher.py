@@ -79,7 +79,7 @@ class SegmentMatcher():
     def _setup_solver(self):
         invariant = clipperpy.invariants.GeneralSegmentDistance(self.params.to_clipper())
         params = clipperpy.Params()
-        clipper = clipperpy.CLIPPER(invariant, params)
+        clipper = clipperpy.CLIPPERPairwiseAndSingle(invariant, params)
         return clipper
     
     # def _setup_problem(self, clipper, map1: list, map2: list):
@@ -107,7 +107,7 @@ class SegmentMatcher():
         map1_cl = np.array(map1_arrays)
         map2_cl = np.array(map2_arrays)
 
-        clipper.score_pairwise_consistency(map1_cl.T, map2_cl.T, A_init)
+        clipper.score_pairwise_and_single_consistency(map1_cl.T, map2_cl.T, A_init)
         return clipper, A_init
     
     def get_MCA(self, points1: List[GeneralSegment], lines1: List[GeneralSegment],
