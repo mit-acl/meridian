@@ -6,6 +6,11 @@ from typing import Tuple
 
 class GeneralSegment:
     
+    id: int
+    point: np.ndarray
+    ratio_feature: np.ndarray = None    # optional ratio feature vector
+    cos_feature: np.ndarray = None      # optional cosine feature vector
+
     @property
     def dim(self) -> int:
         return self.point.shape[0]
@@ -40,12 +45,12 @@ class GeneralSegment:
 
 @dataclass
 class SegmentPoint(GeneralSegment):
-
+    
     id: int
     point: np.ndarray
-    ratio_feature: np.ndarray = None  # optional ratio feature vector
-    cos_feature: np.ndarray = None  # optional cosine feature vector
-    
+    ratio_feature: np.ndarray = None    # optional ratio feature vector
+    cos_feature: np.ndarray = None      # optional cosine feature vector
+
     def __post_init__(self):
         if self.cos_feature is not None:
             self.cos_feature /= np.linalg.norm(self.cos_feature)
@@ -74,7 +79,7 @@ class SegmentLine(GeneralSegment):
 
     id: int
     point: np.ndarray
-    direction: np.ndarray
+    direction: np.ndarray = None
     endpoints: Tuple[np.ndarray, np.ndarray] = (None, None)
     ratio_feature: np.ndarray = None  # optional ratio feature vector
     cos_feature: np.ndarray = None  # optional cosine feature vector
@@ -83,6 +88,8 @@ class SegmentLine(GeneralSegment):
     # that the ray extends from that endpoint infinitely along the positive direction vector
     
     def __post_init__(self):
+        if self.direction is None:
+            raise ValueError("Missing required field 'direction' for SegmentLine")
         if self.cos_feature is not None:
             self.cos_feature /= np.linalg.norm(self.cos_feature)
         self.direction = self.direction / np.linalg.norm(self.direction)
@@ -269,11 +276,13 @@ class SegmentPlane(GeneralSegment):
 
     id: int
     point: np.ndarray
-    normal: np.ndarray
-    cos_feature: np.ndarray = None  # optional cosine feature vector
-    ratio_feature: np.ndarray = None  # optional ratio feature vector
+    normal: np.ndarray = None           # required normal vector
+    cos_feature: np.ndarray = None      # optional cosine feature vector
+    ratio_feature: np.ndarray = None    # optional ratio feature vector
     
     def __post_init__(self):
+        if self.normal is None:
+            raise ValueError("Missing required field 'normal' for SegmentLine")
         if self.cos_feature is not None:
             self.cos_feature /= np.linalg.norm(self.cos_feature)
             
