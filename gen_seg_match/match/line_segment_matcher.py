@@ -7,7 +7,7 @@ import clipperpy
 
 from roman.align.object_registration import ObjectRegistration
 
-from gen_seg_match.match.line_cloud import LineCloud
+from gen_seg_match.segment.line_cloud import LineCloud
 
 LineSegmentMatcherParams = clipperpy.invariants.LineSegmentDistParams
 

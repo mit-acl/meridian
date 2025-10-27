@@ -3,7 +3,6 @@ import matplotlib.pyplot as plt
 import pickle
 from copy import deepcopy
 from tqdm import tqdm
-import alphashape
 from dataclasses import dataclass
 from robotdatapy.transform import transform
 

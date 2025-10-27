@@ -4,6 +4,8 @@ import clipperpy
 from robotdatapy import transform as transform
 from typing import Tuple
 
+from roman.object.segment import Segment as RomanSegment
+
 class GeneralSegment:
     
     id: int
@@ -41,6 +43,19 @@ class GeneralSegment:
     
     def _copy_optional_array(self, arr: np.ndarray) -> np.ndarray:
         return arr.copy() if arr is not None else None
+    
+    @classmethod
+    def from_roman_segment(cls, roman_segment: RomanSegment):
+
+        # TODO: handle segments with high linearity or planarity differently
+        #       maybe move this (and other roman-related functions) to a new file?
+
+        return SegmentPoint(
+            id=roman_segment.id,
+            point=roman_segment.center,
+            ratio_feature=None,
+            cos_feature=roman_segment.semantic_descriptor
+        )
         
 
 @dataclass
@@ -72,7 +87,7 @@ class SegmentPoint(GeneralSegment):
     def copy(self):
         return SegmentPoint(self.id, self.point.copy(), 
             self._copy_optional_array(self.ratio_feature),
-            self._copy_optional_array(self.cos_feature))
+            self._copy_optional_array(self.cos_feature))s
 
 @dataclass
 class SegmentLine(GeneralSegment):
