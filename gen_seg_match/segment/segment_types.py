@@ -87,7 +87,7 @@ class SegmentPoint(GeneralSegment):
     def copy(self):
         return SegmentPoint(self.id, self.point.copy(), 
             self._copy_optional_array(self.ratio_feature),
-            self._copy_optional_array(self.cos_feature))s
+            self._copy_optional_array(self.cos_feature))
 
 @dataclass
 class SegmentLine(GeneralSegment):
