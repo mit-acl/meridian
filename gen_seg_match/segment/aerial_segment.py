@@ -3,6 +3,7 @@ from dataclasses import dataclass
 from typing import Tuple
 import shapely
 import open3d as o3d
+import alphashape
 
 @dataclass
 class AerialSegment:
@@ -33,6 +34,34 @@ class AerialSegment:
         if self.convex_hull is None:
             return None
         return ((self.convex_hull - np.array(img_origin_m)) / img_pixel_scale).astype(np.int32)
+    
+    def get_alpha_shape(self, alpha=0.5, grid_downsample=None):
+        points = self.points.copy()
+        # print(len(points))
+        if grid_downsample is not None:
+            points_o3d = o3d.geometry.PointCloud()
+            points_o3d.points = o3d.utility.Vector3dVector(np.hstack([points, np.zeros((len(points), 1))]))
+            points_o3d = points_o3d.voxel_down_sample(voxel_size=grid_downsample)
+            points = np.asarray(points_o3d.points)[:, :2]
+        # print(len(points))
+        alpha_shape = alphashape.alphashape(points, alpha=alpha)
+        if type(alpha_shape) == shapely.geometry.polygon.Polygon:
+            x, y = alpha_shape.exterior.xy
+        elif type(alpha_shape) == shapely.geometry.MultiPolygon:
+            # x, y = [alpha_shape.geometry.exterior.xy for poly_item in alpha_shape]
+            # x, y = shapely.concave_hull(alpha_shape).exterior.xy
+            return None
+        else:
+            return None
+            print(type(alpha_shape))
+        return np.vstack([x, y]).T
+        
+    def get_alpha_shape_pixels(self, img_pixel_scale: float, img_origin_m: Tuple[float, float] = (0.0, 0.0), alpha=0.5, grid_downsample=None):
+        alpha_shape = self.get_alpha_shape(alpha, grid_downsample)
+        if alpha_shape is None:
+            return None
+        alpha_shape_pixels = ((alpha_shape - np.array(img_origin_m)) / img_pixel_scale).astype(np.int32)
+        return alpha_shape_pixels
     
     @property
     def viz_color(self):

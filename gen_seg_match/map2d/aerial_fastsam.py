@@ -11,6 +11,7 @@ from typing import Tuple, List
 import shapely
 from transformers import AutoImageProcessor, AutoModel
 import torch
+from segment_anything import sam_model_registry, SamAutomaticMaskGenerator
 
 from roman.map.observation import Observation
 from roman.utils import expandvars_recursive
@@ -21,7 +22,8 @@ from gen_seg_match.segment.aerial_segment import AerialSegment
 @dataclass
 class AerialFastSAMParams:
 
-    weights_path: str = "$ROMAN_WEIGHTS/FastSAM-x.pt"
+    model_type: str = 'segment_anything'
+    weights_path: str = "$ROMAN_WEIGHTS/sam_vit_l_0b3195.pth"
     conf: float = 0.25
     iou: float = 0.9
     imgsz: Tuple[int, int] = (256, 256)
@@ -32,6 +34,9 @@ class AerialFastSAMParams:
     semantics: str = 'dino'
     triangle_ignore_masks: List[Tuple[Tuple[int,int], Tuple[int,int], Tuple[int,int]]] = None
 
+    def get_model_type(self):
+        return self.model_type.lower()
+
 
 
 class AerialFastSAMWrapper():
@@ -39,7 +44,15 @@ class AerialFastSAMWrapper():
     def __init__(self, params: AerialFastSAMParams):
 
         self.params = copy.deepcopy(params)
-        self.model = FastSAM(expandvars_recursive(params.weights_path))
+        if self.params.get_model_type() == 'fastsam':
+            self.model = FastSAM(expandvars_recursive(params.weights_path))
+        elif self.params.get_model_type() == 'segment_anything':
+            sam = sam_model_registry["vit_l"](checkpoint=expandvars_recursive(params.weights_path))
+            sam.to(self.params.device)
+            sam.eval()
+            self.model = SamAutomaticMaskGenerator(sam)
+        else:
+            raise ValueError(f"Invalid model type: {params.model_type}. Choose from 'fastsam' or 'segment_anything'.")
 
         if params.semantics is None or params.semantics.lower() == 'none':
             self.semantics_model = None
@@ -69,10 +82,20 @@ class AerialFastSAMWrapper():
             image_rgb = cv.resize(image_rgb, (image_rgb.shape[1] // downsample_factor, image_rgb.shape[0] // downsample_factor), interpolation=cv.INTER_LINEAR)
 
         # Run FastSAM
-        everything_results = self.model(image_rgb, conf=self.params.conf, iou=self.params.iou, imgsz=self.params.imgsz, 
-                             retina_masks=True, device=self.params.device)
-        prompt_process = FastSAMPrompt(image_rgb, everything_results, device=self.params.device)
-        masks = prompt_process.everything_prompt()
+        if self.params.get_model_type() == 'fastsam':
+            everything_results = self.model(image_rgb, conf=self.params.conf, iou=self.params.iou, imgsz=self.params.imgsz, 
+                                retina_masks=True, device=self.params.device)
+            prompt_process = FastSAMPrompt(image_rgb, everything_results, device=self.params.device)
+            masks = prompt_process.everything_prompt()
+        elif self.params.get_model_type() == 'segment_anything':
+            masks_output = self.model.generate(image_rgb)
+
+            # Convert SAM result masks into (N,H,W) boolean numpy array like FastSAM
+            mask_list = []
+            for obj in masks_output:
+                mask_list.append(obj["segmentation"])
+
+            masks = torch.tensor(np.stack(mask_list)).to(self.params.device)
 
         if (len(masks) > 0):
             masks = masks.cpu().numpy()
