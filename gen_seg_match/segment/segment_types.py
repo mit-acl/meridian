@@ -324,3 +324,34 @@ class ParallelLinesException(Exception):
         self.line2 = line2
         message = f"Parallel lines detected: {line1} and {line2}"
         super().__init__(message)
+
+class SegmentList(list):
+    """A list of GeneralSegment objects with some helper functions."""
+
+    def get_points(self) -> 'SegmentList':
+        return SegmentList([seg for seg in self if type(seg) == SegmentPoint])
+    
+    def get_lines(self) -> 'SegmentList':
+        return SegmentList([seg for seg in self if type(seg) == SegmentLine])
+    
+    def get_planes(self) -> 'SegmentList':
+        return SegmentList([seg for seg in self if type(seg) == SegmentPlane])
+    
+    def type_ordered(self) -> 'SegmentList':
+        points = self.get_points()
+        lines = self.get_lines()
+        planes = self.get_planes()
+        return SegmentList(points + lines + planes)
+    
+    def get_type_ordered_idx(self, idx) -> GeneralSegment:
+        return self.type_ordered()[idx]
+    
+    def get_segment_from_id(self, id) -> GeneralSegment:
+        matching_segs = [seg for seg in self if seg.id == id]
+        assert len(matching_segs) <= 1, f"Multiple segments with id {self.id} found"
+        return matching_segs[0] if len(matching_segs) == 1 else None
+    
+    def transform(self, T: np.ndarray) -> 'SegmentList':
+        for seg in self:
+            seg.transform(T)
+        return self

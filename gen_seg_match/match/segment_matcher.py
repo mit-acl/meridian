@@ -5,7 +5,7 @@ import clipperpy
 from dataclasses import dataclass
 
 from gen_seg_match.segment.segment_types import SegmentPoint, SegmentLine, \
-    SegmentPlane, GeneralSegment
+    SegmentPlane, GeneralSegment, SegmentList
 from gen_seg_match.params.segment_match_params import SegmentMatchParams
 
 class InsufficientAssociationsException(Exception):
@@ -22,64 +22,35 @@ class SegmentMatcher():
     def __init__(self, params: SegmentMatchParams):
         self.params = params
 
-    # def match(self, map1: List[GeneralSegment], map2: List[GeneralSegment]):
-    def match(self, points1: List[GeneralSegment], lines1: List[GeneralSegment],
-              points2: List[GeneralSegment], lines2: List[GeneralSegment]):
-        if len(points1) + len(lines1) == 0 or len(points2) + len(lines2) == 0:
+    def match(self, map1: List[GeneralSegment], map2: List[GeneralSegment]):
+        map1 = SegmentList(map1)
+        map2 = SegmentList(map2)
+        if len(map1) == 0 or len(map2) == 0:
             return np.array([[]])
-        # if len(map1) == 0 or len(map2) == 0:
-        #     return np.array([[]])
+            
         clipper = self._setup_solver()
-        clipper, A_init = self._setup_problem(clipper, points1, lines1, points2, lines2)
+        clipper, A_init = self._setup_problem(clipper, map1.get_points(), map1.get_lines(),
+                                                map2.get_points(), map2.get_lines())
         clipper.solve()
         Ain = clipper.get_selected_associations()
-        return Ain
+        Ain_by_ids = self._assoc_idx_to_ids(Ain, map1, map2)
+        return Ain_by_ids
     
-    def _setup_solver(self):
-        invariant = clipperpy.invariants.GeneralSegmentDistance(self.params.to_clipper())
-        params = clipperpy.Params()
-        clipper = clipperpy.CLIPPERPairwiseAndSingle(invariant, params)
-        return clipper
-    
-    # def _setup_problem(self, clipper, map1: list, map2: list):
-    def _setup_problem(self, clipper, 
-            points1: List[GeneralSegment], lines1: List[GeneralSegment],
-            points2: List[GeneralSegment], lines2: List[GeneralSegment]):
-        # points1 = [obj for obj in map1 if type(obj) == SegmentPoint]
-        # lines1 = [obj for obj in map1 if type(obj) == SegmentLine]
-        # points2 = [obj for obj in map2 if type(obj) == SegmentPoint]
-        # lines2 = [obj for obj in map2 if type(obj) == SegmentLine]
-
-        # set up all to all matching between points and lines separately
-        A_init_points = clipperpy.utils.create_all_to_all(len(points1), len(points2))
-        A_init_lines = clipperpy.utils.create_all_to_all(len(lines1), len(lines2))
-        A_init_lines[:,0] += len(points1)
-        A_init_lines[:,1] += len(points2)
-        A_init = np.vstack([A_init_points, A_init_lines])
-
-        map1_arrays = [obj.to_array() for obj in points1] + [obj.to_array() for obj in lines1]
-        map2_arrays = [obj.to_array() for obj in points2] + [obj.to_array() for obj in lines2]
-        max_d = max([arr.shape[0] for arr in map1_arrays + map2_arrays])
-
-        map1_arrays = [np.pad(arr, (0, max_d - arr.shape[0]), 'constant', constant_values=0.0) for arr in map1_arrays]
-        map2_arrays = [np.pad(arr, (0, max_d - arr.shape[0]), 'constant', constant_values=0.0) for arr in map2_arrays]
-        map1_cl = np.array(map1_arrays)
-        map2_cl = np.array(map2_arrays)
-
-        clipper.score_pairwise_and_single_consistency(map1_cl.T, map2_cl.T, A_init)
-        return clipper, A_init
-    
-    def get_MCA(self, points1: List[GeneralSegment], lines1: List[GeneralSegment],
-              points2: List[GeneralSegment], lines2: List[GeneralSegment]):
+    def get_MCA(self, map1: List[GeneralSegment], map2: List[GeneralSegment]):
+        map1 = SegmentList(map1)
+        map2 = SegmentList(map2)
         clipper = self._setup_solver()
-        clipper, A_init = self._setup_problem(clipper, points1, lines1, points2, lines2)
+        clipper, A_init = self._setup_problem(clipper, map1.get_points(), map1.get_lines(),
+                                                map2.get_points(), map2.get_lines())
         M = clipper.get_affinity_matrix()
         C = clipper.get_constraint_matrix()
         return M, C, A_init
     
-    def match_multiple(self, points1: List[GeneralSegment], lines1: List[GeneralSegment],
-              points2: List[GeneralSegment], lines2: List[GeneralSegment], num_solutions=2):
-        M, C, A = self.get_MCA(points1, lines1, points2, lines2)
+    def match_multiple(self, map1: List[GeneralSegment], 
+                       map2: List[GeneralSegment], num_solutions=2):
+        map1 = SegmentList(map1)
+        map2 = SegmentList(map2)
+        M, C, A = self.get_MCA(map1, map2)
         M_orig = M.copy()
         clipper = clipperpy.CLIPPER(clipperpy.invariants.PairwiseInvariant(), clipperpy.Params())
         solutions = []
@@ -100,7 +71,8 @@ class SegmentMatcher():
                 score = 0
             else:
                 score = u_sol.T @ M_orig @ u_sol / (u_sol.T @ u_sol)
-            solutions.append((Ain.copy(), score))
+            Ain_by_ids = self._assoc_idx_to_ids(Ain, map1, map2)
+            solutions.append((Ain_by_ids, score))
 
             if k + 1 < num_solutions:
                 row_indices, col_indices = np.meshgrid(solution_nodes, solution_nodes, indexing='ij')
@@ -108,10 +80,48 @@ class SegmentMatcher():
                     M[row_indices,col_indices] = 0.0
 
         return solutions
+    
+    def _setup_solver(self):
+        invariant = clipperpy.invariants.GeneralSegmentDistance(self.params.to_clipper())
+        params = clipperpy.Params()
+        clipper = clipperpy.CLIPPERPairwiseAndSingle(invariant, params)
+        return clipper
+    
+    def _setup_problem(self, clipper, 
+            points1: List[GeneralSegment], lines1: List[GeneralSegment],
+            points2: List[GeneralSegment], lines2: List[GeneralSegment]):
 
-    # def T_align(self, map1: List[Object], map2: List[Object], correspondences: np.array = None):
+        # set up all to all matching between points and lines separately
+        A_init_points = clipperpy.utils.create_all_to_all(len(points1), len(points2))
+        A_init_lines = clipperpy.utils.create_all_to_all(len(lines1), len(lines2))
+        A_init_lines[:,0] += len(points1)
+        A_init_lines[:,1] += len(points2)
+        A_init = np.vstack([A_init_points, A_init_lines])
+
+        map1_arrays = [obj.to_array() for obj in points1] + [obj.to_array() for obj in lines1]
+        map2_arrays = [obj.to_array() for obj in points2] + [obj.to_array() for obj in lines2]
+        max_d = max([arr.shape[0] for arr in map1_arrays + map2_arrays])
+
+        map1_arrays = [np.pad(arr, (0, max_d - arr.shape[0]), 'constant', constant_values=0.0) for arr in map1_arrays]
+        map2_arrays = [np.pad(arr, (0, max_d - arr.shape[0]), 'constant', constant_values=0.0) for arr in map2_arrays]
+        map1_cl = np.array(map1_arrays)
+        map2_cl = np.array(map2_arrays)
+
+        clipper.score_pairwise_and_single_consistency(map1_cl.T, map2_cl.T, A_init)
+        return clipper, A_init
+    
+    def _assoc_idx_to_ids(self, association_matrix: np.ndarray, 
+                           map1: List[GeneralSegment], 
+                           map2: List[GeneralSegment]) -> np.ndarray:
+        Ain_by_ids = np.zeros_like(association_matrix)
+        for i in range(association_matrix.shape[0]):
+            Ain_by_ids[i,0] = map1.get_type_ordered_idx(association_matrix[i,0]).id
+            Ain_by_ids[i,1] = map2.get_type_ordered_idx(association_matrix[i,1]).id
+        return Ain_by_ids
+
+    # def register(self, map1: List[Object], map2: List[Object], correspondences: np.array = None):
     #     """
-    #     Computes the transformation that aligns map2 to map1.
+    #     Computes the transformation that aligns map2 to map1  T^map1_map2).
 
     #     Args:
     #         map1 (List[Object]): Object list in frame 1
@@ -121,7 +131,7 @@ class SegmentMatcher():
     #             Arun's method. Defaults to None.
 
     #     Returns:
-    #         np.array: Transformation matrix that aligns map2 to map1
+    #         np.array: Transformation matrix that aligns map2 to map1 (T^map1_map2).
     #     """
     #     if len(map1) == 0 or len(map2) == 0:
     #         raise InsufficientAssociationsException(len(map1), len(map2))
