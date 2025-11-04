@@ -169,6 +169,12 @@ class SegmentLine(GeneralSegment):
                             self._copy_optional_array(self.ratio_feature),
                             self._copy_optional_array(self.cos_feature))
     
+    def get_length(self):
+        if self.endpoints[0] is not None and self.endpoints[1] is not None:
+            return np.linalg.norm(self.endpoints[1] - self.endpoints[0])
+        else:
+            return np.inf
+    
     def is_parallel_to(self, other: 'SegmentLine', tol: float = 1e-3) -> bool:
         assert self.dim == other.dim, "Lines must be in the same dimension"
         cross_product = np.cross(self.get_direction(), other.get_direction())
@@ -176,9 +182,11 @@ class SegmentLine(GeneralSegment):
     
     def has_point_on_line(self, point: np.ndarray, tol: float = 1e-3) -> bool:
         assert self.dim == point.shape[0], "Point must be in the same dimension as line"
-        point_vec = point - self.get_point()
-        cross_product = np.cross(self.get_direction(), point_vec)
-        on_infinite_line = np.linalg.norm(cross_product) < tol
+        # point_vec = point - self.get_point()
+        # cross_product = np.cross(self.get_direction(), point_vec)
+        # on_infinite_line = np.linalg.norm(cross_product) < tol
+        closest_point_on_infinite = self.closest_point_to_point(point, use_infinite_line=True)
+        on_infinite_line = np.linalg.norm(closest_point_on_infinite - point) < tol
         
         if not on_infinite_line:
             return False
@@ -247,15 +255,16 @@ class SegmentLine(GeneralSegment):
                 
         return np.array([closest_pt_self, closest_pt_other])
     
-    def closest_point_to_point(self, point: np.ndarray) -> np.ndarray:
+    def closest_point_to_point(self, point: np.ndarray, use_infinite_line=False) -> np.ndarray:
         assert self.dim == point.shape[0], "Point must be in the same dimension as line"
         nearest_point_on_infinite = (self.get_point() + 
-            np.dot(self.get_direction(), point - self.get_point()) / np.linalg.norm(self.get_direction())**2 
-            * self.get_direction())
+            np.dot(self.get_direction(), point - self.get_point()) * self.get_direction())
         
-        if self.endpoints[0] is None and self.endpoints[1] is None:
+        if use_infinite_line:
             return nearest_point_on_infinite
-        elif self.has_point_on_line(point):
+        elif self.endpoints[0] is None and self.endpoints[1] is None:
+            return nearest_point_on_infinite
+        elif self.has_point_on_line(nearest_point_on_infinite):
             return nearest_point_on_infinite
         
         # has at least one endpoint and the point on the infinite version of this line
@@ -279,8 +288,23 @@ class SegmentLine(GeneralSegment):
     def min_dist_to(self, other: 'SegmentLine') -> float:
         """Returns the minimum distance between two line segments."""
         if self.is_parallel_to(other):
-            # can use any point on one line and find closest point on the other
-            return self.min_dist_to_point(other.get_point())
+            if min(self.num_endpoints, other.num_endpoints) == 0:
+                # both lines are infinite, so just compute distance from point to line
+                return self.min_dist_to_point(other.get_point())
+            else:
+                # at least one line has endpoints, so check all endpoint-to-line distances
+                min_dist = np.inf
+                for ep in self.endpoints:
+                    if ep is not None:
+                        dist = other.min_dist_to_point(ep)
+                        if dist < min_dist:
+                            min_dist = dist
+                for ep in other.endpoints:
+                    if ep is not None:
+                        dist = self.min_dist_to_point(ep)
+                        if dist < min_dist:
+                            min_dist = dist
+                return min_dist
         else:
             closest_pts = self.closest_points(other)
             return np.linalg.norm(closest_pts[0] - closest_pts[1])

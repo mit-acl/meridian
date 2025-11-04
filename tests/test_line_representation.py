@@ -3,7 +3,6 @@ import numpy as np
 import robotdatapy.transform as rdpt
 
 from gen_seg_match.segment.segment_types import SegmentPoint, SegmentLine, SegmentPlane
-from gen_seg_match.match.segment_matcher import SegmentMatcher, SegmentMatcherParams
 
 @pytest.fixture
 def three_line_segments():

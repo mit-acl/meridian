@@ -7,7 +7,7 @@ name = "gen_seg_match"
 version = "0.0.1"
 dependencies = [
     "numpy",
-    "git+https://github.com/facebookresearch/segment-anything.git"
+    #"git+https://github.com/facebookresearch/segment-anything.git"
 ]
 requires-python = ">=3.8"
 authors = [

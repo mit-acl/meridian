@@ -3,7 +3,8 @@ import numpy as np
 import robotdatapy.transform as rdpt
 
 from gen_seg_match.segment.segment_types import SegmentPoint, SegmentLine, SegmentPlane
-from gen_seg_match.match.segment_matcher import SegmentMatcher, SegmentMatcherParams
+from gen_seg_match.match.segment_matcher import SegmentMatcher
+from gen_seg_match.params.segment_match_params import SegmentMatchParams
 
 @pytest.fixture
 def three_line_segments():
@@ -46,7 +47,7 @@ def three_line_segments():
 
 @pytest.fixture
 def default_matcher_params():
-    return SegmentMatcherParams(
+    return SegmentMatchParams(
         dim = 3,
         ratio_feature_dim = 0,
         cos_feature_dim = 0,
@@ -69,7 +70,7 @@ def default_matcher_params():
 def test_line_distance_1(default_matcher_params, three_line_segments):
     linesa, linesb = three_line_segments
     matcher = SegmentMatcher(default_matcher_params)
-    M, C, A = matcher.get_MCA([], linesa, [], linesb)
+    M, C, A = matcher.get_MCA(linesa, linesb)
     assert M.shape == (9, 9)
     
     # correct matches are (0a, 0b), (1a, 1b), (2a, 2b)
@@ -96,7 +97,7 @@ def test_line_distance_with_semantics_1(default_matcher_params, three_line_segme
     params = default_matcher_params
     params.cos_feature_dim = 6
     matcher = SegmentMatcher(params)
-    M, C, A = matcher.get_MCA([], linesa, [], linesa)
+    M, C, A = matcher.get_MCA(linesa, linesa)
     assert M.shape == (9, 9)
     # correct matches are (0a, 0a), (1a, 1a), (2a, 2a)
     M_0a0a_1a1a = M[0, 4]
@@ -107,7 +108,7 @@ def test_line_distance_with_semantics_1(default_matcher_params, three_line_segme
     assert pytest.approx(M_1a1a_2a2a) == 1.0
     
     
-    M, C, A = matcher.get_MCA([], linesa, [], linesb)
+    M, C, A = matcher.get_MCA(linesa, linesb)
     # correct matches are (0a, 0b), (1a, 1b), (2a, 2b)
     M_0a0b_1a1b = M[0, 4]
     M_0a0b_2a2b = M[0, 8]
