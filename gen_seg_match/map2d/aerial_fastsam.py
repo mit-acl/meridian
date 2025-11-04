@@ -32,6 +32,7 @@ class AerialFastSAMParams:
     min_area: float = .01
     max_area: float = 25.0
     semantics: str = 'dino'
+    semantics_dim: int = 768
     triangle_ignore_masks: List[Tuple[Tuple[int,int], Tuple[int,int], Tuple[int,int]]] = None
 
     def get_model_type(self):
@@ -63,7 +64,7 @@ class AerialFastSAMWrapper():
             self.semantics_model.eval()
             self.semantics_model.to(self.params.device)
         else:
-            raise ValueError(f"Invalid semantics option: {params.semantics}. Choose from 'clip', 'dino', or 'none'.")
+            raise ValueError(f"Invalid semantics option: {params.semantics}. Choose from 'dino' or 'none'.")
         self.semantic_patches_shape = None
         
 
@@ -104,14 +105,12 @@ class AerialFastSAMWrapper():
         
         if self.params.semantics == 'dino':
             # Process the image for DINO
-            dino_shape = 768
-            img_bgr = cv.cvtColor(image_rgb, cv.COLOR_BGR2RGB)
-            preprocessed = self.semantics_preprocess(images=img_bgr, return_tensors="pt").to(self.params.device)
+            preprocessed = self.semantics_preprocess(images=image_rgb, return_tensors="pt").to(self.params.device)
             dino_output = self.semantics_model(**preprocessed)
             dino_features = self.get_per_pixel_features(
                 model_output=dino_output.last_hidden_state, 
                 img_shape=image_rgb.shape, 
-                feature_dim=dino_shape
+                feature_dim=self.params.semantics_dim
             )
 
         aerial_segments = []

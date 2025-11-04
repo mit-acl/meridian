@@ -39,6 +39,7 @@ class AerialSegment:
         points = self.points.copy()
         # print(len(points))
         if grid_downsample is not None:
+            # TODO: just do this in numpy
             points_o3d = o3d.geometry.PointCloud()
             points_o3d.points = o3d.utility.Vector3dVector(np.hstack([points, np.zeros((len(points), 1))]))
             points_o3d = points_o3d.voxel_down_sample(voxel_size=grid_downsample)
@@ -53,7 +54,6 @@ class AerialSegment:
             return None
         else:
             return None
-            print(type(alpha_shape))
         return np.vstack([x, y]).T
         
     def get_alpha_shape_pixels(self, img_pixel_scale: float, img_origin_m: Tuple[float, float] = (0.0, 0.0), alpha=0.5, grid_downsample=None):
