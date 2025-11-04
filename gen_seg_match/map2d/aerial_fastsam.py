@@ -96,7 +96,7 @@ class AerialFastSAMWrapper():
             for obj in masks_output:
                 mask_list.append(obj["segmentation"])
 
-            masks = torch.tensor(np.stack(mask_list)).to(self.params.device)
+            masks = torch.from_numpy(np.stack(mask_list)).to(self.params.device)
 
         if (len(masks) > 0):
             masks = masks.cpu().numpy()
