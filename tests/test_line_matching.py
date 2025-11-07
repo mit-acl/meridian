@@ -7,7 +7,6 @@ from gen_seg_match.match.segment_matcher import SegmentMatcher
 from gen_seg_match.params.segment_match_params import SegmentMatchParams
 
 
-
 @pytest.fixture
 def three_line_segments():
     linea1 = SegmentLine(
@@ -121,11 +120,7 @@ def test_line_distance_with_semantics_1(default_matcher_params, three_line_segme
     assert pytest.approx(M_0a0a_2a2a) == 1.0
     assert pytest.approx(M_1a1a_2a2a) == 1.0
 
-<<<<<<< HEAD
     M, C, A = matcher.get_MCA(linesa, linesb)
-=======
-    M, C, A = matcher.get_MCA([], linesa, [], linesb)
->>>>>>> d45fc27 (ruff formatting, refactor segment conversion to include lines and planes (not tested))
     # correct matches are (0a, 0b), (1a, 1b), (2a, 2b)
     M_0a0b_1a1b = M[0, 4]
     M_0a0b_2a2b = M[0, 8]
