@@ -178,13 +178,22 @@ def submaps_from_roman_map(
         )
 
         for t in submap_params.submap_times:
-            submap_roman_map_index = np.argmin(np.abs(roman_map.times - t))
+            submap_roman_map_index = np.argmin(np.abs(np.array(roman_map.times) - t))
 
             segments = [
                 deepcopy(roman_map.segments[i])
                 for i in sort_time_intervals(segment_time_intervals, t)[
                     : submap_params.max_size
                 ]
+            ]
+            segments = [
+                seg
+                for seg in segments
+                if np.linalg.norm(
+                    seg.center.flatten()
+                    - roman_map.trajectory[submap_roman_map_index][:3, 3]
+                )
+                < submap_params.radius
             ]
 
             submaps.append(

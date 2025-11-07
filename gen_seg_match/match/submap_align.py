@@ -10,6 +10,7 @@ import time
 from scipy.spatial.transform import Rotation as Rot
 import argparse
 from pathlib import Path
+import json
 
 from roman.align.results import SubmapAlignResults, save_submap_align_results
 from roman.align.dist_reg_with_pruning import GravityConstraintError
@@ -276,11 +277,11 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser()
     parser.add_argument(
-        "-m",
-        "--map-dir",
+        "-r",
+        "--roman-results-dir",
         type=str,
         required=True,
-        help="directory containing ROMAN maps. All files with *.pkl will be loaded as maps, "
+        help="ROMAN results directory. All files in map/*.pkl will be loaded as maps, "
         + "unless specific run names are given.",
     )
     parser.add_argument("-p", "--params", type=str, required=True)
@@ -292,7 +293,8 @@ if __name__ == "__main__":
     output_dir = Path(expandvars_recursive(args.output_dir))
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    map_dir = Path(expandvars_recursive(args.map_dir))
+    roman_results_dir = Path(expandvars_recursive(args.roman_results_dir))
+    map_dir = roman_results_dir / "map"
     if args.run_names is None:
         map_paths = sorted(list(map_dir.glob("*.pkl")))
     else:
@@ -312,11 +314,25 @@ if __name__ == "__main__":
     matcher = SegmentMatcher(SegmentMatchParams.from_yaml(args.params))
 
     submap_params = SubmapParams.from_yaml(args.params)
+    submap_params.creation_method = "set_times"
+    submap_times = {}
+    for name in run_names:
+        submap_dict = json.load(
+            (roman_results_dir / "align" / f"{name}_{name}" / f"{name}.sm.json").open(
+                "r"
+            )
+        )
+        submap_times[name] = [
+            float(sm["seconds"]) + float(sm["nanoseconds"]) * 1e-9
+            for sm in submap_dict["submaps"]
+        ]
+
     roman_conversion_params = RomanConversionParams.from_yaml(args.params)
 
     # load submaps
     submap_lists = []
-    for roman_map in roman_maps:
+    for name, roman_map in zip(run_names, roman_maps):
+        submap_params.submap_times = submap_times[name]
         new_sm_list = submaps_from_roman_map(
             roman_map, submap_params, roman_conversion_params
         )
