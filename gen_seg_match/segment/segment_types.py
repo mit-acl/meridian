@@ -15,7 +15,7 @@ class GeneralSegment:
     def dim(self) -> int:
         return self.point.shape[0]
 
-    def to_array(self) -> np.ndarray:
+    def to_array(self, include_ratio=True, include_cos=True) -> np.ndarray:
         raise NotImplementedError("to_array not implemented")
 
     def get_point(self) -> np.ndarray:
@@ -39,8 +39,25 @@ class GeneralSegment:
             color = tuple((np.array(color) * 255).astype(int))
         return color
 
+    def reference_time(self, use_avg_time=True):
+        if not use_avg_time:
+            return self.first_seen
+        else:
+            return (self.first_seen + self.last_seen) / 2.0
+
     def _copy_optional_array(self, arr: np.ndarray) -> np.ndarray:
         return arr.copy() if arr is not None else None
+
+    def _to_array_features(self, include_ratio=True, include_cos=True) -> np.ndarray:
+        if self.ratio_feature is not None and include_ratio:
+            ratio_feature = self.ratio_feature.flatten()
+        else:
+            ratio_feature = []
+        if self.cos_feature is not None and include_cos:
+            cos_feature = self.cos_feature.flatten()
+        else:
+            cos_feature = []
+        return np.concatenate([ratio_feature, cos_feature])
 
 
 @dataclass
@@ -49,22 +66,20 @@ class SegmentPoint(GeneralSegment):
     point: np.ndarray
     ratio_feature: np.ndarray = None  # optional ratio feature vector
     cos_feature: np.ndarray = None  # optional cosine feature vector
+    first_seen: float = None  # optional timestamp of first observation
+    last_seen: float = None  # optional timestamp of last observation
 
     def __post_init__(self):
         if self.cos_feature is not None:
             self.cos_feature /= np.linalg.norm(self.cos_feature)
 
-    def to_array(self) -> np.ndarray:
-        cos_feature = self.cos_feature.flatten() if self.cos_feature is not None else []
-        ratio_feature = (
-            self.ratio_feature.flatten() if self.ratio_feature is not None else []
-        )
+    def to_array(self, include_ratio=True, include_cos=True) -> np.ndarray:
+        features = self._to_array_features(include_ratio, include_cos)
         return np.concatenate(
             [
                 [clipperpy.invariants.GeneralSegmentDistance.POINT.value],
                 self.get_point(),
-                ratio_feature,
-                cos_feature,
+                features,
             ]
         )
 
@@ -114,7 +129,7 @@ class SegmentLine(GeneralSegment):
                 num_endpoints -= 1
         return num_endpoints
 
-    def to_array(self) -> np.ndarray:
+    def to_array(self, include_ratio=True, include_cos=True) -> np.ndarray:
         endpoints1 = []
         endpoints2 = []
         num_endpoints = 0
@@ -127,10 +142,7 @@ class SegmentLine(GeneralSegment):
             else:
                 endpoints2 = self.endpoints[1]
             num_endpoints += 1
-        ratio_feature = (
-            self.ratio_feature.flatten() if self.ratio_feature is not None else []
-        )
-        cos_feature = self.cos_feature.flatten() if self.cos_feature is not None else []
+        features = self._to_array_features(include_ratio, include_cos)
 
         return np.concatenate(
             [
@@ -140,8 +152,7 @@ class SegmentLine(GeneralSegment):
                 [num_endpoints],
                 endpoints1,
                 endpoints2,
-                ratio_feature,
-                cos_feature,
+                features,
             ]
         )
 
@@ -348,19 +359,15 @@ class SegmentPlane(GeneralSegment):
         if self.cos_feature is not None:
             self.cos_feature /= np.linalg.norm(self.cos_feature)
 
-    def to_array(self) -> np.ndarray:
-        ratio_feature = (
-            self.ratio_feature.flatten() if self.ratio_feature is not None else []
-        )
-        cos_feature = self.cos_feature.flatten() if self.cos_feature is not None else []
+    def to_array(self, include_ratio=True, include_cos=True) -> np.ndarray:
+        features = self._to_array_features(include_ratio, include_cos)
 
         return np.concatenate(
             [
                 [clipperpy.invariants.GeneralSegmentDistance.PLANE.value],
                 self.get_point(),
                 self.get_normal(),
-                ratio_feature,
-                cos_feature,
+                features,
             ]
         )
 

@@ -121,11 +121,11 @@ class SegmentMatcher:
         A_init_lines[:, 1] += len(points2)
         A_init = np.vstack([A_init_points, A_init_lines])
 
-        map1_arrays = [obj.to_array() for obj in points1] + [
-            obj.to_array() for obj in lines1
+        map1_arrays = [self._get_seg_array(obj) for obj in points1] + [
+            self._get_seg_array(obj) for obj in lines1
         ]
-        map2_arrays = [obj.to_array() for obj in points2] + [
-            obj.to_array() for obj in lines2
+        map2_arrays = [self._get_seg_array(obj) for obj in points2] + [
+            self._get_seg_array(obj) for obj in lines2
         ]
         max_d = max([arr.shape[0] for arr in map1_arrays + map2_arrays])
 
@@ -154,6 +154,12 @@ class SegmentMatcher:
             Ain_by_ids[i, 0] = map1.get_type_ordered_idx(association_matrix[i, 0]).id
             Ain_by_ids[i, 1] = map2.get_type_ordered_idx(association_matrix[i, 1]).id
         return Ain_by_ids
+
+    def _get_seg_array(self, seg: GeneralSegment) -> np.ndarray:
+        return seg.to_array(
+            include_ratio=self.params.ratio_feature_dim > 0,
+            include_cos=self.params.cos_feature_dim > 0,
+        )
 
     def register(
         self,
