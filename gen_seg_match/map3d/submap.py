@@ -60,6 +60,16 @@ def submaps_from_roman_map(
     Returns:
         List[Submap]: List of created submaps.
     """
+    # Temporary patch to get rid of duplicate segment ids
+    # TODO: fix this upstream in ROMAN
+    max_segment_id = np.max([seg.id for seg in roman_map.segments]) + 1
+    segment_ids = set()
+    for seg in roman_map.segments:
+        if seg.id in segment_ids:
+            seg.id = max_segment_id
+            max_segment_id += 1
+        segment_ids.add(seg.id)
+
     submaps = []
 
     # force fill submaps to a set size, with set overlap -----------
