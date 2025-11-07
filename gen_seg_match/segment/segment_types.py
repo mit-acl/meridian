@@ -399,7 +399,7 @@ class SegmentList(list):
 
     def get_segment_from_id(self, id) -> GeneralSegment:
         matching_segs = [seg for seg in self if seg.id == id]
-        assert len(matching_segs) <= 1, f"Multiple segments with id {self.id} found"
+        assert len(matching_segs) <= 1, f"Multiple segments with id {id} found"
         return matching_segs[0] if len(matching_segs) == 1 else None
 
     def has_id(self, id) -> bool:

@@ -1,5 +1,6 @@
 import numpy as np
 from typing import Tuple, List, Union
+from os.path import expandvars, expanduser
 
 
 def sort_time_intervals(
@@ -41,3 +42,12 @@ def sort_time_intervals(
     ]
 
     return np.concatenate([contains_ref_indices, not_contains_ref_indices])
+
+
+def expandvars_recursive(path):
+    """Recursively expands environment variables in the given path."""
+    while True:
+        expanded_path = expandvars(path)
+        if expanded_path == path:
+            return expanduser(expanded_path)
+        path = expanded_path
