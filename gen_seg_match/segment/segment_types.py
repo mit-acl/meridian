@@ -10,6 +10,8 @@ class GeneralSegment:
     point: np.ndarray
     ratio_feature: np.ndarray = None  # optional ratio feature vector
     cos_feature: np.ndarray = None  # optional cosine feature vector
+    first_seen: float = None  # optional timestamp of first observation
+    last_seen: float = None  # optional timestamp of last observation
 
     @property
     def dim(self) -> int:
@@ -104,6 +106,8 @@ class SegmentLine(GeneralSegment):
     endpoints: Tuple[np.ndarray, np.ndarray] = (None, None)
     ratio_feature: np.ndarray = None  # optional ratio feature vector
     cos_feature: np.ndarray = None  # optional cosine feature vector
+    first_seen: float = None  # optional timestamp of first observation
+    last_seen: float = None  # optional timestamp of last observation
 
     # endpoints can be given such that if only one endpoint is given, it is assumed
     # that the ray extends from that endpoint infinitely along the positive direction vector
@@ -352,6 +356,8 @@ class SegmentPlane(GeneralSegment):
     normal: np.ndarray = None  # required normal vector
     cos_feature: np.ndarray = None  # optional cosine feature vector
     ratio_feature: np.ndarray = None  # optional ratio feature vector
+    first_seen: float = None  # optional timestamp of first observation
+    last_seen: float = None  # optional timestamp of last observation
 
     def __post_init__(self):
         if self.normal is None:

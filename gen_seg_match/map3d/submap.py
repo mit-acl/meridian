@@ -60,6 +60,8 @@ def submaps_from_roman_map(
     Returns:
         List[Submap]: List of created submaps.
     """
+    gen_seg_converter = GeneralSegmentConverter(roman_conversion_params)
+
     # Temporary patch to get rid of duplicate segment ids
     # TODO: fix this upstream in ROMAN
     max_segment_id = np.max([seg.id for seg in roman_map.segments]) + 1
@@ -71,11 +73,12 @@ def submaps_from_roman_map(
         segment_ids.add(seg.id)
 
     submaps = []
+    general_segments = gen_seg_converter.roman_to_general_segments(roman_map.segments)
 
     # force fill submaps to a set size, with set overlap -----------
     if submap_params.creation_method == "force_fill":
         segments_sorted_by_time = sorted(
-            roman_map.segments,
+            general_segments,
             key=lambda seg: seg.reference_time(
                 use_avg_time=submap_params.segment_avg_time
             ),
@@ -141,11 +144,11 @@ def submaps_from_roman_map(
                     or seg.last_seen < tm1 - submap_params.center_time
                 )
 
-            for seg in roman_map.segments:
+            for seg in general_segments:
                 if (
                     submap_params.radius is None
                     or (
-                        np.linalg.norm(seg.center.flatten() - submap.pose_flu[:-1, -1])
+                        np.linalg.norm(seg.point.flatten() - submap.pose_flu[:-1, -1])
                         < submap_params.radius
                     )
                 ) and meets_time_constraints(seg):
@@ -174,27 +177,48 @@ def submaps_from_roman_map(
     # create submaps at set times -----------
     elif submap_params.creation_method == "set_times":
         segment_time_intervals = np.array(
-            [(seg.first_seen, seg.last_seen) for seg in roman_map.segments]
+            [(seg.first_seen, seg.last_seen) for seg in general_segments]
         )
 
         for t in submap_params.submap_times:
             submap_roman_map_index = np.argmin(np.abs(np.array(roman_map.times) - t))
 
-            segments = [
-                deepcopy(roman_map.segments[i])
-                for i in sort_time_intervals(segment_time_intervals, t)[
-                    : submap_params.max_size
+            # either keep the nearest segments in time or in distance
+            # TODO: this could probably borrow some code from the adaptive method
+            if submap_params.pruning_method == "time":
+                segments = [
+                    deepcopy(general_segments[i])
+                    for i in sort_time_intervals(segment_time_intervals, t)[
+                        : submap_params.max_size
+                    ]
                 ]
-            ]
-            segments = [
-                seg
-                for seg in segments
-                if np.linalg.norm(
-                    seg.center.flatten()
-                    - roman_map.trajectory[submap_roman_map_index][:3, 3]
+                segments = [
+                    seg
+                    for seg in segments
+                    if np.linalg.norm(
+                        seg.point.flatten()
+                        - roman_map.trajectory[submap_roman_map_index][:3, 3]
+                    )
+                    < submap_params.radius
+                ]
+            elif submap_params.pruning_method == "distance":
+                segments = [
+                    deepcopy(seg)
+                    for seg in general_segments
+                    if np.linalg.norm(
+                        seg.point.flatten()
+                        - roman_map.trajectory[submap_roman_map_index][:3, 3]
+                    )
+                    < submap_params.radius
+                ]
+                segments_sorted_by_distance = sorted(
+                    segments,
+                    key=lambda seg: np.linalg.norm(
+                        seg.point.flatten()
+                        - roman_map.trajectory[submap_roman_map_index][:3, 3]
+                    ),
                 )
-                < submap_params.radius
-            ]
+                segments = segments_sorted_by_distance[: submap_params.max_size]
 
             submaps.append(
                 Submap(
@@ -213,8 +237,6 @@ def submaps_from_roman_map(
 
     # submap postprocessing
 
-    gen_seg_converter = GeneralSegmentConverter(roman_conversion_params)
-
     submaps = [submap for submap in submaps if len(submap.segments) > 0]
 
     for submap in submaps:
@@ -229,8 +251,6 @@ def submaps_from_roman_map(
                 [seg.semantic_descriptor for seg in submap.segments], axis=0
             ).flatten()
 
-        # convert ROMAN to general segments
-        submap.segments = gen_seg_converter.roman_to_general_segments(submap.segments)
         submap.segment_ids = [seg.id for seg in submap.segments]
 
     return submaps
