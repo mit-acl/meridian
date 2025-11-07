@@ -24,5 +24,8 @@ class RomanConversionParams(ParamsBase):
     line_rms_threshold: float = (
         1.0  # Maximum RMS distance from line to still be considered a line
     )
+    line_separate_endpoints: bool = True  # Create separate points for endpoints
+    line_separate_center_point: bool = True  # Create separate point for center point
+    line_inclusion: bool = True  # Include line objects
 
     # ——————————————————————————————————
