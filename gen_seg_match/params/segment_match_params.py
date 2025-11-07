@@ -1,6 +1,6 @@
 import numpy as np
 import clipperpy
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 @dataclass
 class SegmentMatchParams:
@@ -17,7 +17,8 @@ class SegmentMatchParams:
     distance_weight: float = 1.0;                   # weight of pairwise similarity in single/pairwise fusion
     ratio_weight: float = 1.0;                      # weight of cosine similarity in single similarity fusion
     cosine_weight: float = 1.0;                     # weight of cosine similarity in single similarity fusion
-    ratio_epsilon: np.ndarray = np.zeros(0);        # bound on feature ratio score, determines if inlier/outlier
+    ratio_epsilon: np.ndarray = \
+        field(default_factory=lambda: np.zeros(0)); # bound on feature ratio score, determines if inlier/outlier
     cosine_min: float = 0.5;                        # cosine similarity scaled so that cosine_min maps to 0.0 similarity score
     cosine_max: float = 0.7;                        # cosine similarity scaled so that cosine_max maps to 1.0 similarity score
     gravity_guided: bool = False;                   # whether to use gravity-guided prior

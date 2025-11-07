@@ -119,76 +119,87 @@ class SegmentMatcher():
             Ain_by_ids[i,1] = map2.get_type_ordered_idx(association_matrix[i,1]).id
         return Ain_by_ids
 
-    # def register(self, map1: List[Object], map2: List[Object], correspondences: np.array = None):
-    #     """
-    #     Computes the transformation that aligns map2 to map1  T^map1_map2).
+    def register(self, map1: List[GeneralSegment], map2: List[GeneralSegment], correspondences: np.array = None):
+        """
+        Computes the transformation that aligns map2 to map1 (T^map1_map2). Currently only uses SegmentPoint correspondences.
 
-    #     Args:
-    #         map1 (List[Object]): Object list in frame 1
-    #         map2 (List[Object]): Object list in frame 2
-    #         correspondences (np.array, shape=(n,2), optional): If correspondences have already 
-    #             been found, set to None. Otherwise, performs register before aligning. Aligns using 
-    #             Arun's method. Defaults to None.
+        Args:
+            map1 (List[GeneralSegment]): Segment list in frame 1
+            map2 (List[GeneralSegment]): Segment list in frame 2
+            correspondences (np.array, shape=(n,2), optional): If correspondences have already 
+                been found, set to None. Otherwise, performs register before aligning. Defaults to None.
 
-    #     Returns:
-    #         np.array: Transformation matrix that aligns map2 to map1 (T^map1_map2).
-    #     """
-    #     if len(map1) == 0 or len(map2) == 0:
-    #         raise InsufficientAssociationsException(len(map1), len(map2))
+        Returns:
+            np.array: Transformation matrix that aligns map2 to map1 (T^map1_map2).
+        """
+        if len(map1) == 0 or len(map2) == 0:
+            raise InsufficientAssociationsException(len(map1), len(map2))
 
-    #     if correspondences is None:
-    #         correspondences = self.register(map1, map2)
-    #     if len(correspondences) < self.dim:
-    #         raise InsufficientAssociationsException(len(map1), len(map2), len(correspondences))
+        if correspondences is None:
+            correspondences = self.match(map1, map2)
 
-    #     pts1 = np.array([map1[corr[0]].center.reshape(-1)[:self.dim] for corr in correspondences])
-    #     pts2 = np.array([map2[corr[1]].center.reshape(-1)[:self.dim] for corr in correspondences])
+        map1 = SegmentList(map1)
+        map2 = SegmentList(map2)
 
-    #     weights = np.ones((pts1.shape[0],1))
-    #     weights = weights.reshape((-1,1))
-    #     mean1 = (np.sum(pts1 * weights, axis=0) / np.sum(weights)).reshape(-1)
-    #     mean2 = (np.sum(pts2 * weights, axis=0) / np.sum(weights)).reshape(-1)
-    #     pts1_mean_reduced = pts1 - mean1
-    #     pts2_mean_reduced = pts2 - mean2
-    #     assert pts1_mean_reduced.shape == pts2_mean_reduced.shape
-    #     H = pts1_mean_reduced.T @ (pts2_mean_reduced * weights)
-    #     U, s, Vh = np.linalg.svd(H)
-    #     R = U @ Vh
-    #     if np.allclose(np.linalg.det(R), -1.0):
-    #         Vh_prime = Vh.copy()
-    #         Vh_prime[-1,:] *= -1.0
-    #         R = U @ Vh_prime
-    #     t = mean1.reshape((-1,1)) - R @ mean2.reshape((-1,1))
-    #     T = np.concatenate([np.concatenate([R, t], axis=1), np.hstack([np.zeros((1, R.shape[0])), [[1]]])], axis=0)
-    #     return T
-    
-    # def view_registration(self, map1: List[Object], map2: List[Object], correspondences: np.array, T: np.array, ax=None, **kwargs):
-    #     """
-    #     Visualize the registration between map1 and map2
-
-    #     Args:
-    #         map1 (List[Object]): Object list in frame 1
-    #         map2 (List[Object]): Object list in frame 2
-    #         correspondences (np.array, shape=(n,2)): Correspondences between map1 and map2
-    #         T (np.array): Transformation matrix that aligns map2 to map1
-    #     """
-    #     if ax is None:
-    #         _, ax = plt.subplots()
-
-    #     map2_cp = [obj.copy() for obj in map2]
-    #     for obj in map2_cp:
-    #         obj.transform(T)
-
-    #     for obj in map1:
-    #         obj.plot2d(ax, color='maroon', **kwargs)
-
-    #     for obj in map2_cp:
-    #         obj.plot2d(ax, color='blue', **kwargs)
-
-    #     for corr in correspondences:
-    #         ax.plot([map1[corr[0]].centroid[0], map2_cp[corr[1]].centroid[0]], 
-    #                  [map1[corr[0]].centroid[1], map2_cp[corr[1]].centroid[1]], 
-    #                  color='lawngreen', linestyle='dotted')
+        filtered_correspondences = [corr for corr in correspondences if type(map1.get_segment_from_id(corr[0])) == SegmentPoint 
+                                                                    and type(map2.get_segment_from_id(corr[1])) == SegmentPoint]
         
-    #     ax.set_aspect('equal')
-    #     return ax
+        if len(filtered_correspondences) < self.params.dim:
+            raise InsufficientAssociationsException(len(map1), len(map2), len(filtered_correspondences))
+
+        pts1 = np.array([map1.get_segment_from_id(corr[0]).get_point()[:self.params.dim] for corr in filtered_correspondences])
+        pts2 = np.array([map2.get_segment_from_id(corr[1]).get_point()[:self.params.dim] for corr in filtered_correspondences])
+
+        mean1 = np.mean(pts1, axis=0)
+        mean2 = np.mean(pts2, axis=0)
+
+        pts1_mean_reduced = pts1 - mean1
+        pts2_mean_reduced = pts2 - mean2
+        assert pts1_mean_reduced.shape == pts2_mean_reduced.shape
+
+        H = pts1_mean_reduced.T @ (pts2_mean_reduced)
+        U, s, Vh = np.linalg.svd(H)
+        R = U @ Vh
+
+        if np.allclose(np.linalg.det(R), -1.0):
+            Vh_prime = Vh.copy()
+            Vh_prime[-1,:] *= -1.0
+            R = U @ Vh_prime
+
+        t = mean1.reshape((-1,1)) - R @ mean2.reshape((-1,1))
+        T = np.concatenate([np.concatenate([R, t], axis=1), np.hstack([np.zeros((1, R.shape[0])), [[1]]])], axis=0)
+        return T
+    
+    def view_registration(self, map1: List[GeneralSegment], map2: List[GeneralSegment], correspondences: np.array, T: np.array, ax=None, **kwargs):
+        """
+        Visualize the registration between map1 and map2 (currently only supports SegmentPoint)
+
+        Args:
+            map1 (List[GeneralSegment]): Segment list in frame 1
+            map2 (List[GeneralSegment]): Segment list in frame 2
+            correspondences (np.array, shape=(n,2)): Correspondences between map1 and map2
+            T (np.array): Transformation matrix that aligns map2 to map1
+        """
+        if ax is None:
+            _, ax = plt.subplots()
+
+        map1 = SegmentList([seg for seg in map1 if type(seg) == SegmentPoint])
+        map2 = SegmentList([seg.copy() for seg in map2 if type(seg) == SegmentPoint])
+
+        map2.transform(T)
+
+        for seg in map1:
+            if type(seg) == SegmentPoint:
+                ax.plot(seg.get_point()[0], seg.get_point()[1], 'o', color='maroon', **kwargs)
+
+        for seg in map2:
+            if type(seg) == SegmentPoint:
+                ax.plot(seg.get_point()[0], seg.get_point()[1], 'o', color='blue', **kwargs)
+
+        for corr in correspondences:
+            ax.plot([map1.get_segment_from_id(corr[0]).get_point()[0], map2.get_segment_from_id(corr[1]).get_point()[0]], 
+                     [map1.get_segment_from_id(corr[0]).get_point()[1], map2.get_segment_from_id(corr[1]).get_point()[1]], 
+                     color='lawngreen', linestyle='dotted')
+        
+        ax.set_aspect('equal')
+        return ax
