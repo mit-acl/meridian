@@ -166,13 +166,6 @@ def register_submaps(
         T_error = np.linalg.inv(T_sm1_sm2_hat) @ T_sm1_sm2
         result.angle_error_rad = Rot.from_matrix(T_error[:3, :3]).magnitude()
         result.translation_error_m = np.linalg.norm(T_error[:3, 3])
-        # print(T_sm1grav_sm2grav_hat)
-        # print(T_sm1_sm1grav)
-        # print(T_sm2_sm2grav)
-        # print(T_sm1_sm2_hat)
-        # print(T_sm1_sm2)
-        # print(np.rad2deg(result.angle_error_rad), result.translation_error_m)
-        # print()
         result.associations = associations.copy()
         result.inlier_ratio = (
             (
@@ -292,6 +285,8 @@ if __name__ == "__main__":
 
     output_dir = Path(expandvars_recursive(args.output_dir))
     output_dir.mkdir(parents=True, exist_ok=True)
+    # copy params to output dir
+    os.system(f"cp {expandvars_recursive(args.params)} {output_dir / 'params.yaml'}")
 
     roman_results_dir = Path(expandvars_recursive(args.roman_results_dir))
     map_dir = roman_results_dir / "map"
