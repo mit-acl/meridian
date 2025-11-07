@@ -1,47 +1,63 @@
 import numpy as np
 import clipperpy
 from dataclasses import dataclass, field
+from typing import ClassVar
+from gen_seg_match.params.params_base import ParamsBase
 
 
 @dataclass
-class SegmentMatchParams:
-    dim: int = 3  # dimension of points (2 or 3)
-    ratio_feature_dim: int = 0  # number of ratio features (e.g., volume)
-    cos_feature_dim: int = 0  # number of features used for cosine similarity
-    sigma_dist: float = 0.4  # spread / "variance" of exponential kernel
-    epsilon_dist: float = (
-        0.6  # bound on consistency score, determines if inlier/outlier
-    )
-    min_dist: float = (
-        0.0  # minimum allowable distance between inlier points in the same dataset
-    )
-    sigma_angle_rad: float = np.deg2rad(
-        10.0
-    )  # spread / "variance" of exponential kernel
-    epsilon_angle_rad: float = np.deg2rad(
-        20.0
-    )  # bound on consistency score, determines if inlier/outlier
-    min_angle_rad: float = 0.0  # minimum allowable angle (in radians) between inlier segments in the same dataset
-    distance_weight: float = (
-        1.0  # weight of pairwise similarity in single/pairwise fusion
-    )
-    ratio_weight: float = 1.0  # weight of cosine similarity in single similarity fusion
-    cosine_weight: float = (
-        1.0  # weight of cosine similarity in single similarity fusion
-    )
-    ratio_epsilon: np.ndarray = field(
-        default_factory=lambda: np.zeros(0)
-    )  # bound on feature ratio score, determines if inlier/outlier
-    cosine_min: float = (
-        0.5  # cosine similarity scaled so that cosine_min maps to 0.0 similarity score
-    )
-    cosine_max: float = (
-        0.7  # cosine similarity scaled so that cosine_max maps to 1.0 similarity score
-    )
-    gravity_guided: bool = False  # whether to use gravity-guided prior
-    gravity_unc_ang_rad: float = (
-        0.0  # uncertainty adjustment for gravity direction in radians
-    )
+class SegmentMatchParams(ParamsBase):
+    """
+    SegmentMatchParams: dataclass for segment matching parameters.
+
+    Args:
+        dim (int = 3): dimension of points (2 or 3).
+        ratio_feature_dim (int = 0): number of ratio features (e.g., volume)
+        cos_feature_dim (int = 0): number of features used for cosine similarity.
+        sigma_dist (float = 0.4): spread / "variance" of exponential kernel for distance.
+        epsilon_dist (float = 0.6): bound on consistency score for distance,
+            determines if inlier/outlier.
+        min_dist (float = 0.0): minimum allowable distance between inlier points in the same
+            dataset.
+        sigma_angle_rad (float = np.deg2rad(10.0)): spread / "variance" of exponential kernel
+            for angle.
+        epsilon_angle_rad (float = np.deg2rad(20.0)): bound on consistency score for angle,
+            determines if inlier/outlier.
+        min_angle_rad (float = 0.0): minimum allowable angle (in radians) between inlier segments
+            in the same dataset.
+        distance_weight (float = 1.0): weight of pairwise similarity in single/pairwise fusion.
+        ratio_weight (float = 1.0): weight of ratio similarity in single similarity fusion.
+        cosine_weight (float = 1.0): weight of cosine similarity in single similarity fusion.
+        ratio_epsilon (np.ndarray = np.zeros(0)): bound on feature ratio score.
+        cosine_min (float = 0.5): cosine similarity scaled so that cosine_min maps to 0.0
+            similarity score.
+        cosine_max (float = 0.7): cosine similarity scaled so that cosine_max maps to 1.0
+            similarity score.
+        gravity_guided (bool = False): whether to use gravity-guided prior.
+        gravity_unc_ang_rad (float = 0.0): uncertainty adjustment for gravity direction in radians.
+    """
+
+    # class attribute
+    params_key: ClassVar[str] = "segment_match"
+
+    # Parameters
+    dim: int = 3
+    ratio_feature_dim: int = 0
+    cos_feature_dim: int = 0
+    sigma_dist: float = 0.4
+    epsilon_dist: float = 0.6
+    min_dist: float = 0.0
+    sigma_angle_rad: float = np.deg2rad(10.0)
+    epsilon_angle_rad: float = np.deg2rad(20.0)
+    min_angle_rad: float = 0.0
+    distance_weight: float = 1.0
+    ratio_weight: float = 1.0
+    cosine_weight: float = 1.0
+    ratio_epsilon: np.ndarray = field(default_factory=lambda: np.zeros(0))
+    cosine_min: float = 0.5
+    cosine_max: float = 0.7
+    gravity_guided: bool = False
+    gravity_unc_ang_rad: float = 0.0
 
     def to_clipper(
         self,

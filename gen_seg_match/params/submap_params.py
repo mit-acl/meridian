@@ -1,10 +1,15 @@
 from dataclasses import dataclass
 import yaml
 from typing import List
+from typing import ClassVar
+from gen_seg_match.params.params_base import ParamsBase
 
 
 @dataclass
-class SubmapParams:
+class SubmapParams(ParamsBase):
+    # class attribute
+    params_key: ClassVar[str] = "submap"
+
     creation_method: str = "force_fill"  # Method for creating submaps: ('force_fill', 'adaptive', 'set_times')
     max_size: int = 40  # Maximum number of segments in a submap (to save computation)
     segment_avg_time: bool = True  # If true, use (first_seen + last_seen) / 2 for each segment reference time
@@ -33,9 +38,3 @@ class SubmapParams:
     def __post_init__(self):
         if type(self.descriptor) is str and self.descriptor.lower() == "none":
             self.descriptor = None
-
-    @classmethod
-    def from_yaml(cls, yaml_file):
-        with open(yaml_file, "r") as f:
-            params = yaml.full_load(f)
-        return cls(**params)

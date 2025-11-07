@@ -1,9 +1,14 @@
 from dataclasses import dataclass
 import yaml
+from typing import ClassVar
+from gen_seg_match.params.params_base import ParamsBase
 
 
 @dataclass
-class RomanConversionParams:
+class RomanConversionParams(ParamsBase):
+    # class attribute
+    params_key: ClassVar[str] = "roman_conversion"
+
     # parameters for plane —————————————
 
     plane_max_e2_e1: float = 0.2  # Maximum e[2]/e[1] threshold to be considered a plane
@@ -21,9 +26,3 @@ class RomanConversionParams:
     )
 
     # ——————————————————————————————————
-
-    @classmethod
-    def from_yaml(cls, yaml_file):
-        with open(yaml_file, "r") as f:
-            params = yaml.full_load(f)
-        return cls(**params)
