@@ -75,6 +75,7 @@ class GeneralSegmentConverter:
         line_projections = principal_components[:, 0]
         line_min = mean + np.min(line_projections) * direction
         line_max = mean + np.max(line_projections) * direction
+        dense_points = roman_segment.points if self.params.copy_dense_points else None
 
         line = SegmentLine(
             id=roman_segment.id,
@@ -85,6 +86,7 @@ class GeneralSegmentConverter:
             cos_feature=roman_segment.semantic_descriptor,
             first_seen=roman_segment.first_seen,
             last_seen=roman_segment.last_seen,
+            dense_points=dense_points,
         )
         line_segments = []
         if self.params.line_inclusion:
@@ -101,6 +103,7 @@ class GeneralSegmentConverter:
     ) -> SegmentPoint:
         if pt is None:
             pt = roman_segment.center
+        dense_points = roman_segment.points if self.params.copy_dense_points else None
         return SegmentPoint(
             id=roman_segment.id,
             point=pt,  # TODO: is _center_ref == 'bottom-middle' an issue?
@@ -108,6 +111,7 @@ class GeneralSegmentConverter:
             cos_feature=roman_segment.semantic_descriptor,
             first_seen=roman_segment.first_seen,
             last_seen=roman_segment.last_seen,
+            dense_points=dense_points,
         )
 
     def get_roman_ratio_feature(self, roman_segment: RomanSegment) -> np.ndarray:

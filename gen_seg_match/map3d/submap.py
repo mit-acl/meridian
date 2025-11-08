@@ -271,3 +271,81 @@ def segment_map_3d_to_2d(map_3d):
         except Exception:
             to_rm.append(seg)
     return map_2d
+
+
+if __name__ == "__main__":
+    import argparse
+    import pickle
+    import matplotlib.pyplot as plt
+    from gen_seg_match.viz.viz_segments import viz_segments
+
+    parser = argparse.ArgumentParser(description="Create/save/visualize submaps")
+
+    parser.add_argument("-r", "--roman-map", type=str, help="Input ROMAN map file")
+    parser.add_argument(
+        "-p", "--submap-params", type=str, help="YAML file with submap parameters"
+    )
+    parser.add_argument("-s", "--input-submaps", type=str, help="Input submap file")
+    parser.add_argument(
+        "-v", "--visualize", action="store_true", help="Visualize submaps"
+    )
+    parser.add_argument(
+        "-i", "--submap-idx", type=int, help="Index of submap to visualize"
+    )
+    parser.add_argument("-o", "--output-submaps", type=str, help="Output submap file")
+
+    args = parser.parse_args()
+
+    can_load_roman_map = args.roman_map is not None and args.submap_params is not None
+    can_load_input_submaps = args.input_submaps is not None
+    if not (can_load_roman_map or can_load_input_submaps):
+        parser.error(
+            "Either a submaps file or a ROMAN map with submap parameters must be provided."
+        )
+    if can_load_roman_map and can_load_input_submaps:
+        parser.error(
+            "Provide either a submaps file or a ROMAN map with submap parameters, not both."
+        )
+
+    if can_load_roman_map:
+        submap_params_file = args.submap_params
+        roman_map_conversion_file = args.submap_params  # assuming same file for now
+        roman_map = ROMANMap.from_pickle(args.roman_map)
+        submap_params = SubmapParams.from_yaml(submap_params_file)
+        roman_conversion_params = RomanConversionParams.from_yaml(
+            roman_map_conversion_file
+        )
+        submaps = submaps_from_roman_map(
+            roman_map, submap_params, roman_conversion_params
+        )
+    else:
+        with open(args.input_submaps, "rb") as f:
+            submaps = pickle.load(f)
+
+    if args.visualize:
+        if args.submap_idx is not None:
+            idx = args.submap_idx
+        else:
+            submap_centers = np.array([sm.pose_flu[:3, 3] for sm in submaps])
+            plt.figure()
+            plt.scatter(submap_centers[:, 0], submap_centers[:, 1])
+            max_axis_lim_len = (
+                np.max(submap_centers.max(axis=0) - submap_centers.min(axis=0)) * 1.1
+            )
+            for i in range(len(submaps)):
+                plt.text(
+                    submap_centers[i, 0] + max_axis_lim_len / 100,
+                    submap_centers[i, 1] + max_axis_lim_len / 100,
+                    str(i),
+                )
+            plt.show()
+
+            idx_str = input("Please input the desired submap index: \n")
+            idx = int(idx_str)
+
+        submap = submaps[args.submap_idx]
+        viz_segments(submap.segments)
+
+    if args.output_submaps is not None:
+        with open(args.output_submaps, "wb") as f:
+            pickle.dump(submaps, f)

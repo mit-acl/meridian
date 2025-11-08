@@ -9,6 +9,9 @@ class RomanConversionParams(ParamsBase):
     # class attribute
     params_key: ClassVar[str] = "roman_conversion"
 
+    # general parameters ———————————————
+    copy_dense_points: bool = False  # Whether to copy dense points into segments
+
     # parameters for plane —————————————
 
     plane_max_e2_e1: float = 0.2  # Maximum e[2]/e[1] threshold to be considered a plane

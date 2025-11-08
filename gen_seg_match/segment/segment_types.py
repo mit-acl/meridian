@@ -12,6 +12,7 @@ class GeneralSegment:
     cos_feature: np.ndarray = None  # optional cosine feature vector
     first_seen: float = None  # optional timestamp of first observation
     last_seen: float = None  # optional timestamp of last observation
+    dense_points: np.ndarray = None  # optional dense point cloud
 
     @property
     def dim(self) -> int:
@@ -47,6 +48,9 @@ class GeneralSegment:
         else:
             return (self.first_seen + self.last_seen) / 2.0
 
+    def clear_dense_points(self):
+        self.dense_points = None
+
     def _copy_optional_array(self, arr: np.ndarray) -> np.ndarray:
         return arr.copy() if arr is not None else None
 
@@ -70,6 +74,7 @@ class SegmentPoint(GeneralSegment):
     cos_feature: np.ndarray = None  # optional cosine feature vector
     first_seen: float = None  # optional timestamp of first observation
     last_seen: float = None  # optional timestamp of last observation
+    dense_points: np.ndarray = None  # optional dense point cloud
 
     def __post_init__(self):
         if self.cos_feature is not None:
@@ -108,6 +113,7 @@ class SegmentLine(GeneralSegment):
     cos_feature: np.ndarray = None  # optional cosine feature vector
     first_seen: float = None  # optional timestamp of first observation
     last_seen: float = None  # optional timestamp of last observation
+    dense_points: np.ndarray = None  # optional dense point cloud
 
     # endpoints can be given such that if only one endpoint is given, it is assumed
     # that the ray extends from that endpoint infinitely along the positive direction vector
@@ -358,6 +364,7 @@ class SegmentPlane(GeneralSegment):
     ratio_feature: np.ndarray = None  # optional ratio feature vector
     first_seen: float = None  # optional timestamp of first observation
     last_seen: float = None  # optional timestamp of last observation
+    dense_points: np.ndarray = None  # optional dense point cloud
 
     def __post_init__(self):
         if self.normal is None:
@@ -392,6 +399,14 @@ class ParallelLinesException(Exception):
 class SegmentList(list):
     """A list of GeneralSegment objects with some helper functions."""
 
+    @property
+    def first_seen(self) -> float:
+        return min(seg.first_seen for seg in self)
+
+    @property
+    def last_seen(self) -> float:
+        return max(seg.last_seen for seg in self)
+
     def get_points(self) -> "SegmentList":
         return SegmentList([seg for seg in self if type(seg) is SegmentPoint])
 
@@ -422,3 +437,7 @@ class SegmentList(list):
         for seg in self:
             seg.transform(T)
         return self
+
+    def get_mean_point(self) -> np.ndarray:
+        all_points = np.array([seg.get_point() for seg in self])
+        return np.mean(all_points, axis=0)
