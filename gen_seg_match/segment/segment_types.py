@@ -92,6 +92,8 @@ class SegmentPoint(GeneralSegment):
 
     def transform(self, T):
         self.point = transform.transform(T, self.point)
+        if self.dense_points is not None:
+            self.dense_points = transform.transform(T, self.dense_points)
         return self
 
     def copy(self):
@@ -182,6 +184,8 @@ class SegmentLine(GeneralSegment):
                 self.endpoints[0],
                 transform.transform(T, self.endpoints[1]),
             )
+        if self.dense_points is not None:
+            self.dense_points = transform.transform(T, self.dense_points)
         return self
 
     def copy(self):
