@@ -128,10 +128,10 @@ class SegmentLine(GeneralSegment):
         self.direction = self.direction / np.linalg.norm(self.direction)
 
     @classmethod
-    def from_endpoints(cls, id: int, pt1: np.ndarray, pt2: np.ndarray):
+    def from_endpoints(cls, id: int, pt1: np.ndarray, pt2: np.ndarray, **kwargs):
         direction = pt2 - pt1
         direction = direction / np.linalg.norm(direction)
-        return cls(id=id, point=pt1, direction=direction, endpoints=(pt1, pt2))
+        return cls(id=id, point=pt1, direction=direction, endpoints=(pt1, pt2), **kwargs)
 
     @property
     def num_endpoints(self) -> int:
