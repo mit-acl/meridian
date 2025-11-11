@@ -32,8 +32,6 @@ class ROMANBasedSubmapAlignParams:
     max_distance: float = 20.0
     skip_distant_submaps: bool = True
     is_single_robot: bool = False
-    large_ang_err_rad: float = np.pi
-    large_dist_err_m: float = 1e6
 
 
 @dataclass
@@ -133,17 +131,19 @@ def register_submaps(
     submap_1: Submap,
     submap_2: Submap,
     matcher: SegmentMatcher,
-    T_sm1_sm2: np.ndarray,
+    T_sm1_sm2_gt: np.ndarray,
     params: ROMANBasedSubmapAlignParams,
 ):
-    gt_distance = np.linalg.norm(T_sm1_sm2[:3, 3])
-    result = SingleAlignResult(T_i_j=T_sm1_sm2)
+    gt_distance = np.linalg.norm(T_sm1_sm2_gt[:3, 3])
+    result = SingleAlignResult(T_i_j=T_sm1_sm2_gt)
 
-    # check for distance of submaps
+    # if submaps are close enough (based on gt)
+    # then record ground truth distance between submaps, and the
+    # heading difference between the submap centers
     if gt_distance < params.max_distance:
         result.gt_distance_m = gt_distance
         result.submap_yaw_diff_rad = np.abs(
-            rdp.transform.transform_to_xyzrpy(T_sm1_sm2)[5]
+            rdp.transform.transform_to_xyzrpy(T_sm1_sm2_gt)[5]
         )
     elif params.skip_distant_submaps:
         return result
@@ -157,13 +157,13 @@ def register_submaps(
         T_sm1grav_sm2grav_hat = matcher.register(
             submap_1.segments, submap_2.segments, associations
         )
-        # (T^odom_flu)^1 @ T^odom_gravaligned
+        # (T^odom_flu)^{-1} @ T^odom_gravaligned
         T_sm1_sm1grav = np.linalg.inv(submap_1.pose_flu) @ submap_1.pose_gravity_aligned
         T_sm2_sm2grav = np.linalg.inv(submap_2.pose_flu) @ submap_2.pose_gravity_aligned
         T_sm1_sm2_hat = (
             T_sm1_sm1grav @ T_sm1grav_sm2grav_hat @ np.linalg.inv(T_sm2_sm2grav)
         )
-        T_error = np.linalg.inv(T_sm1_sm2_hat) @ T_sm1_sm2
+        T_error = np.linalg.inv(T_sm1_sm2_hat) @ T_sm1_sm2_gt
         result.angle_error_rad = Rot.from_matrix(T_error[:3, :3]).magnitude()
         result.translation_error_m = np.linalg.norm(T_error[:3, 3])
         # print(T_sm1grav_sm2grav_hat)
@@ -185,8 +185,8 @@ def register_submaps(
         result.T_i_j_hat = T_sm1_sm2_hat
 
     except (InsufficientAssociationsException, GravityConstraintError):
-        result.angle_error_rad = params.large_ang_err_rad
-        result.translation_error_m = params.large_dist_err_m
+        result.angle_error_rad = np.inf
+        result.translation_error_m = np.inf
 
     result.runtime_s = time.time() - start_t
     return result
@@ -292,23 +292,29 @@ if __name__ == "__main__":
 
     output_dir = Path(expandvars_recursive(args.output_dir))
     output_dir.mkdir(parents=True, exist_ok=True)
+    # copy params to output dir
+    os.system(f"cp {expandvars_recursive(args.params)} {output_dir / 'params.yaml'}")
+    with open(expandvars_recursive(args.params), "r") as f:
+        params_dict = yaml.full_load(f)
 
     roman_results_dir = Path(expandvars_recursive(args.roman_results_dir))
     map_dir = roman_results_dir / "map"
     if args.run_names is None:
-        map_paths = sorted(list(map_dir.glob("*.pkl")))
+        if "run_names" in params_dict:
+            args.run_names = params_dict["run_names"]
+        else:
+            map_paths = sorted(list(map_dir.glob("*.pkl")))
     else:
         map_paths = [map_dir / f"{name}.pkl" for name in args.run_names]
+
+    run_env = args.run_env if "run_env" not in params_dict else params_dict["run_env"]
 
     run_names = [p.stem for p in map_paths]
     roman_maps = [ROMANMap.from_pickle(str(p)) for p in map_paths]
 
-    with open(expandvars_recursive(args.params), "r") as f:
-        params_dict = yaml.full_load(f)
-
     gt_pose_data = []
     for run in run_names:
-        os.environ[args.run_env] = run
+        os.environ[run_env] = run
         gt_pose_data.append(PoseData.from_dict(params_dict["gt_pose"]))
 
     matcher = SegmentMatcher(SegmentMatchParams.from_yaml(args.params))
