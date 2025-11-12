@@ -11,6 +11,7 @@ from scipy.spatial.transform import Rotation as Rot
 import argparse
 from pathlib import Path
 import json
+from enum import Enum
 
 from roman.align.results import SubmapAlignResults, save_submap_align_results
 from roman.align.dist_reg_with_pruning import GravityConstraintError
@@ -25,6 +26,12 @@ from gen_seg_match.match.segment_matcher import (
 from gen_seg_match.params import SubmapParams, RomanConversionParams, SegmentMatchParams
 from gen_seg_match.map3d.submap import submaps_from_roman_map
 from gen_seg_match.utils import expandvars_recursive
+from gen_seg_match.segment.segment_types import SegmentList, SegmentLine, SegmentPoint
+
+
+class AssociationType(Enum):
+    POINT_TO_POINT = 1
+    LINE_TO_LINE = 2
 
 
 @dataclass
@@ -39,6 +46,7 @@ class SingleAlignResult:
     translation_error_m: float = np.nan
     angle_error_rad: float = np.nan
     associations: tuple = tuple([])
+    association_types: tuple = tuple([])
     inlier_ratio: float = np.nan
     gt_distance_m: float = np.nan
     submap_yaw_diff_rad: float = np.nan
@@ -50,11 +58,23 @@ class SingleAlignResult:
     def num_associations(self):
         return len(self.associations)
 
+    @property
+    def num_point_associations(self):
+        return sum(
+            1 for t in self.association_types if t == AssociationType.POINT_TO_POINT
+        )
+
+    @property
+    def num_line_associations(self):
+        return sum(
+            1 for t in self.association_types if t == AssociationType.LINE_TO_LINE
+        )
+
 
 def results_matrix_to_roman_align_results(
     results_matrix: np.ndarray,
 ) -> SubmapAlignResults:
-    return SubmapAlignResults(
+    output_matrix = SubmapAlignResults(
         robots_nearby_mat=np.array(
             [
                 results_matrix[i, j].gt_distance_m
@@ -125,6 +145,21 @@ def results_matrix_to_roman_align_results(
         submap_io=None,
         total_time=np.inf,
     )
+    output_matrix.num_point_associations_mat = np.array(
+        [
+            results_matrix[i, j].num_point_associations
+            for i in range(results_matrix.shape[0])
+            for j in range(results_matrix.shape[1])
+        ]
+    ).reshape(results_matrix.shape)
+    output_matrix.num_line_associations_mat = np.array(
+        [
+            results_matrix[i, j].num_line_associations
+            for i in range(results_matrix.shape[0])
+            for j in range(results_matrix.shape[1])
+        ]
+    ).reshape(results_matrix.shape)
+    return output_matrix
 
 
 def register_submaps(
@@ -153,7 +188,16 @@ def register_submaps(
 
     try:
         associations = matcher.match(submap_1.segments, submap_2.segments)
-        # print(len(associations), "associations found")
+        association_types = []
+        # track association types
+        for assoc in associations:
+            if type(submap_1.segments.get_segment_from_id(assoc[0])) is SegmentPoint:
+                association_types.append(AssociationType.POINT_TO_POINT)
+            else:
+                association_types.append(AssociationType.LINE_TO_LINE)
+        result.associations = associations.copy()
+        result.association_types = tuple(association_types)
+
         T_sm1grav_sm2grav_hat = matcher.register(
             submap_1.segments, submap_2.segments, associations
         )
@@ -166,7 +210,6 @@ def register_submaps(
         T_error = np.linalg.inv(T_sm1_sm2_hat) @ T_sm1_sm2_gt
         result.angle_error_rad = Rot.from_matrix(T_error[:3, :3]).magnitude()
         result.translation_error_m = np.linalg.norm(T_error[:3, 3])
-        result.associations = associations.copy()
         result.inlier_ratio = (
             (
                 len(associations)
@@ -260,6 +303,18 @@ def batch_submap_align(
                     [submap_lists[i], submap_lists[j]],
                     [roman_maps[i], roman_maps[j]],
                 )
+                fig, ax = plt.subplots(1, 2, figsize=(12, 6))
+                mp = ax[0].imshow(
+                    results_ij.num_point_associations_mat, cmap="viridis", vmin=0
+                )
+                fig.colorbar(mp, fraction=0.04, pad=0.04)
+                mp = ax[1].imshow(
+                    results_ij.num_line_associations_mat, cmap="viridis", vmin=0
+                )
+                fig.colorbar(mp, fraction=0.04, pad=0.04)
+                ax[0].set_title("Number of Point Associations")
+                ax[1].set_title("Number of Line Associations")
+                plt.savefig(run_output_dir / "point_vs_line_associations.png")
             results_dict[run_names[i]][run_names[j]] = results_ij
     return results_dict
 
@@ -290,6 +345,7 @@ if __name__ == "__main__":
     with open(expandvars_recursive(args.params), "r") as f:
         params_dict = yaml.full_load(f)
 
+    # load ROMAN maps
     roman_results_dir = Path(expandvars_recursive(args.roman_results_dir))
     map_dir = roman_results_dir / "map"
     if args.run_names is None:
@@ -299,19 +355,20 @@ if __name__ == "__main__":
             map_paths = sorted(list(map_dir.glob("*.pkl")))
     else:
         map_paths = [map_dir / f"{name}.pkl" for name in args.run_names]
-
     run_env = args.run_env if "run_env" not in params_dict else params_dict["run_env"]
-
     run_names = [p.stem for p in map_paths]
     roman_maps = [ROMANMap.from_pickle(str(p)) for p in map_paths]
 
+    # Load ground truth data
     gt_pose_data = []
     for run in run_names:
         os.environ[run_env] = run
         gt_pose_data.append(PoseData.from_dict(params_dict["gt_pose"]))
 
+    # Set up segment matcher
     matcher = SegmentMatcher(SegmentMatchParams.from_yaml(args.params))
 
+    # Load submap times
     submap_params = SubmapParams.from_yaml(args.params)
     submap_params.creation_method = "set_times"
     submap_times = {}
@@ -326,9 +383,8 @@ if __name__ == "__main__":
             for sm in submap_dict["submaps"]
         ]
 
+    # Load submaps
     roman_conversion_params = RomanConversionParams.from_yaml(args.params)
-
-    # load submaps
     submap_lists = []
     for name, roman_map in zip(run_names, roman_maps):
         submap_params.submap_times = submap_times[name]
@@ -337,6 +393,7 @@ if __name__ == "__main__":
         )
         submap_lists.append(new_sm_list)
 
+    # Run batch submap alignment
     results = batch_submap_align(
         run_names,
         submap_lists,

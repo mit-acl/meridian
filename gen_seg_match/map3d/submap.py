@@ -5,7 +5,7 @@ from copy import deepcopy
 from robotdatapy.transform import transform
 from roman.utils import transform_rm_roll_pitch
 
-from gen_seg_match.segment.segment_types import GeneralSegment
+from gen_seg_match.segment.segment_types import SegmentList
 from gen_seg_match.params.submap_params import SubmapParams
 from gen_seg_match.params.roman_conversion_params import RomanConversionParams
 from gen_seg_match.map3d.segments_from_roman import GeneralSegmentConverter
@@ -17,7 +17,7 @@ from roman.map.map import ROMANMap
 class Submap:
     id: int
     time: float
-    segments: List[GeneralSegment]
+    segments: SegmentList
     segment_ids: List[int]
     pose_flu: np.ndarray
     segment_frame: str = "submap_gravity_aligned"
@@ -253,6 +253,8 @@ def submaps_from_roman_map(
 
         submap.segment_ids = [seg.id for seg in submap.segments]
 
+    for sm in submaps:
+        sm.segments = SegmentList(sm.segments)
     return submaps
 
 
