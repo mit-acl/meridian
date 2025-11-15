@@ -39,7 +39,7 @@ class GeneralSegment:
         else:
             color = color_rgb
         if num_type is int:
-            color = tuple((np.array(color) * 255).astype(int))
+            color = tuple((np.array(color) * 255).astype(int).tolist())
         return color
 
     def reference_time(self, use_avg_time=True):
@@ -131,7 +131,9 @@ class SegmentLine(GeneralSegment):
     def from_endpoints(cls, id: int, pt1: np.ndarray, pt2: np.ndarray, **kwargs):
         direction = pt2 - pt1
         direction = direction / np.linalg.norm(direction)
-        return cls(id=id, point=pt1, direction=direction, endpoints=(pt1, pt2), **kwargs)
+        return cls(
+            id=id, point=pt1, direction=direction, endpoints=(pt1, pt2), **kwargs
+        )
 
     @property
     def num_endpoints(self) -> int:

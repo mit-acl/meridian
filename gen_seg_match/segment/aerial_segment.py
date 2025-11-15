@@ -14,7 +14,8 @@ class AerialSegment:
     points: np.ndarray  # Points in the segment in meters
     img_pixel_location: np.ndarray = None
     semantic_descriptor: np.ndarray = None
-    # convex_hull: np.ndarray = None # Convex hull of the segment in meters
+    first_seen: float = None
+    last_seen: float = None
 
     def __post_init__(self):
         self._convex_hull = None

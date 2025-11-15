@@ -56,7 +56,20 @@ def merge_lines(line1: SegmentLine, line2: SegmentLine) -> SegmentLine:
         merged_cos_feature /= np.linalg.norm(merged_cos_feature)
     else:
         merged_cos_feature = None
-    return SegmentLine.from_endpoints(-1, pt1, pt2, cos_feature=merged_cos_feature)
+    first_seen = line1.first_seen
+    last_seen = line1.last_seen
+    if line2.first_seen is not None and line2.first_seen < first_seen:
+        first_seen = line2.first_seen
+    if line2.last_seen is not None and line2.last_seen > last_seen:
+        last_seen = line2.last_seen
+    return SegmentLine.from_endpoints(
+        -1,
+        pt1,
+        pt2,
+        cos_feature=merged_cos_feature,
+        first_seen=first_seen,
+        last_seen=last_seen,
+    )
 
 
 def merge_points(pt1, pt2):
