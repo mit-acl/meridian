@@ -5,13 +5,13 @@ import shapely
 import open3d as o3d
 import alphashape
 
+
 @dataclass
 class AerialSegment:
-
     id: int
     center: np.ndarray
     area: float
-    points: np.ndarray # Points in the segment in meters
+    points: np.ndarray  # Points in the segment in meters
     img_pixel_location: np.ndarray = None
     semantic_descriptor: np.ndarray = None
     # convex_hull: np.ndarray = None # Convex hull of the segment in meters
@@ -30,58 +30,76 @@ class AerialSegment:
         self._convex_hull = np.array(convex_hull_shapely.exterior.coords)
         return self._convex_hull
 
-    def convex_hull_pixels(self, img_pixel_scale: float, img_origin_m: Tuple[float, float] = (0.0, 0.0), ) -> np.ndarray:
+    def convex_hull_pixels(
+        self,
+        img_pixel_scale: float,
+        img_origin_m: Tuple[float, float] = (0.0, 0.0),
+    ) -> np.ndarray:
         if self.convex_hull is None:
             return None
-        return ((self.convex_hull - np.array(img_origin_m)) / img_pixel_scale).astype(np.int32)
-    
+        return ((self.convex_hull - np.array(img_origin_m)) / img_pixel_scale).astype(
+            np.int32
+        )
+
     def get_alpha_shape(self, alpha=0.5, grid_downsample=None):
         points = self.points.copy()
         # print(len(points))
         if grid_downsample is not None:
             # TODO: just do this in numpy
             points_o3d = o3d.geometry.PointCloud()
-            points_o3d.points = o3d.utility.Vector3dVector(np.hstack([points, np.zeros((len(points), 1))]))
+            points_o3d.points = o3d.utility.Vector3dVector(
+                np.hstack([points, np.zeros((len(points), 1))])
+            )
             points_o3d = points_o3d.voxel_down_sample(voxel_size=grid_downsample)
             points = np.asarray(points_o3d.points)[:, :2]
         # print(len(points))
         alpha_shape = alphashape.alphashape(points, alpha=alpha)
-        if type(alpha_shape) == shapely.geometry.polygon.Polygon:
+        if type(alpha_shape) is shapely.geometry.polygon.Polygon:
             x, y = alpha_shape.exterior.xy
-        elif type(alpha_shape) == shapely.geometry.MultiPolygon:
+        elif type(alpha_shape) is shapely.geometry.MultiPolygon:
             # x, y = [alpha_shape.geometry.exterior.xy for poly_item in alpha_shape]
             # x, y = shapely.concave_hull(alpha_shape).exterior.xy
             return None
         else:
             return None
         return np.vstack([x, y]).T
-        
-    def get_alpha_shape_pixels(self, img_pixel_scale: float, img_origin_m: Tuple[float, float] = (0.0, 0.0), alpha=0.5, grid_downsample=None):
+
+    def get_alpha_shape_pixels(
+        self,
+        img_pixel_scale: float,
+        img_origin_m: Tuple[float, float] = (0.0, 0.0),
+        alpha=0.5,
+        grid_downsample=None,
+    ):
         alpha_shape = self.get_alpha_shape(alpha, grid_downsample)
         if alpha_shape is None:
             return None
-        alpha_shape_pixels = ((alpha_shape - np.array(img_origin_m)) / img_pixel_scale).astype(np.int32)
+        alpha_shape_pixels = (
+            (alpha_shape - np.array(img_origin_m)) / img_pixel_scale
+        ).astype(np.int32)
         return alpha_shape_pixels
-    
+
     @property
     def viz_color(self):
         np.random.seed(self.id)
         color = np.random.randint(0, 255, 3).tolist()
         return color
-        
+
     @property
     def pcd(self):
         if self._pcd is None:
             self._pcd = o3d.geometry.PointCloud()
-            self._pcd.points = o3d.utility.Vector3dVector(np.hstack([self.points, np.zeros((self.points.shape[0], 1))]))  # Add a zero z-coordinate
+            self._pcd.points = o3d.utility.Vector3dVector(
+                np.hstack([self.points, np.zeros((self.points.shape[0], 1))])
+            )  # Add a zero z-coordinate
         return self._pcd
 
-    @property 
+    @property
     def gaussian(self):
         if self._gaussian is None:
             self._gaussian = self.pcd.compute_mean_and_covariance()
         return self._gaussian
-        
+
     @property
     def normalized_eigenvalues(self):
         """Compute the normalized eigenvalues of the covariance matrix
@@ -96,22 +114,22 @@ class AerialSegment:
 
     @property
     def linearity(self):
-        """ Large if similar to a 1D line (Weinmann et al. ISPRS 2014)
+        """Large if similar to a 1D line (Weinmann et al. ISPRS 2014)
 
         Args:
             e (np.ndarray): normalized eigenvalues of this point cloud
         """
         e = self.normalized_eigenvalues
-        return (e[0]-e[1]) / e[0]
+        return (e[0] - e[1]) / e[0]
 
     @property
     def planarity(self):
-        """ Large if similar to a 2D plane (Weinmann et al. ISPRS 2014)
+        """Large if similar to a 2D plane (Weinmann et al. ISPRS 2014)
         Args:
             e (np.ndarray): normalized eigenvalues of this point cloud
         """
         e = self.normalized_eigenvalues
-        return (e[1]-0.0) / e[0]
+        return (e[1] - 0.0) / e[0]
 
     @property
     def scattering(self):
