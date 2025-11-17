@@ -2,14 +2,15 @@ import numpy as np
 import cv2 as cv
 from dataclasses import dataclass
 from typing import List, Tuple
+import robotdatapy as rdp
 from robotdatapy.data import ImgData, PoseData
 from enum import Enum
 from functools import cached_property
 
 from roman.viz import visualize_segment_on_img
-from roman.object.segment import Segment
 
-from aerial_segment import AerialSegment
+from gen_seg_match.segment.aerial_segment import AerialSegment
+from gen_seg_match.segment.segment_types import SegmentList, SegmentLine
 
 
 class FrameOrientation(Enum):
@@ -22,8 +23,8 @@ class AssociationVizParams:
     aerial_img: np.ndarray
     ground_img_data: ImgData
     ground_pose_data: PoseData
-    matched_aerial_segments: List[AerialSegment]
-    matched_ground_segments: List[Segment]
+    matched_aerial_segments: SegmentList
+    matched_ground_segments: SegmentList
     output_path: str
     aerial_img_pixel_scale: float = 0.01
     aerial_img_crop: Tuple[int, int, int, int] = (0, 0, -1, -1)
@@ -32,9 +33,9 @@ class AssociationVizParams:
     line_width: int = 3
     min_segment_dist: float = 10.0
     show_segment_ids: bool = False
-
-    @cached_property
-    def aerial_img_aspect_ratio(self) -> float:
+    connections_are_green: bool = True
+    
+    def __post_init__(self):
         if self.aerial_img_crop == (0, 0, -1, -1):
             self.aerial_img_crop = (
                 0,
@@ -42,7 +43,11 @@ class AssociationVizParams:
                 self.aerial_img.shape[1],
                 self.aerial_img.shape[0],
             )
-        return self.aerial_img.shape[1] / self.aerial_img.shape[0]  # width / height
+
+    @cached_property
+    def aerial_img_aspect_ratio(self) -> float:
+        x1, y1, x2, y2 = self.aerial_img_crop
+        return (x2 - x1) / (y2 - y1)  # width / height
 
     @cached_property
     def output_img_shape(self) -> Tuple[int, int]:
@@ -127,31 +132,47 @@ class AssociationViz:
         )
 
         aerial_outlines = []
+        # get segment outlines in aerial image
         for seg in self.params.matched_aerial_segments:
-            convex_hull = seg.convex_hull_pixels(
-                img_pixel_scale=self.params.cropped_img_pixel_scale,
-                img_origin_m=self.params.aerial_crop_origin_m,
-            )
-            aerial_outlines.append(convex_hull)
-            cv.polylines(
-                aerial_img,
-                [convex_hull],
-                True,
-                seg.viz_color[::-1],
-                self.params.line_width,
-            )
+            if type(seg) is AerialSegment:
+                convex_hull = seg.convex_hull_pixels(
+                    img_pixel_scale=self.params.cropped_img_pixel_scale,
+                    img_origin_m=self.params.aerial_crop_origin_m,
+                )
+                aerial_outlines.append(convex_hull)
+                cv.polylines(
+                    aerial_img,
+                    [convex_hull],
+                    True,
+                    seg.viz_color[::-1],
+                    self.params.line_width,
+                )
+            elif type(seg) is SegmentLine:
+                points = ((np.array(seg.endpoints)[:,:2] - self.params.aerial_crop_origin_m) /
+                    self.params.cropped_img_pixel_scale).astype(np.int32)
+                aerial_outlines.append(points)
+                aerial_img = cv.line(
+                    aerial_img,
+                    tuple(points[0]),
+                    tuple(points[1]),
+                    tuple(seg.color_from_id(order='bgr')),
+                    self.params.line_width,
+                )
 
+        # iterate through ground images
         for t in np.arange(t0, tf, 1 / self.params.fps):
             combined_img = np.zeros(self.params.output_img_shape, dtype=np.uint8)
             combined_img[: aerial_img.shape[0], : aerial_img.shape[1]] = aerial_img
 
             ground_pose_t = self.params.ground_pose_data.pose(t)
-            ground_img = self.params.ground_img_data.img(t)
+            ground_img = self.params.ground_img_data.img(t).copy()
             seg_seen = [False for _ in self.params.matched_ground_segments]
             ground_outlines = [None for _ in self.params.matched_ground_segments]
+
+            # get ground segment outlines
             for i in range(len(self.params.matched_ground_segments)):
                 seg = self.params.matched_ground_segments[i]
-                if (
+                if False and ( # TODO: decide whether to support when segments are not lines
                     np.linalg.norm(
                         seg.center.flatten()
                         - self.params.ground_pose_data.position(t).flatten()
@@ -172,16 +193,38 @@ class AssociationViz:
                         seg_outline + self.params.ground_vid_pixel_origin
                     )
                     ground_outlines[i] = ground_outlines[i].astype(np.int32)
+                if (seg.first_seen <= t <= seg.last_seen):
+                    res = self.get_line_pts_on_img(
+                        seg.endpoints[0],
+                        seg.endpoints[1],
+                        ground_pose_t,
+                    )
+                    if res is None:
+                        continue
+                    pt1, pt2 = res
+                    seg_seen[i] = True
+                    ground_outlines[i] = (np.array([pt1, pt2]) + self.params.ground_vid_pixel_origin)
+                    ground_outlines[i] = ground_outlines[i].astype(np.int32)
+                    ground_img = cv.line(
+                        ground_img,
+                        tuple(pt1.astype(np.int32)),
+                        tuple(pt2.astype(np.int32)),
+                        seg.color_from_id(order='bgr'),
+                        self.params.line_width,
+                    )
 
             combined_img[
                 self.params.ground_vid_pixel_origin[1] :,
                 self.params.ground_vid_pixel_origin[0] :,
-            ] = ground_img
+            ] = ground_img[:,:,:3]
 
+            # draw connections when both aerial and ground segments are seen
             for i, seg in enumerate(self.params.matched_ground_segments):
                 if not seg_seen[i]:
                     continue
 
+                # use the nearest pixels between aerial and ground outlines
+                # to draw the connection line between
                 nearest_pixels = (aerial_outlines[i][0], ground_outlines[i][0])
                 for pixels_ii in aerial_outlines[i]:
                     for pixels_jj in ground_outlines[i]:
@@ -189,11 +232,13 @@ class AssociationViz:
                             nearest_pixels[0] - nearest_pixels[1]
                         ):
                             nearest_pixels = (pixels_ii, pixels_jj)
+                color = (0, 255, 0) if self.params.connections_are_green \
+                    else seg.color_from_id(order='bgr')
                 cv.line(
                     combined_img,
                     tuple(nearest_pixels[0].astype(np.int32)),
                     tuple(nearest_pixels[1].astype(np.int32)),
-                    seg.viz_color[::-1],
+                    color,
                     self.params.line_width,
                 )
 
@@ -201,3 +246,47 @@ class AssociationViz:
 
         out.release()
         cv.destroyAllWindows()
+        
+    def get_line_pts_on_img(self, point3d_odom_1, point3d_odom_2, T_odom_cam):
+        """Projects a 3D line in the odometry frame into a 2D line on the camera image."""
+        point3d_odom_1[2] = T_odom_cam[2,3]-1.0 # TODO: for now put the line 1 meter below the camera
+        point3d_odom_2[2] = T_odom_cam[2,3]-1.0 # TODO: for now put the line 1 meter below the camera 
+        
+        point3d_cam_1 = rdp.transform.transform(np.linalg.inv(T_odom_cam), point3d_odom_1)
+        point3d_cam_2 = rdp.transform.transform(np.linalg.inv(T_odom_cam), point3d_odom_2)
+
+        if point3d_cam_1[2] <= 0 and point3d_cam_2[2] <= 0:  # behind camera
+            return None
+        
+        closest_line_point = SegmentLine.from_endpoints(-1,
+            point3d_cam_1, point3d_cam_2).closest_point_to_point(
+                np.array([0.0, 0.0, 0.0])
+        )
+        if np.linalg.norm(closest_line_point) > self.params.min_segment_dist:
+            return None
+        if point3d_cam_1[2] <= 0 or point3d_cam_2[2] <= 0:  # one point behind camera
+            # find the point on the line that intersects the image plane z=0
+            # make point3d_cam_1 the point in front of the camera
+            if point3d_cam_1[2] <= 0:
+                point3d_behind = point3d_cam_1
+                point3d_cam_1 = point3d_cam_2
+                point3d_cam_2 = point3d_behind
+            t = point3d_cam_1[2] / (point3d_cam_1[2] - point3d_cam_2[2])
+            point3d_cam_2 = point3d_cam_1 + t * .99 * (point3d_cam_2 - point3d_cam_1)
+        
+        point2d_cam_1 = rdp.camera.xyz_2_pixel(point3d_cam_1.flatten(), self.params.ground_img_data.K)
+        point2d_cam_2 = rdp.camera.xyz_2_pixel(point3d_cam_2.flatten(), self.params.ground_img_data.K)
+
+        return point2d_cam_1.flatten(), point2d_cam_2.flatten()
+
+    def project_point_to_image(self, point3d_odom, t):
+        # get point3d_cam
+        T_odom_cam = self.params.ground_pose_data.pose(t)
+        point3d_cam = rdp.transform.transform(np.linalg.inv(T_odom_cam), point3d_odom)
+
+        if point3d_cam[2] <= 0:  # behind camera
+            return None
+
+        # project to image
+        point2d_cam = rdp.camera.xyz_2_pixel(point3d_cam.flatten(), self.params.ground_img_data.K)
+        return point2d_cam
