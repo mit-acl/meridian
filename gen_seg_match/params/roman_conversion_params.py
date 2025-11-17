@@ -9,6 +9,9 @@ class RomanConversionParams(ParamsBase):
     # class attribute
     params_key: ClassVar[str] = "roman_conversion"
 
+    # general parameters ———————————————
+    copy_dense_points: bool = False  # Whether to copy dense points into segments
+
     # parameters for plane —————————————
 
     plane_max_e2_e1: float = 0.2  # Maximum e[2]/e[1] threshold to be considered a plane
@@ -24,5 +27,8 @@ class RomanConversionParams(ParamsBase):
     line_rms_threshold: float = (
         1.0  # Maximum RMS distance from line to still be considered a line
     )
+    line_separate_endpoints: bool = True  # Create separate points for endpoints
+    line_separate_center_point: bool = True  # Create separate point for center point
+    line_inclusion: bool = True  # Include line objects
 
     # ——————————————————————————————————

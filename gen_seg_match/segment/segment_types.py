@@ -10,12 +10,15 @@ class GeneralSegment:
     point: np.ndarray
     ratio_feature: np.ndarray = None  # optional ratio feature vector
     cos_feature: np.ndarray = None  # optional cosine feature vector
+    first_seen: float = None  # optional timestamp of first observation
+    last_seen: float = None  # optional timestamp of last observation
+    dense_points: np.ndarray = None  # optional dense point cloud
 
     @property
     def dim(self) -> int:
         return self.point.shape[0]
 
-    def to_array(self) -> np.ndarray:
+    def to_array(self, include_ratio=True, include_cos=True) -> np.ndarray:
         raise NotImplementedError("to_array not implemented")
 
     def get_point(self) -> np.ndarray:
@@ -39,8 +42,28 @@ class GeneralSegment:
             color = tuple((np.array(color) * 255).astype(int))
         return color
 
+    def reference_time(self, use_avg_time=True):
+        if not use_avg_time:
+            return self.first_seen
+        else:
+            return (self.first_seen + self.last_seen) / 2.0
+
+    def clear_dense_points(self):
+        self.dense_points = None
+
     def _copy_optional_array(self, arr: np.ndarray) -> np.ndarray:
         return arr.copy() if arr is not None else None
+
+    def _to_array_features(self, include_ratio=True, include_cos=True) -> np.ndarray:
+        if self.ratio_feature is not None and include_ratio:
+            ratio_feature = self.ratio_feature.flatten()
+        else:
+            ratio_feature = []
+        if self.cos_feature is not None and include_cos:
+            cos_feature = self.cos_feature.flatten()
+        else:
+            cos_feature = []
+        return np.concatenate([ratio_feature, cos_feature])
 
 
 @dataclass
@@ -49,27 +72,28 @@ class SegmentPoint(GeneralSegment):
     point: np.ndarray
     ratio_feature: np.ndarray = None  # optional ratio feature vector
     cos_feature: np.ndarray = None  # optional cosine feature vector
+    first_seen: float = None  # optional timestamp of first observation
+    last_seen: float = None  # optional timestamp of last observation
+    dense_points: np.ndarray = None  # optional dense point cloud
 
     def __post_init__(self):
         if self.cos_feature is not None:
             self.cos_feature /= np.linalg.norm(self.cos_feature)
 
-    def to_array(self) -> np.ndarray:
-        cos_feature = self.cos_feature.flatten() if self.cos_feature is not None else []
-        ratio_feature = (
-            self.ratio_feature.flatten() if self.ratio_feature is not None else []
-        )
+    def to_array(self, include_ratio=True, include_cos=True) -> np.ndarray:
+        features = self._to_array_features(include_ratio, include_cos)
         return np.concatenate(
             [
                 [clipperpy.invariants.GeneralSegmentDistance.POINT.value],
                 self.get_point(),
-                ratio_feature,
-                cos_feature,
+                features,
             ]
         )
 
     def transform(self, T):
         self.point = transform.transform(T, self.point)
+        if self.dense_points is not None:
+            self.dense_points = transform.transform(T, self.dense_points)
         return self
 
     def copy(self):
@@ -89,6 +113,9 @@ class SegmentLine(GeneralSegment):
     endpoints: Tuple[np.ndarray, np.ndarray] = (None, None)
     ratio_feature: np.ndarray = None  # optional ratio feature vector
     cos_feature: np.ndarray = None  # optional cosine feature vector
+    first_seen: float = None  # optional timestamp of first observation
+    last_seen: float = None  # optional timestamp of last observation
+    dense_points: np.ndarray = None  # optional dense point cloud
 
     # endpoints can be given such that if only one endpoint is given, it is assumed
     # that the ray extends from that endpoint infinitely along the positive direction vector
@@ -101,10 +128,12 @@ class SegmentLine(GeneralSegment):
         self.direction = self.direction / np.linalg.norm(self.direction)
 
     @classmethod
-    def from_endpoints(cls, id: int, pt1: np.ndarray, pt2: np.ndarray):
+    def from_endpoints(cls, id: int, pt1: np.ndarray, pt2: np.ndarray, **kwargs):
         direction = pt2 - pt1
         direction = direction / np.linalg.norm(direction)
-        return cls(id=id, point=pt1, direction=direction, endpoints=(pt1, pt2))
+        return cls(
+            id=id, point=pt1, direction=direction, endpoints=(pt1, pt2), **kwargs
+        )
 
     @property
     def num_endpoints(self) -> int:
@@ -114,7 +143,7 @@ class SegmentLine(GeneralSegment):
                 num_endpoints -= 1
         return num_endpoints
 
-    def to_array(self) -> np.ndarray:
+    def to_array(self, include_ratio=True, include_cos=True) -> np.ndarray:
         endpoints1 = []
         endpoints2 = []
         num_endpoints = 0
@@ -127,10 +156,7 @@ class SegmentLine(GeneralSegment):
             else:
                 endpoints2 = self.endpoints[1]
             num_endpoints += 1
-        ratio_feature = (
-            self.ratio_feature.flatten() if self.ratio_feature is not None else []
-        )
-        cos_feature = self.cos_feature.flatten() if self.cos_feature is not None else []
+        features = self._to_array_features(include_ratio, include_cos)
 
         return np.concatenate(
             [
@@ -140,8 +166,7 @@ class SegmentLine(GeneralSegment):
                 [num_endpoints],
                 endpoints1,
                 endpoints2,
-                ratio_feature,
-                cos_feature,
+                features,
             ]
         )
 
@@ -161,6 +186,8 @@ class SegmentLine(GeneralSegment):
                 self.endpoints[0],
                 transform.transform(T, self.endpoints[1]),
             )
+        if self.dense_points is not None:
+            self.dense_points = transform.transform(T, self.dense_points)
         return self
 
     def copy(self):
@@ -341,6 +368,9 @@ class SegmentPlane(GeneralSegment):
     normal: np.ndarray = None  # required normal vector
     cos_feature: np.ndarray = None  # optional cosine feature vector
     ratio_feature: np.ndarray = None  # optional ratio feature vector
+    first_seen: float = None  # optional timestamp of first observation
+    last_seen: float = None  # optional timestamp of last observation
+    dense_points: np.ndarray = None  # optional dense point cloud
 
     def __post_init__(self):
         if self.normal is None:
@@ -348,19 +378,15 @@ class SegmentPlane(GeneralSegment):
         if self.cos_feature is not None:
             self.cos_feature /= np.linalg.norm(self.cos_feature)
 
-    def to_array(self) -> np.ndarray:
-        ratio_feature = (
-            self.ratio_feature.flatten() if self.ratio_feature is not None else []
-        )
-        cos_feature = self.cos_feature.flatten() if self.cos_feature is not None else []
+    def to_array(self, include_ratio=True, include_cos=True) -> np.ndarray:
+        features = self._to_array_features(include_ratio, include_cos)
 
         return np.concatenate(
             [
                 [clipperpy.invariants.GeneralSegmentDistance.PLANE.value],
                 self.get_point(),
                 self.get_normal(),
-                ratio_feature,
-                cos_feature,
+                features,
             ]
         )
 
@@ -378,6 +404,14 @@ class ParallelLinesException(Exception):
 
 class SegmentList(list):
     """A list of GeneralSegment objects with some helper functions."""
+
+    @property
+    def first_seen(self) -> float:
+        return min(seg.first_seen for seg in self)
+
+    @property
+    def last_seen(self) -> float:
+        return max(seg.last_seen for seg in self)
 
     def get_points(self) -> "SegmentList":
         return SegmentList([seg for seg in self if type(seg) is SegmentPoint])
@@ -409,3 +443,7 @@ class SegmentList(list):
         for seg in self:
             seg.transform(T)
         return self
+
+    def get_mean_point(self) -> np.ndarray:
+        all_points = np.array([seg.get_point() for seg in self])
+        return np.mean(all_points, axis=0)
