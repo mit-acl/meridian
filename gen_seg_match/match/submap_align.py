@@ -162,6 +162,7 @@ def results_matrix_to_roman_align_results(
     return output_matrix
 
 
+# TODO: probably want to move this to gsm_tools while we are testing on many different registration methods
 def register_submaps(
     submap_1: Submap,
     submap_2: Submap,
