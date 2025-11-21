@@ -56,6 +56,8 @@ def merge_lines(line1: SegmentLine, line2: SegmentLine) -> SegmentLine:
         merged_cos_feature /= np.linalg.norm(merged_cos_feature)
     else:
         merged_cos_feature = None
+    assert type(line1.first_seen) == type(line2.first_seen)
+    assert type(line1.last_seen) == type(line2.last_seen)
     first_seen = line1.first_seen
     last_seen = line1.last_seen
     if line2.first_seen is not None and line2.first_seen < first_seen:
