@@ -39,7 +39,7 @@ class GeneralSegment:
         else:
             color = color_rgb
         if num_type is int:
-            color = tuple((np.array(color) * 255).astype(int))
+            color = tuple((np.array(color) * 255).astype(int).tolist())
         return color
 
     def reference_time(self, use_avg_time=True):
