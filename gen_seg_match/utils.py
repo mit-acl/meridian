@@ -44,10 +44,27 @@ def sort_time_intervals(
     return np.concatenate([contains_ref_indices, not_contains_ref_indices])
 
 
-def expandvars_recursive(path):
+def expandvars_recursive(source):
     """Recursively expands environment variables in the given path."""
-    while True:
-        expanded_path = expandvars(path)
-        if expanded_path == path:
-            return expanduser(expanded_path)
-        path = expanded_path
+    if type(source) is str:
+        path = source
+        while True:
+            expanded_path = expandvars(path)
+            if expanded_path == path:
+                return expanduser(expanded_path)
+            path = expanded_path
+
+    elif type(source) is list:
+        ret_list = []
+        for element in source:
+            ret_list.append(expandvars_recursive(element))
+        return ret_list
+
+    elif type(source) is dict:
+        ret_dict = {}
+        for key, element in source.items():
+            ret_dict[key] = expandvars_recursive(element)
+        return ret_dict
+
+    else:
+        return source

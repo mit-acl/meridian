@@ -2,7 +2,9 @@ import numpy as np
 from dataclasses import dataclass
 import clipperpy
 from robotdatapy import transform as transform
-from typing import Tuple
+from typing import Tuple, List
+
+from gen_seg_match.viz.utils import color_from_seed
 
 
 class GeneralSegment:
@@ -32,15 +34,7 @@ class GeneralSegment:
 
     def color_from_id(self, order="rgb", num_type=int) -> tuple:
         """Returns a color tuple based on the segment ID."""
-        np.random.seed(self.id)
-        color_rgb = tuple((np.random.rand(3)))
-        if order == "bgr":
-            color = color_rgb[::-1]
-        else:
-            color = color_rgb
-        if num_type is int:
-            color = tuple((np.array(color) * 255).astype(int).tolist())
-        return color
+        color_from_seed(self.id, order, num_type)
 
     def reference_time(self, use_avg_time=True):
         if not use_avg_time:
@@ -435,6 +429,9 @@ class SegmentList(list):
         matching_segs = [seg for seg in self if seg.id == id]
         assert len(matching_segs) <= 1, f"Multiple segments with id {id} found"
         return matching_segs[0] if len(matching_segs) == 1 else None
+
+    def sublist_from_ids(self, ids: List[int]) -> "SegmentList":
+        return SegmentList([self.get_segment_from_id(id_i) for id_i in ids])
 
     def has_id(self, id) -> bool:
         return any(seg.id == id for seg in self)
