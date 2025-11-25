@@ -13,6 +13,7 @@ from gen_seg_match.segment.segment_types import (
     SegmentPoint,
     SegmentLine,
 )
+from gen_seg_match.params.roman_conversion_params import RomanConversionParams
 
 
 def is_line(segment: Segment):
@@ -177,8 +178,8 @@ def get_segments_with_occlusion(
         observation.occluded_points = occluded_points
 
     segments = [
-        Segment(observation=observation, camera_params=camera_params)
-        for observation in raw_observations
+        Segment(observation=observation, camera_params=camera_params, id=i)
+        for i, observation in enumerate(raw_observations)
     ]
     for seg, obs in zip(segments, raw_observations):
         seg.occluded_points = obs.occluded_points
@@ -186,7 +187,9 @@ def get_segments_with_occlusion(
     return segments
 
 
-def roman_segments_to_general_segments(segments: List[Segment]) -> List[GeneralSegment]:
+def roman_segments_to_general_segments(
+    segments: List[Segment], roman_conversion_params: RomanConversionParams
+) -> List[GeneralSegment]:
     general_segments = []
     for seg in segments:
         if is_line(seg):
@@ -194,7 +197,7 @@ def roman_segments_to_general_segments(segments: List[Segment]) -> List[GeneralS
             if end_pts[0] is not None:
                 general_segments.append(
                     SegmentPoint(
-                        id=0,
+                        id=-1,
                         point=end_pts[0].flatten(),
                         cos_feature=seg.semantic_descriptor,
                     )
@@ -202,7 +205,7 @@ def roman_segments_to_general_segments(segments: List[Segment]) -> List[GeneralS
             if end_pts[1] is not None:
                 general_segments.append(
                     SegmentPoint(
-                        id=0,
+                        id=-1,
                         point=end_pts[1].flatten(),
                         cos_feature=seg.semantic_descriptor,
                     )
@@ -228,6 +231,11 @@ def roman_segments_to_general_segments(segments: List[Segment]) -> List[GeneralS
                     cos_feature=seg.semantic_descriptor,
                 )
             )
+    max_id = np.max([seg.id for seg in general_segments]) if len(general_segments) > 0 else 0
+    for seg in general_segments:
+        if seg.id == -1:
+            seg.id = max_id + 1
+        max_id += 1
 
     return general_segments
 
