@@ -195,9 +195,8 @@ class SegmentMatcher:
 
         # finally, take the cross product of e0 and e2 to get an (already unit vector) e1,
         # that is orthogonal to both of the original vectors
-        e1 = np.cross(
-            e2.reshape(-1), e0.reshape(-1)
-        ).reshape((3,1))  # cross product of z vector to x vector yields right hand coordinate system
+        e1 = np.cross(e2.reshape(-1), e0.reshape(-1)).reshape((3, 1))
+        # cross product of z vector to x vector yields right hand coordinate system
 
         transform = np.eye(4)
         transform[:3, :3] = np.hstack([e0, e1, e2])

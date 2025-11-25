@@ -231,7 +231,9 @@ def roman_segments_to_general_segments(
                     cos_feature=seg.semantic_descriptor,
                 )
             )
-    max_id = np.max([seg.id for seg in general_segments]) if len(general_segments) > 0 else 0
+    max_id = (
+        np.max([seg.id for seg in general_segments]) if len(general_segments) > 0 else 0
+    )
     for seg in general_segments:
         if seg.id == -1:
             seg.id = max_id + 1
