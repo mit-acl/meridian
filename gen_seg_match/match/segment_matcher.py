@@ -2,6 +2,7 @@ import numpy as np
 from typing import List
 import matplotlib.pyplot as plt
 import clipperpy
+from copy import deepcopy
 
 from gen_seg_match.segment.segment_types import (
     SegmentPoint,
@@ -24,11 +25,28 @@ class SegmentMatcher:
     def __init__(self, params: SegmentMatchParams):
         self.params = params
 
-    def match(self, map1: List[GeneralSegment], map2: List[GeneralSegment]):
-        map1 = SegmentList(map1)
-        map2 = SegmentList(map2)
+    def match(
+        self,
+        map1: List[GeneralSegment],
+        map2: List[GeneralSegment],
+        gravity_dir1: np.ndarray = None,
+        gravity_dir2: np.ndarray = None,
+    ):
+        map1 = SegmentList(deepcopy(map1))
+        map2 = SegmentList(deepcopy(map2))
+
+        # return empty associations if map is empty
         if len(map1) == 0 or len(map2) == 0:
             return np.array([[]])
+
+        # transform into gravity aligned frame
+        if self.params.gravity_guided:
+            for map_i, gravity_dir_i in zip([map1, map2], [gravity_dir1, gravity_dir2]):
+                assert gravity_dir_i is not None, (
+                    "Must supply gravity direction if using gravity guided"
+                )
+                T_world_gravity = self._construct_gravity_aligned_frame(gravity_dir_i)
+                map_i.transform(np.linalg.inv(T_world_gravity))
 
         clipper = self._setup_solver()
         clipper, A_init = self._setup_problem(
@@ -160,6 +178,30 @@ class SegmentMatcher:
             include_ratio=self.params.ratio_feature_dim > 0,
             include_cos=self.params.cos_feature_dim > 0,
         )
+
+    def _construct_gravity_aligned_frame(self, gravity_dir: np.ndarray):
+        e2 = gravity_dir.reshape((3, 1))
+
+        # find a vector, v0, that is non-parallel to e2
+        smallest_component_ax = np.argmin(np.abs(gravity_dir))
+        v0 = np.zeros((3, 1))
+        v0[smallest_component_ax] = 1.0
+
+        # using v0 and e2, find a vector e0 that is orthogonal to e2
+        # P2 is the projection matrix that projects a vector onto the plane that is orthogonal to e2
+        P2 = np.eye(3) - e2 @ e2.T
+        e0 = P2 @ v0
+        e0 /= np.linalg.norm(e0)
+
+        # finally, take the cross product of e0 and e2 to get an (already unit vector) e1,
+        # that is orthogonal to both of the original vectors
+        e1 = np.cross(
+            e2.reshape(-1), e0.reshape(-1)
+        ).reshape((3,1))  # cross product of z vector to x vector yields right hand coordinate system
+
+        transform = np.eye(4)
+        transform[:3, :3] = np.hstack([e0, e1, e2])
+        return transform
 
     def register(
         self,
