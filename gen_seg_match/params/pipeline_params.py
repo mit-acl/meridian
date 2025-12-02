@@ -12,7 +12,8 @@ class RGBDPoseEstimationParams(ParamsBase):
     ##################
 
     sample_distance: float = 1.0
-    test_distance: float = 5.0
+    min_fov_iou: float = 0.1
+    max_fov_depth: float = 8.0
     output_directory: str = None
 
     viz_img_matches: bool = True

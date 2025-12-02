@@ -23,7 +23,7 @@ def is_line(segment: Segment):
     U, S, Vt = np.linalg.svd(C)
     # linear_vec = U[:, 0]
     mean_center_points = segment.points - mean
-    isotropic_points = (U @ mean_center_points.T).T
+    isotropic_points = (U.T @ mean_center_points.T).T
     dist_from_line = np.linalg.norm(isotropic_points[:, 1:], axis=1)
     rms_dist_from_line = np.sqrt(np.mean(dist_from_line**2))
     if rms_dist_from_line > 1.0:
@@ -42,7 +42,7 @@ def is_plane(segment: Segment):
     U, S, Vt = np.linalg.svd(C)
     # linear_vec = U[:, 0]
     mean_center_points = segment.points - mean
-    isotropic_points = (U @ mean_center_points.T).T
+    isotropic_points = (U.T @ mean_center_points.T).T
     dist_from_line = np.linalg.norm(isotropic_points[:, 1:], axis=1)
     rms_dist_from_line = np.sqrt(np.mean(dist_from_line**2))
     if rms_dist_from_line > 1.0:

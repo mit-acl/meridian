@@ -7,6 +7,7 @@ from robotdatapy.data import PoseData, ImgData
 import cv2 as cv
 import os
 import argparse
+import trimesh
 
 from roman.map.fastsam_wrapper import FastSAMWrapper
 from roman.params.fastsam_params import FastSAMParams
@@ -132,8 +133,8 @@ class RGBDPoseEstimation:
                 if (
                     gt1 is not None
                     and gt2 is not None
-                    and np.linalg.norm(gt1.position(in1.time) - gt2.position(in2.time))
-                    > self.pipeline_params.test_distance
+                    and self.fov_iou(in1, in2, gt1, gt2)
+                    < self.pipeline_params.min_fov_iou
                 ):
                     continue
 
@@ -257,6 +258,81 @@ class RGBDPoseEstimation:
                 )
             )
         return rgbd_inputs
+
+    def fov_iou(
+        self,
+        input1: RGBDInput,
+        input2: RGBDInput,
+        gt1: PoseData,
+        gt2: PoseData,
+    ) -> float:
+        """
+        Returns the fraction of the field of views that overlap between two RGBD inputs.
+        Specifically, this is the volume of the intersection of the two FOVs divided by
+        the volume of the union of the two FOVs. Max depth is used to limit the FOVs.
+
+        Args:
+            input1 (RGBDInput): RGBD image input 1.
+            input2 (RGBDInput): RGBD image input 2.
+            gt1 (PoseData): Ground truth pose data for input 1.
+            gt2 (PoseData): Ground truth pose data for input 2.
+
+        Returns:
+            float: Field of view intersection over union.
+        """
+        # get camera poses
+        T_world_cam1 = gt1.pose(input1.time)
+        T_world_cam2 = gt2.pose(input2.time)
+
+        # get frustums
+        frustum1 = self.get_camera_frustum(input1, T_world_cam1)
+        frustum2 = self.get_camera_frustum(input2, T_world_cam2)
+
+        intersection_mesh = frustum1.intersection(frustum2)
+        if not intersection_mesh:
+            return 0.0
+
+        intersection_volume = intersection_mesh.volume
+        union_volume = frustum1.volume + frustum2.volume - intersection_volume
+
+        return intersection_volume / union_volume
+
+    def get_camera_frustum(
+        self, rgbd_input: RGBDInput, gt_pose: np.ndarray
+    ) -> np.ndarray:
+        """
+        Returns the 3D points representing the camera frustum for the given RGBD input
+        and ground truth pose.
+
+        Args:
+            rgbd_input (RGBDInput): RGBD image input.
+            gt_pose (np.ndarray): Ground truth camera pose as a 4x4 transformation matrix.
+        Returns:
+            trimesh.Trimesh: 3D mesh shape representing the camera frustum.
+        """
+        base_pixels = np.array(
+            [
+                [0, 0],
+                [rgbd_input.shape[1], 0],
+                [rgbd_input.shape[1], rgbd_input.shape[0]],
+                [0, rgbd_input.shape[0]],
+            ]
+        )
+        base_points_cam = rdp.camera.pixel_depth_2_xyz(
+            base_pixels[:, 0],
+            base_pixels[:, 1],
+            depth=np.repeat([self.pipeline_params.max_fov_depth], 4),
+            K=rgbd_input.camera_params.K,
+        ).T  # shape = (4, 3)
+        pyramid_points_cam = np.vstack(
+            [
+                base_points_cam,
+                np.array([[0, 0, 0]]),  # camera center
+            ]
+        )  # shape = (5, 3)
+        pyramid_points_world = rdp.transform.transform(gt_pose, pyramid_points_cam)
+        frustum_mesh = trimesh.convex.convex_hull(pyramid_points_world)
+        return frustum_mesh
 
 
 def rgbd_pose_estimation(params, output_dir, runs=Tuple[str, str]):
