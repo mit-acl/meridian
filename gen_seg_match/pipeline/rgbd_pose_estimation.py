@@ -144,6 +144,8 @@ class RGBDPoseEstimation:
                     self.draw_matches(
                         in1,
                         in2,
+                        in1.segments,
+                        in2.segments,
                         in1.segments.sublist_from_ids(result.matched_segment_ids[:, 0])
                         if result.num_matches > 0
                         else [],
@@ -158,39 +160,64 @@ class RGBDPoseEstimation:
         input2: RGBDInput,
         segments1: SegmentList,
         segments2: SegmentList,
+        segments1_matches: SegmentList,
+        segments2_matches: SegmentList,
         save=True,
     ):
         assert input1.rgb.shape == input2.rgb.shape, (
             "Only inputs of the same shape are currently supported"
         )
-        assert len(segments1) == len(segments2)
+        assert len(segments1_matches) == len(segments2_matches)
         output = np.zeros(
             (
-                input1.shape[0],
+                input1.shape[0] * 2 + self.pipeline_params.viz_img_pixel_sep,
                 input1.shape[1] * 2 + self.pipeline_params.viz_img_pixel_sep,
                 3,
             )
         )
-        colors = [
-            color_from_seed(np.random.randint(int(1e9)), order="brg", num_type=int)
-            for _ in range(len(segments1))
-        ]
-        output[:, : input1.shape[1]] = img_sparse_viz(
+
+        # draw input segments
+        output[: input1.shape[0], : input1.shape[1]] = img_sparse_viz(
             input1.bgr,
             segments1,
+            input1.camera_params.K,
+            write_ids=self.pipeline_params.viz_write_ids,
+        )
+
+        output[
+            : input2.shape[0],
+            input1.shape[1] + self.pipeline_params.viz_img_pixel_sep :,
+        ] = img_sparse_viz(
+            input2.bgr,
+            segments2,
+            input2.camera_params.K,
+            write_ids=self.pipeline_params.viz_write_ids,
+        )
+
+        colors = [
+            color_from_seed(np.random.randint(int(1e9)), order="brg", num_type=int)
+            for _ in range(len(segments1_matches))
+        ]
+        output[
+            input1.shape[0] + self.pipeline_params.viz_img_pixel_sep :,
+            : input1.shape[1],
+        ] = img_sparse_viz(
+            input1.bgr,
+            segments1_matches,
             input1.camera_params.K,
             colors=colors,
             write_ids=self.pipeline_params.viz_write_ids,
         )
 
-        output[:, input1.shape[1] + self.pipeline_params.viz_img_pixel_sep :] = (
-            img_sparse_viz(
-                input2.bgr,
-                segments2,
-                input2.camera_params.K,
-                colors=colors,
-                write_ids=self.pipeline_params.viz_write_ids,
-            )
+        output[
+            input1.shape[0] + self.pipeline_params.viz_img_pixel_sep :,
+            input1.shape[1] + self.pipeline_params.viz_img_pixel_sep :,
+        ] = img_sparse_viz(
+            input2.bgr,
+            segments2_matches,
+            input2.camera_params.K,
+            colors=colors,
+            write_ids=self.pipeline_params.viz_write_ids,
         )
 
         if save:

@@ -34,7 +34,7 @@ class GeneralSegment:
 
     def color_from_id(self, order="rgb", num_type=int) -> tuple:
         """Returns a color tuple based on the segment ID."""
-        color_from_seed(self.id, order, num_type)
+        return color_from_seed(self.id, order, num_type)
 
     def reference_time(self, use_avg_time=True):
         if not use_avg_time:
