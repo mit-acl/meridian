@@ -12,6 +12,7 @@ import argparse
 from pathlib import Path
 import json
 from enum import Enum
+import pickle
 
 from roman.align.results import SubmapAlignResults, save_submap_align_results
 from roman.align.dist_reg_with_pruning import GravityConstraintError
@@ -24,7 +25,7 @@ from gen_seg_match.match.segment_matcher import (
     InsufficientAssociationsException,
 )
 from gen_seg_match.params import SubmapParams, RomanConversionParams, SegmentMatchParams
-from gen_seg_match.map3d.submap import submaps_from_roman_map
+from gen_seg_match.map3d.submap import submaps_from_roman_map, GeneralSegmentConverter
 from gen_seg_match.utils import expandvars_recursive
 from gen_seg_match.segment.segment_types import SegmentList, SegmentLine, SegmentPoint
 
@@ -337,6 +338,7 @@ if __name__ == "__main__":
     parser.add_argument("-o", "--output-dir", type=str, required=True)
     parser.add_argument("-n", "--run-names", type=str, nargs="+", default=None)
     parser.add_argument("-e", "--run-env", type=str, default="RUN")
+    parser.add_argument("--save-general-segments", action="store_true")
     args = parser.parse_args()
 
     output_dir = Path(expandvars_recursive(args.output_dir))
@@ -388,6 +390,12 @@ if __name__ == "__main__":
     roman_conversion_params = RomanConversionParams.from_yaml(args.params)
     submap_lists = []
     for name, roman_map in zip(run_names, roman_maps):
+        if args.save_general_segments:
+            general_segments = GeneralSegmentConverter(
+                roman_conversion_params
+            ).roman_to_general_segments(roman_map.segments)
+            with (output_dir / "gsm_maps" / f"{name}.pkl").open("wb") as f:
+                pickle.dump(general_segments, f, -1)
         submap_params.submap_times = submap_times[name]
         new_sm_list = submaps_from_roman_map(
             roman_map, submap_params, roman_conversion_params
