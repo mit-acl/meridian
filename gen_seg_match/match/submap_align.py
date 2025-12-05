@@ -189,7 +189,12 @@ def register_submaps(
     start_t = time.time()
 
     try:
-        associations = matcher.match(submap_1.segments, submap_2.segments)
+        associations = matcher.match(
+            submap_1.segments,
+            submap_2.segments,
+            np.array([0.0, 0.0, -1.0]),
+            np.array([0.0, 0.0, -1.0]),
+        )
         association_types = []
         # track association types
         for assoc in associations:
@@ -201,7 +206,11 @@ def register_submaps(
         result.association_types = tuple(association_types)
 
         T_sm1grav_sm2grav_hat = matcher.register(
-            submap_1.segments, submap_2.segments, associations
+            submap_1.segments,
+            submap_2.segments,
+            np.array([0.0, 0.0, -1.0]),
+            np.array([0.0, 0.0, -1.0]),
+            associations,
         )
         # (T^odom_flu)^{-1} @ T^odom_gravaligned
         T_sm1_sm1grav = np.linalg.inv(submap_1.pose_flu) @ submap_1.pose_gravity_aligned
