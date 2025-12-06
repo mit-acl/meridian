@@ -130,10 +130,9 @@ def results_matrix_to_roman_align_results(
             ]
         ).reshape((*results_matrix.shape, 4, 4)),
         associated_objs_mat=[
-            results_matrix[i, j].associations
+            [results_matrix[i, j].associations for j in range(results_matrix.shape[1])]
             for i in range(results_matrix.shape[0])
-            for j in range(results_matrix.shape[1])
-        ],  # cannot be a numpy array because of differening shapes
+        ],  # cannot be a numpy array because of differing shapes
         timing_list=np.array(
             [
                 results_matrix[i, j].runtime_s
@@ -403,6 +402,7 @@ if __name__ == "__main__":
             general_segments = GeneralSegmentConverter(
                 roman_conversion_params
             ).roman_to_general_segments(roman_map.segments)
+            (output_dir / "gsm_maps").mkdir(parents=True, exist_ok=True)
             with (output_dir / "gsm_maps" / f"{name}.pkl").open("wb") as f:
                 pickle.dump(general_segments, f, -1)
         submap_params.submap_times = submap_times[name]
