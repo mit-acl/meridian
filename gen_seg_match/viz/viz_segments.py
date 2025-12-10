@@ -46,9 +46,6 @@ def viz_segments(
                 cyl = o3d.geometry.TriangleMesh.create_cylinder(0.05, seg.get_length())
                 cyl.compute_vertex_normals()
 
-                # Move base to origin
-                cyl.translate([0, 0, -seg.get_length() / 2])
-
                 # Compute rotation
                 z_axis = np.array([0, 0, 1.0])
                 v = np.cross(z_axis, seg.get_direction())
