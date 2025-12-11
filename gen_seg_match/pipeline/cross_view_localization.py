@@ -1,38 +1,40 @@
 import numpy as np
 from dataclasses import dataclass
 from typing import List, Tuple, Dict, Union
-import robotdatapy as rdp
-import time
-from robotdatapy.data import PoseData, ImgData
 import cv2 as cv
 import os
 import argparse
-import trimesh
 import pathlib
 from tqdm import tqdm
+import matplotlib.pyplot as plt
 
 from roman.map.fastsam_wrapper import FastSAMWrapper
 from roman.params.fastsam_params import FastSAMParams
+from roman.map.map import ROMANMap
 
 from gen_seg_match.segment.segment_types import SegmentList
 from gen_seg_match.match.segment_matcher import SegmentMatcher
-from gen_seg_match.map3d.segments_from_img import (
-    get_segments_with_occlusion,
-    roman_segments_to_general_segments,
-)
 from gen_seg_match.params import (
     SegmentMatchParams,
     CrossViewLocalizationParams,
     CrossViewLocalizationDataParams,
     AerialSegmenterParams,
+    SubmapParams,
+    GroundSegmenterParams,
 )
 from gen_seg_match.viz.utils import color_from_seed
 from gen_seg_match.viz.img_sparse_viz import img_sparse_viz
 from gen_seg_match.pipeline.data import CrossViewLocalizationData
 from gen_seg_match.utils import expandvars_recursive
 from gen_seg_match.map2d.aerial_segmenter import AerialSegmenter
+from gen_seg_match.map2d.ground_segmenter import GroundSegmenter
 from gen_seg_match.segment.aerial_segment import AerialSegment
 from gen_seg_match.segment.segment_types import SegmentPoint, SegmentLine
+from gen_seg_match.map3d.submap import (
+    Submap,
+    submaps_from_roman_map,
+    RomanConversionParams,
+)
 
 Crop = Tuple[int, int, int, int]
 
@@ -42,13 +44,21 @@ class CrossViewLocalization:
     pipeline_params: CrossViewLocalizationParams
     aerial_segmenter: AerialSegmenter
     matcher: SegmentMatcher
+    ground_submap_params: SubmapParams = None
+    ground_segmenter: GroundSegmenter = None
+
+    def __post_init__(self):
+        if self.ground_segmenter is None:
+            self.ground_segmenter = GroundSegmenter(GroundSegmenterParams())
+        if self.ground_submap_params is None:
+            self.ground_submap_params = SubmapParams()
 
     def aerial_img_to_segments(self, img: np.ndarray, crop: Crop = None) -> SegmentList:
         segments = self.aerial_segmenter.run(img, crop=crop)
         for segment in segments:
             segment.get_alpha_shape(
-                alpha=self.pipeline_params.aerial_alpha_shape_alpha,
-                grid_downsample=self.pipeline_params.aerial_alpha_shape_grid_downsample,
+                alpha=self.pipeline_params.alpha_shape_alpha,
+                grid_downsample=self.pipeline_params.alpha_shape_grid_downsample,
             )
         return segments
 
@@ -87,8 +97,8 @@ class CrossViewLocalization:
                 continue
             # try:
             alpha_shape = segment.get_alpha_shape(
-                grid_downsample=self.pipeline_params.aerial_alpha_shape_grid_downsample,
-                alpha=self.pipeline_params.aerial_alpha_shape_alpha,
+                grid_downsample=self.pipeline_params.alpha_shape_grid_downsample,
+                alpha=self.pipeline_params.alpha_shape_alpha,
             )
             if alpha_shape is None:
                 continue
@@ -116,6 +126,15 @@ class CrossViewLocalization:
         result = SegmentList(center_points + lines)
         result.reindex()
         return result
+
+    def ground_map_to_submaps(self, ground_map: ROMANMap) -> List[Submap]:
+        conversion_params = RomanConversionParams(
+            copy_dense_points=True, force_points_only=True
+        )
+        submaps = submaps_from_roman_map(
+            ground_map, self.ground_submap_params, conversion_params
+        )
+        return submaps
 
     def batch_aerial_img_to_segments(
         self, img: np.ndarray, output_dir: Union[str, pathlib.Path] = None
@@ -204,6 +223,52 @@ class CrossViewLocalization:
 
         return results
 
+    def batch_ground_submaps_to_segments(
+        self, submaps: List[Submap], output_dir: Union[str, pathlib.Path] = None
+    ) -> List[SegmentList]:
+        """
+        Batch process of ground submaps. For each submap, creates a 2D aerial segments
+            and if an output_dir is provided, saves visualizations of the segments.
+
+        Args:
+            submaps (List[Submap]): List of ground submaps
+            output_dir (Union[str, pathlib.Path], optional): Directory to save visualizations. Defaults to None.
+
+        Returns:
+            List[SegmentList]: List of extracted fine-grained segments for each submap
+        """
+        results = []
+
+        if output_dir is not None:
+            output_dir = pathlib.Path(output_dir)
+            viz_output_dir = output_dir / "viz"
+            segment_output_dir = output_dir / "fine_segments"
+            viz_output_dir.mkdir(parents=True, exist_ok=True)
+            segment_output_dir.mkdir(parents=True, exist_ok=True)
+
+        for k, submap in enumerate(tqdm(submaps)):
+            flattened_submap = self.ground_segmenter.flatten_3d_submap(submap)
+            aerial_segments = self.ground_segmenter.submap_2d_to_aerial(
+                flattened_submap
+            )
+            general_segments = self.aerial_segments_to_general_segments(aerial_segments)
+            results.append(general_segments)
+
+            if output_dir is not None:
+                # -------- Save aerial segments --------
+                fname_segment = segment_output_dir / f"{k}.pkl"
+                general_segments.save(fname_segment)
+
+                # -------- GeneralSegments overlay --------
+                fig, ax = self._viz_ground_segments(
+                    flattened_submap, aerial_segments, general_segments
+                )
+                fname_general = viz_output_dir / f"{k}.png"
+                fig.savefig(fname_general)
+
+        return results
+
+    # TODO: all of these visualizations should probably be moved to the viz module
     def _viz_aerial_segments(
         self,
         img: np.ndarray,
@@ -219,19 +284,20 @@ class CrossViewLocalization:
                 crop[1] * self.aerial_segmenter.params.pixel_len_m,
             )
         )
-        print(img_origin_m)
         for seg in segments:
             alpha_shape_px = seg.get_alpha_shape_pixels(
                 img_pixel_scale=self.aerial_segmenter.params.pixel_len_m,
-                grid_downsample=self.pipeline_params.aerial_alpha_shape_grid_downsample,
-                alpha=self.pipeline_params.aerial_alpha_shape_alpha,
+                grid_downsample=self.pipeline_params.alpha_shape_grid_downsample,
+                alpha=self.pipeline_params.alpha_shape_alpha,
                 img_origin_m=img_origin_m,
             )
             if alpha_shape_px is None:
                 continue
             # TODO: add some viz params
             cv.polylines(aerial_viz, [alpha_shape_px], True, seg.viz_color[::-1], 20)
-        return aerial_viz
+
+        # downsample for viz
+        return self._downsample_aerial_viz(aerial_viz)
 
     def _viz_general_segments(
         self, img: np.ndarray, segments: SegmentList, crop: Crop
@@ -241,39 +307,117 @@ class CrossViewLocalization:
         px_per_m = 1.0 / self.aerial_segmenter.params.pixel_len_m
 
         # draw points
-        for seg in segments:
-            if isinstance(seg, SegmentPoint):
-                p = seg.get_point()
-                cv.circle(
-                    general_viz,
-                    (int(p[0] * px_per_m - x1), int(p[1] * px_per_m - y1)),
-                    10,  # TODO: add some viz params
-                    seg.color_from_id(order="bgr"),
-                    10,  # TODO: add some viz params
-                )
+        for seg in segments.get_points():
+            p = seg.get_point()
+            cv.circle(
+                general_viz,
+                (int(p[0] * px_per_m - x1), int(p[1] * px_per_m - y1)),
+                10,  # TODO: add some viz params
+                seg.color_from_id(order="bgr"),
+                10,  # TODO: add some viz params
+            )
 
         # draw lines
-        for seg in segments:
-            if isinstance(seg, SegmentLine):
-                p0 = seg.endpoints[0]
-                p1 = seg.endpoints[1]
-                cv.line(
-                    general_viz,
-                    (int(p0[0] * px_per_m - x1), int(p0[1] * px_per_m - y1)),
-                    (int(p1[0] * px_per_m - x1), int(p1[1] * px_per_m - y1)),
-                    seg.color_from_id(order="bgr"),
-                    20,  # TODO: add some viz params
-                )
-        return general_viz
+        for seg in segments.get_points():
+            p0 = seg.endpoints[0]
+            p1 = seg.endpoints[1]
+            cv.line(
+                general_viz,
+                (int(p0[0] * px_per_m - x1), int(p0[1] * px_per_m - y1)),
+                (int(p1[0] * px_per_m - x1), int(p1[1] * px_per_m - y1)),
+                seg.color_from_id(order="bgr"),
+                20,  # TODO: add some viz params
+            )
+        return self._downsample_aerial_viz(general_viz)
+
+    def _viz_ground_segments(
+        self,
+        flattened_submap: Submap,
+        aerial_segments: List[AerialSegment],
+        general_segments: SegmentList,
+    ) -> Tuple[plt.Figure, plt.Axes]:
+        # Plot just segment points
+        fig, ax = plt.subplots(2, 2, figsize=(10, 10))
+        for seg in flattened_submap.segments:
+            ax[0, 0].plot(
+                seg.dense_points[:, 0],
+                seg.dense_points[:, 1],
+                ".",
+                linewidth=1.0,
+                alpha=0.5,
+                color=seg.color_from_id(num_type=float),
+            )
+        ax[0, 0].set_aspect("equal")
+
+        # Plot aerial segments (alpha shapes)
+        for seg in aerial_segments:
+            ax[0, 1].plot(
+                seg.get_alpha_shape(self.pipeline_params.alpha_shape_alpha)[:, 0],
+                seg.get_alpha_shape(self.pipeline_params.alpha_shape_alpha)[:, 1],
+                color=seg.color_from_id(num_type=float),
+                linewidth=2,
+            )
+        ax[0, 1].set_aspect("equal")
+
+        # Plot general segments (points and lines)
+        for seg in general_segments.get_points():
+            p = seg.get_point()
+            ax[1, 0].plot(
+                p[0],
+                p[1],
+                "o",
+                markersize=4,
+                color=seg.color_from_id(num_type=float),
+            )
+
+        for seg in general_segments.get_lines():
+            p0 = seg.endpoints[0]
+            p1 = seg.endpoints[1]
+            ax[1, 0].plot(
+                [p0[0], p1[0]],
+                [p0[1], p1[1]],
+                "-",
+                linewidth=2,
+                color=seg.color_from_id(num_type=float),
+            )
+        ax[1, 0].set_aspect("equal")
+
+        ax[1, 1].axis("off")
+        xlim = ax[0, 0].get_xlim()
+        ylim = ax[0, 0].get_ylim()
+        for i in range(2):
+            for j in range(2):
+                ax[i, j].set_xlim(xlim)
+                ax[i, j].set_ylim(ylim)
+        ratio = (xlim[1] - xlim[0]) / (ylim[1] - ylim[0])
+        if ratio > 1:
+            fig.set_size_inches(10, 10 / ratio)
+        else:
+            fig.set_size_inches(10 * ratio, 10)
+
+        return fig, ax
+
+    def _downsample_aerial_viz(self, img: np.ndarray) -> np.ndarray:
+        return cv.resize(
+            img,
+            (
+                img.shape[1] // self.pipeline_params.aerial_viz_downsample,
+                img.shape[0] // self.pipeline_params.aerial_viz_downsample,
+            ),
+            interpolation=cv.INTER_AREA,
+        )
 
 
-def cross_view_localization(params, output_dir):
+def cross_view_localization(
+    params, output_dir, skip_aerial=False, skip_ground=False, skip_match=False
+):
     pipeline_params = CrossViewLocalizationParams.load(params)
     pipeline_params.output_directory = output_dir
     runner = CrossViewLocalization(
         pipeline_params=pipeline_params,
         matcher=SegmentMatcher(SegmentMatchParams.load(params)),
         aerial_segmenter=AerialSegmenter(AerialSegmenterParams.load(params)),
+        ground_submap_params=SubmapParams.load(params),
     )
 
     # Load data
@@ -286,9 +430,18 @@ def cross_view_localization(params, output_dir):
     match_output_dir = os.path.join(output_dir, "match")
 
     # Extract aerial segments
-    initial_aerial_segments = runner.batch_aerial_img_to_segments(
-        data.aerial_img, aerial_output_dir
-    )
+    if not skip_aerial:
+        initial_aerial_segments = runner.batch_aerial_img_to_segments(
+            data.aerial_img, aerial_output_dir
+        )
+
+    # Extract ground segments
+    if not skip_ground:
+        ground_map = data.ground_map
+        ground_submaps = runner.ground_map_to_submaps(ground_map)
+        initial_ground_segments = runner.batch_ground_submaps_to_segments(
+            ground_submaps, ground_output_dir
+        )
 
 
 if __name__ == "__main__":
@@ -300,7 +453,7 @@ if __name__ == "__main__":
         required=True,
         help="Path to params directory or file. "
         + "Required params: cross_view_localization, cross_view_localization_data, "
-        + "aerial_segmenter, segment_match",
+        + "aerial_segmenter, segment_match, submap",
     )
     parser.add_argument(
         "-o",
@@ -308,6 +461,15 @@ if __name__ == "__main__":
         type=str,
         required=True,
         help="Output directory.",
+    )
+    parser.add_argument(
+        "--skip-aerial", action="store_true", help="Skip aerial segmentation."
+    )
+    parser.add_argument(
+        "--skip-ground", action="store_true", help="Skip ground segmentation."
+    )
+    parser.add_argument(
+        "--skip-match", action="store_true", help="Skip segment matching."
     )
     # TODO: do I need this?
     # parser.add_argument(
@@ -318,4 +480,6 @@ if __name__ == "__main__":
     if not os.path.isdir(args.output):
         os.mkdir(expandvars_recursive(args.output))
 
-    cross_view_localization(args.params, args.output)
+    cross_view_localization(
+        args.params, args.output, args.skip_aerial, args.skip_ground, args.skip_match
+    )

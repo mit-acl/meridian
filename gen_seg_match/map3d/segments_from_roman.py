@@ -140,8 +140,11 @@ class GeneralSegmentConverter:
         general_segments = []
 
         for roman_segment in roman_segments:
-            mean, eigvals, U, principal_components = self.pca(roman_segment)
+            if self.params.force_points_only:
+                general_segments.append(self.to_point_segment(roman_segment))
+                continue
 
+            mean, eigvals, U, principal_components = self.pca(roman_segment)
             # if self.is_plane(eigvals, principal_components):
             #     general_segments.append(self.to_point_segment(roman_segment))
             #     # TODO: enable general segments

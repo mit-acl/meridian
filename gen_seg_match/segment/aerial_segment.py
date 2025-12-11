@@ -2,9 +2,12 @@ import numpy as np
 from dataclasses import dataclass
 from typing import Tuple
 import shapely
+from shapely.geometry import MultiPoint
 import open3d as o3d
 import alphashape
 from typing import Dict
+
+from gen_seg_match.viz.utils import color_from_seed
 
 
 @dataclass
@@ -87,6 +90,14 @@ class AerialSegment:
             (alpha_shape - np.array(img_origin_m)) / img_pixel_scale
         ).astype(np.int32)
         return alpha_shape_pixels
+
+    def calculate_area_from_convex_hull(self) -> float:
+        self.area = MultiPoint(self.convex_hull).convex_hull.area
+        return self.area
+
+    def color_from_id(self, order="rgb", num_type=int) -> tuple:
+        """Returns a color tuple based on the segment ID."""
+        return color_from_seed(self.id, order, num_type)
 
     @property
     def viz_color(self):

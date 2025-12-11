@@ -4,6 +4,7 @@ from gen_seg_match.params.roman_conversion_params import RomanConversionParams
 from gen_seg_match.params.submap_params import SubmapParams
 from gen_seg_match.params.segment_match_params import SegmentMatchParams
 from gen_seg_match.params.submap_params import SubmapParams
+from gen_seg_match.params.ground_segmenter_params import GroundSegmenterParams
 
 from gen_seg_match.params.pipeline_params import RGBDPoseEstimationParams
 from gen_seg_match.params.pipeline_params import CrossViewLocalizationParams
