@@ -4,6 +4,7 @@ from typing import Tuple
 import shapely
 import open3d as o3d
 import alphashape
+from typing import Dict
 
 
 @dataclass
@@ -16,12 +17,14 @@ class AerialSegment:
     semantic_descriptor: np.ndarray = None
     first_seen: float = None
     last_seen: float = None
+    alpha_shapes: Dict[(float, float)] = None  # (alpha, grid_downsample) -> alpha shape
 
     def __post_init__(self):
         self._convex_hull = None
         self._gaussian = None
         self._eigvals = None
         self._pcd = None
+        self.alpha_shapes = {}
 
     @property
     def convex_hull(self) -> np.ndarray:
@@ -43,6 +46,9 @@ class AerialSegment:
         )
 
     def get_alpha_shape(self, alpha=0.5, grid_downsample=None):
+        if (alpha, grid_downsample) in self.alpha_shapes:
+            return self.alpha_shapes[(alpha, grid_downsample)]
+
         points = self.points.copy()
         # print(len(points))
         if grid_downsample is not None:
@@ -57,13 +63,15 @@ class AerialSegment:
         alpha_shape = alphashape.alphashape(points, alpha=alpha)
         if type(alpha_shape) is shapely.geometry.polygon.Polygon:
             x, y = alpha_shape.exterior.xy
+            self.alpha_shapes[(alpha, grid_downsample)] = np.vstack([x, y]).T
         elif type(alpha_shape) is shapely.geometry.MultiPolygon:
             # x, y = [alpha_shape.geometry.exterior.xy for poly_item in alpha_shape]
             # x, y = shapely.concave_hull(alpha_shape).exterior.xy
-            return None
+            self.alpha_shapes[(alpha, grid_downsample)] = None
         else:
-            return None
-        return np.vstack([x, y]).T
+            self.alpha_shapes[(alpha, grid_downsample)] = None
+
+        return self.alpha_shapes[(alpha, grid_downsample)]
 
     def get_alpha_shape_pixels(
         self,

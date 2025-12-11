@@ -19,3 +19,18 @@ class RGBDPoseEstimationParams(ParamsBase):
     viz_img_matches: bool = True
     viz_img_pixel_sep: int = 10
     viz_write_ids: bool = False
+
+
+@dataclass
+class CrossViewLocalizationParams(ParamsBase):
+    # class attribute
+    params_key: ClassVar[str] = "cross_view_localization"
+
+    point_max_area_m_sq: float = 5.0
+    line_min_length_m: float = 0.5
+
+    aerial_img_patch_side_len_m: float = 30.0
+    aerial_img_patch_overlap: float = 0.5
+    aerial_alpha_shape_alpha: float = 0.5
+    aerial_alpha_shape_grid_downsample: float = 0.25
+    aerial_min_dist_to_border_m: float = 0.1

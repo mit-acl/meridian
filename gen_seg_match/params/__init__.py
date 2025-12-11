@@ -1,3 +1,4 @@
+from gen_seg_match.params.aerial_segmenter_params import AerialSegmenterParams
 from gen_seg_match.params.logging_params import LoggingParams
 from gen_seg_match.params.roman_conversion_params import RomanConversionParams
 from gen_seg_match.params.submap_params import SubmapParams
@@ -5,4 +6,6 @@ from gen_seg_match.params.segment_match_params import SegmentMatchParams
 from gen_seg_match.params.submap_params import SubmapParams
 
 from gen_seg_match.params.pipeline_params import RGBDPoseEstimationParams
+from gen_seg_match.params.pipeline_params import CrossViewLocalizationParams
 from gen_seg_match.params.data_params import RGBDPoseEstimationDataParams
+from gen_seg_match.params.data_params import CrossViewLocalizationDataParams

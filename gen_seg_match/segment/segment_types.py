@@ -3,6 +3,7 @@ from dataclasses import dataclass
 import clipperpy
 from robotdatapy import transform as transform
 from typing import Tuple, List
+import pickle
 
 from gen_seg_match.viz.utils import color_from_seed
 
@@ -424,6 +425,18 @@ class ParallelLinesException(Exception):
 class SegmentList(list):
     """A list of GeneralSegment objects with some helper functions."""
 
+    @classmethod
+    def load(cls, filepath: str) -> "SegmentList":
+        """Loads a segment list from a pickle file."""
+        with open(filepath, "rb") as f:
+            segment_list = pickle.load(f)
+        return segment_list
+
+    def save(self, filepath: str):
+        """Saves the segment list to a pickle file."""
+        with open(filepath, "wb") as f:
+            pickle.dump(self, f)
+
     @property
     def first_seen(self) -> float:
         return min(seg.first_seen for seg in self)
@@ -473,3 +486,8 @@ class SegmentList(list):
     def get_mean_point(self) -> np.ndarray:
         all_points = np.array([seg.get_point() for seg in self])
         return np.mean(all_points, axis=0)
+
+    def reindex(self):
+        for new_id, seg in enumerate(self):
+            seg.id = new_id
+        return self
