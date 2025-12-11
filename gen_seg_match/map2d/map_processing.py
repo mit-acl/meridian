@@ -2,7 +2,7 @@ import numpy as np
 import copy
 from typing import List
 
-from gen_seg_match.segment.segment_types import SegmentLine, SegmentPoint
+from gen_seg_match.segment.segment_types import SegmentLine, SegmentPoint, SegmentList
 
 
 def merge_lines(line1: SegmentLine, line2: SegmentLine) -> SegmentLine:
@@ -32,17 +32,20 @@ def merge_lines(line1: SegmentLine, line2: SegmentLine) -> SegmentLine:
 
     # project endpoints of both lines onto the merged line
     endpoint_candidates = []
-    for pt in [
+    endpoints = [
         line1.endpoints[0],
         line1.endpoints[1],
         line2.endpoints[0],
         line2.endpoints[1],
-    ]:
+    ]
+    for pt in endpoints:
         endpoint_candidates.append(merged_infinite.closest_point_to_point(pt))
 
     pt1 = None
     pt2 = None
     max_dist = -1
+    pt1_idx = -1
+    pt2_idx = -1
     for i in range(len(endpoint_candidates)):
         for j in range(i + 1, len(endpoint_candidates)):
             dist = np.linalg.norm(endpoint_candidates[i] - endpoint_candidates[j])
@@ -50,6 +53,8 @@ def merge_lines(line1: SegmentLine, line2: SegmentLine) -> SegmentLine:
                 max_dist = dist
                 pt1 = endpoint_candidates[i]
                 pt2 = endpoint_candidates[j]
+                pt1_idx = i
+                pt2_idx = j
 
     # TODO: we should probably keep track of the history of cosine features as we are
     # merging lines. Also, should probably weight by length.
@@ -68,8 +73,8 @@ def merge_lines(line1: SegmentLine, line2: SegmentLine) -> SegmentLine:
         last_seen = line2.last_seen
     return SegmentLine.from_endpoints(
         -1,
-        pt1,
-        pt2,
+        endpoints[pt1_idx],
+        endpoints[pt2_idx],
         cos_feature=merged_cos_feature,
         first_seen=first_seen,
         last_seen=last_seen,
@@ -86,7 +91,7 @@ def clean_up_line_map(
     max_iter: int = 1000,
     angle_tol: float = np.deg2rad(5),
     dist_tol: float = 0.5,
-) -> List[SegmentLine]:
+) -> SegmentList:
     def merge_check(line1, line2):
         return (
             line1.is_parallel_to(line2, tol=angle_tol)
@@ -110,7 +115,7 @@ def _clean_up_map(
     merge_check: callable,
     merge_objects: callable,
     max_iter: int = 1000,
-) -> list:
+) -> SegmentList:
     objects = copy.deepcopy(objects)
     prev_objects = copy.deepcopy(objects)
     for outer_iter in range(max_iter):
@@ -133,4 +138,4 @@ def _clean_up_map(
             break
         prev_objects = copy.deepcopy(objects)
 
-    return objects, outer_iter + 1
+    return SegmentList(objects), outer_iter + 1

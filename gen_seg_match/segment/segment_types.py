@@ -425,6 +425,9 @@ class ParallelLinesException(Exception):
 class SegmentList(list):
     """A list of GeneralSegment objects with some helper functions."""
 
+    def __add__(self, other: "SegmentList") -> "SegmentList":
+        return SegmentList(super().__add__(other))
+
     @classmethod
     def load(cls, filepath: str) -> "SegmentList":
         """Loads a segment list from a pickle file."""

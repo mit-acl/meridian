@@ -110,10 +110,6 @@ class AerialSegmenter:
                 images=image_rgb, return_tensors="pt"
             ).to(self.params.device)
             dino_output = self.semantics_model(**preprocessed)
-            print(dino_output.last_hidden_state.shape)
-            print(image_rgb.shape)
-            print(self.params.semantics_dim)
-            print(crop)
             dino_features = self.get_per_pixel_features(
                 model_output=dino_output.last_hidden_state,
                 img_shape=image_rgb.shape,
@@ -131,7 +127,6 @@ class AerialSegmenter:
                 * self.params.pixel_len_m**2
                 * self.params.downsample_factor**2
             )
-            # print(area)
             if area < self.params.min_area or area > self.params.max_area:
                 continue
             points = (
@@ -159,8 +154,6 @@ class AerialSegmenter:
                     area=area,
                     points=points,
                     semantic_descriptor=semantic_descriptor,
-                    # img_pixel_location=(np.array(np.nonzero(mask)).astype(np.float64).mean(axis=1)[::-1] + img_origin).astype(np.int64),
-                    # convex_hull=np.array(convex_hull.exterior.coords)
                 )
             )
         return aerial_segments

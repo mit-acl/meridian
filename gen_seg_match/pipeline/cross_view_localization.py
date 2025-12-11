@@ -28,6 +28,7 @@ from gen_seg_match.pipeline.data import CrossViewLocalizationData
 from gen_seg_match.utils import expandvars_recursive
 from gen_seg_match.map2d.aerial_segmenter import AerialSegmenter
 from gen_seg_match.map2d.ground_segmenter import GroundSegmenter
+from gen_seg_match.map2d.map_processing import clean_up_line_map
 from gen_seg_match.segment.aerial_segment import AerialSegment
 from gen_seg_match.segment.segment_types import SegmentPoint, SegmentLine
 from gen_seg_match.map3d.submap import (
@@ -168,7 +169,7 @@ class CrossViewLocalization:
         if output_dir is not None:
             output_dir = pathlib.Path(output_dir)
             viz_output_dir = output_dir / "viz"
-            segment_output_dir = output_dir / "fine_segments"
+            segment_output_dir = output_dir / "segments"
             viz_output_dir.mkdir(parents=True, exist_ok=True)
             segment_output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -196,7 +197,17 @@ class CrossViewLocalization:
                 general_segments = self.aerial_segments_to_general_segments(
                     aerial_segments, crop=crop
                 )
-                results[crop] = general_segments
+                sparse_general_segments = (
+                    general_segments.get_points()
+                    + clean_up_line_map(
+                        general_segments.get_lines(),
+                        angle_tol=np.deg2rad(5),
+                        dist_tol=1.0,
+                    )[0]
+                )
+                sparse_general_segments.reindex()
+
+                results[crop] = sparse_general_segments
 
                 # ------------------------------------------------------
                 # 3. Visualization and store segments (if output_dir provided)
@@ -204,7 +215,7 @@ class CrossViewLocalization:
                 if output_dir is not None:
                     # -------- Save aerial segments --------
                     fname_segment = segment_output_dir / f"{i}_{j}.pkl"
-                    general_segments.save(fname_segment)
+                    sparse_general_segments.save(fname_segment)
 
                     # -------- Raw AerialSegments overlay --------
                     aerial_viz = self._viz_aerial_segments(
@@ -214,12 +225,18 @@ class CrossViewLocalization:
                     cv.imwrite(str(fname_aerial), aerial_viz)
 
                     # -------- GeneralSegments overlay --------
-                    general_viz = self._viz_general_segments(
+                    general_viz = self._viz_general_segments_img(
                         patch_img, general_segments, crop=crop
                     )
-
                     fname_general = viz_output_dir / f"{i}_{j}_fine.png"
                     cv.imwrite(str(fname_general), general_viz)
+
+                    # --------- Sparse GeneralSegments overlay --------
+                    sparse_general_viz = self._viz_general_segments_img(
+                        patch_img, sparse_general_segments, crop=crop
+                    )
+                    fname_sparse_general = viz_output_dir / f"{i}_{j}_sparse.png"
+                    cv.imwrite(str(fname_sparse_general), sparse_general_viz)
 
         return results
 
@@ -242,7 +259,7 @@ class CrossViewLocalization:
         if output_dir is not None:
             output_dir = pathlib.Path(output_dir)
             viz_output_dir = output_dir / "viz"
-            segment_output_dir = output_dir / "fine_segments"
+            segment_output_dir = output_dir / "segments"
             viz_output_dir.mkdir(parents=True, exist_ok=True)
             segment_output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -251,17 +268,38 @@ class CrossViewLocalization:
             aerial_segments = self.ground_segmenter.submap_2d_to_aerial(
                 flattened_submap
             )
+            aerial_segments = [
+                seg
+                for seg in aerial_segments
+                if seg.get_alpha_shape(
+                    alpha=self.pipeline_params.alpha_shape_alpha,
+                    grid_downsample=self.pipeline_params.alpha_shape_grid_downsample,
+                )
+                is not None
+            ]
             general_segments = self.aerial_segments_to_general_segments(aerial_segments)
-            results.append(general_segments)
+            sparse_general_segments = (
+                general_segments.get_points()
+                + clean_up_line_map(
+                    general_segments.get_lines(),
+                    angle_tol=np.deg2rad(5),
+                    dist_tol=1.0,
+                )[0]
+            )
+            sparse_general_segments.reindex()
+            results.append(sparse_general_segments)
 
             if output_dir is not None:
                 # -------- Save aerial segments --------
                 fname_segment = segment_output_dir / f"{k}.pkl"
-                general_segments.save(fname_segment)
+                sparse_general_segments.save(fname_segment)
 
                 # -------- GeneralSegments overlay --------
                 fig, ax = self._viz_ground_segments(
-                    flattened_submap, aerial_segments, general_segments
+                    flattened_submap,
+                    aerial_segments,
+                    general_segments,
+                    sparse_general_segments,
                 )
                 fname_general = viz_output_dir / f"{k}.png"
                 fig.savefig(fname_general)
@@ -299,7 +337,7 @@ class CrossViewLocalization:
         # downsample for viz
         return self._downsample_aerial_viz(aerial_viz)
 
-    def _viz_general_segments(
+    def _viz_general_segments_img(
         self, img: np.ndarray, segments: SegmentList, crop: Crop
     ) -> np.ndarray:
         general_viz = img.copy()
@@ -318,7 +356,7 @@ class CrossViewLocalization:
             )
 
         # draw lines
-        for seg in segments.get_points():
+        for seg in segments.get_lines():
             p0 = seg.endpoints[0]
             p1 = seg.endpoints[1]
             cv.line(
@@ -335,6 +373,7 @@ class CrossViewLocalization:
         flattened_submap: Submap,
         aerial_segments: List[AerialSegment],
         general_segments: SegmentList,
+        sparse_general_segments: SegmentList,
     ) -> Tuple[plt.Figure, plt.Axes]:
         # Plot just segment points
         fig, ax = plt.subplots(2, 2, figsize=(10, 10))
@@ -360,29 +399,9 @@ class CrossViewLocalization:
         ax[0, 1].set_aspect("equal")
 
         # Plot general segments (points and lines)
-        for seg in general_segments.get_points():
-            p = seg.get_point()
-            ax[1, 0].plot(
-                p[0],
-                p[1],
-                "o",
-                markersize=4,
-                color=seg.color_from_id(num_type=float),
-            )
+        self._viz_general_segments_plt(ax[1, 0], general_segments)
+        self._viz_general_segments_plt(ax[1, 1], sparse_general_segments)
 
-        for seg in general_segments.get_lines():
-            p0 = seg.endpoints[0]
-            p1 = seg.endpoints[1]
-            ax[1, 0].plot(
-                [p0[0], p1[0]],
-                [p0[1], p1[1]],
-                "-",
-                linewidth=2,
-                color=seg.color_from_id(num_type=float),
-            )
-        ax[1, 0].set_aspect("equal")
-
-        ax[1, 1].axis("off")
         xlim = ax[0, 0].get_xlim()
         ylim = ax[0, 0].get_ylim()
         for i in range(2):
@@ -396,6 +415,32 @@ class CrossViewLocalization:
             fig.set_size_inches(10 * ratio, 10)
 
         return fig, ax
+
+    def _viz_general_segments_plt(
+        self, ax: plt.Axes, general_segments: SegmentList
+    ) -> plt.Axes:
+        for seg in general_segments.get_points():
+            p = seg.get_point()
+            ax.plot(
+                p[0],
+                p[1],
+                "o",
+                markersize=4,
+                color=seg.color_from_id(num_type=float),
+            )
+
+        for seg in general_segments.get_lines():
+            p0 = seg.endpoints[0]
+            p1 = seg.endpoints[1]
+            ax.plot(
+                [p0[0], p1[0]],
+                [p0[1], p1[1]],
+                "-",
+                linewidth=2,
+                color=seg.color_from_id(num_type=float),
+            )
+        ax.set_aspect("equal")
+        return ax
 
     def _downsample_aerial_viz(self, img: np.ndarray) -> np.ndarray:
         return cv.resize(
