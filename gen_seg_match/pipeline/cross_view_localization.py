@@ -201,8 +201,8 @@ class CrossViewLocalization:
                     general_segments.get_points()
                     + clean_up_line_map(
                         general_segments.get_lines(),
-                        angle_tol=np.deg2rad(5),
-                        dist_tol=1.0,
+                        angle_tol=self.pipeline_params.line_merge_ang_thresh_rad,
+                        dist_tol=self.pipeline_params.line_merge_dist_thresh_m,
                     )[0]
                 )
                 sparse_general_segments.reindex()
@@ -282,8 +282,8 @@ class CrossViewLocalization:
                 general_segments.get_points()
                 + clean_up_line_map(
                     general_segments.get_lines(),
-                    angle_tol=np.deg2rad(5),
-                    dist_tol=1.0,
+                    angle_tol=self.pipeline_params.line_merge_ang_thresh_rad,
+                    dist_tol=self.pipeline_params.line_merge_dist_thresh_m,
                 )[0]
             )
             sparse_general_segments.reindex()
@@ -302,7 +302,7 @@ class CrossViewLocalization:
                     sparse_general_segments,
                 )
                 fname_general = viz_output_dir / f"{k}.png"
-                fig.savefig(fname_general)
+                fig.savefig(fname_general, dpi=400)
 
         return results
 
@@ -487,6 +487,9 @@ def cross_view_localization(
         initial_ground_segments = runner.batch_ground_submaps_to_segments(
             ground_submaps, ground_output_dir
         )
+
+    if not skip_match:
+        pass
 
 
 if __name__ == "__main__":
