@@ -16,6 +16,7 @@ class GeneralSegment:
     first_seen: float = None  # optional timestamp of first observation
     last_seen: float = None  # optional timestamp of last observation
     dense_points: np.ndarray = None  # optional dense point cloud
+    history: List[int] = None  # optional list of past segment ids
 
     @property
     def dim(self) -> int:
@@ -31,6 +32,9 @@ class GeneralSegment:
 
     def to_array(self, include_ratio=True, include_cos=True) -> np.ndarray:
         raise NotImplementedError("to_array not implemented")
+
+    def to_dim(self, dim: int):
+        raise NotImplementedError("to_dim not implemented")
 
     def get_point(self) -> np.ndarray:
         return self.point.flatten()
@@ -78,6 +82,7 @@ class SegmentPoint(GeneralSegment):
     first_seen: float = None  # optional timestamp of first observation
     last_seen: float = None  # optional timestamp of last observation
     dense_points: np.ndarray = None  # optional dense point cloud
+    history: List[int] = None  # optional list of past segment ids
 
     def __post_init__(self):
         if self.cos_feature is not None:
@@ -101,6 +106,31 @@ class SegmentPoint(GeneralSegment):
             ]
         )
 
+    def to_dim(self, dim: int):
+        if self.dim == dim:
+            return self.copy()
+        elif dim < self.dim:
+            new_point = self.point[:dim]
+            new_dense_points = (
+                self.dense_points[:dim] if self.dense_points is not None else None
+            )
+        else:
+            new_point = np.zeros((dim,))
+            new_point[: self.dim] = self.point
+            new_dense_points = None
+            if self.dense_points is not None:
+                new_dense_points = np.zeros((dim, self.dense_points.shape[1]))
+                new_dense_points[: self.dim, :] = self.dense_points
+        return SegmentPoint(
+            self.id,
+            new_point,
+            self._copy_optional_array(self.ratio_feature),
+            self._copy_optional_array(self.cos_feature),
+            first_seen=self.first_seen,
+            last_seen=self.last_seen,
+            dense_points=new_dense_points,
+        )
+
     def transform(self, T):
         self.point = transform.transform(T, self.point)
         if self.dense_points is not None:
@@ -113,6 +143,9 @@ class SegmentPoint(GeneralSegment):
             self.point.copy(),
             self._copy_optional_array(self.ratio_feature),
             self._copy_optional_array(self.cos_feature),
+            first_seen=self.first_seen,
+            last_seen=self.last_seen,
+            dense_points=self._copy_optional_array(self.dense_points),
         )
 
 
@@ -127,6 +160,7 @@ class SegmentLine(GeneralSegment):
     first_seen: float = None  # optional timestamp of first observation
     last_seen: float = None  # optional timestamp of last observation
     dense_points: np.ndarray = None  # optional dense point cloud
+    history: List[int] = None  # optional list of past segment ids
 
     # endpoints can be given such that if only one endpoint is given, it is assumed
     # that the ray extends from that endpoint infinitely along the positive direction vector
@@ -190,6 +224,47 @@ class SegmentLine(GeneralSegment):
             ]
         )
 
+    def to_dim(self, dim):
+        if self.dim == dim:
+            return self.copy()
+        elif dim < self.dim:
+            new_point = self.point[:dim]
+            new_direction = self.direction[:dim]
+            new_endpoints = (
+                self.endpoints[0][:dim] if self.endpoints[0] is not None else None,
+                self.endpoints[1][:dim] if self.endpoints[1] is not None else None,
+            )
+            new_dense_points = (
+                self.dense_points[:dim] if self.dense_points is not None else None
+            )
+        else:
+            new_point = np.zeros((dim,))
+            new_point[: self.dim] = self.point
+            new_direction = np.zeros((dim,))
+            new_direction[: self.dim] = self.direction
+            new_endpoints = (None, None)
+            for i in [0, 1]:
+                if self.endpoints[i] is not None:
+                    new_endpoints = list(new_endpoints)
+                    new_endpoints[i] = np.zeros((dim,))
+                    new_endpoints[i][: self.dim] = self.endpoints[i]
+                    new_endpoints = tuple(new_endpoints)
+            new_dense_points = None
+            if self.dense_points is not None:
+                new_dense_points = np.zeros((dim, self.dense_points.shape[1]))
+                new_dense_points[: self.dim, :] = self.dense_points
+        return SegmentLine(
+            self.id,
+            new_point,
+            new_direction,
+            new_endpoints,
+            self._copy_optional_array(self.ratio_feature),
+            self._copy_optional_array(self.cos_feature),
+            first_seen=self.first_seen,
+            last_seen=self.last_seen,
+            dense_points=new_dense_points,
+        )
+
     def get_direction(self) -> np.ndarray:
         return self.direction.flatten() / np.linalg.norm(self.direction)
 
@@ -221,6 +296,9 @@ class SegmentLine(GeneralSegment):
             ),
             self._copy_optional_array(self.ratio_feature),
             self._copy_optional_array(self.cos_feature),
+            first_seen=self.first_seen,
+            last_seen=self.last_seen,
+            dense_points=self._copy_optional_array(self.dense_points),
         )
 
     def get_length(self):
@@ -391,6 +469,7 @@ class SegmentPlane(GeneralSegment):
     first_seen: float = None  # optional timestamp of first observation
     last_seen: float = None  # optional timestamp of last observation
     dense_points: np.ndarray = None  # optional dense point cloud
+    history: List[int] = None  # optional list of past segment ids
 
     def __post_init__(self):
         if self.normal is None:
@@ -494,3 +573,6 @@ class SegmentList(list):
         for new_id, seg in enumerate(self):
             seg.id = new_id
         return self
+
+    def to_dim(self, dim: int) -> "SegmentList":
+        return SegmentList([seg.to_dim(dim) for seg in self])

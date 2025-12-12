@@ -59,7 +59,7 @@ def merge_lines(line1: SegmentLine, line2: SegmentLine) -> SegmentLine:
     # TODO: we should probably keep track of the history of cosine features as we are
     # merging lines. Also, should probably weight by length.
     if line1.cos_feature is not None and line2.cos_feature is not None:
-        merged_cos_feature = (line1.cos_feature + line2.cos_feature) / 2
+        merged_cos_feature = line1.cos_feature + line2.cos_feature
         merged_cos_feature /= np.linalg.norm(merged_cos_feature)
     else:
         merged_cos_feature = None
@@ -78,6 +78,7 @@ def merge_lines(line1: SegmentLine, line2: SegmentLine) -> SegmentLine:
         cos_feature=merged_cos_feature,
         first_seen=first_seen,
         last_seen=last_seen,
+        history=list(set(line1.history).union(set(line2.history))),
     )
 
 

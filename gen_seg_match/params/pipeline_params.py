@@ -38,6 +38,8 @@ class CrossViewLocalizationParams(ParamsBase):
     aerial_img_patch_overlap: float = 0.5
     aerial_min_dist_to_border_m: float = 0.1
 
+    match_min_len_m: float = 5.0
+
     aerial_viz_downsample: int = 5
 
     @property

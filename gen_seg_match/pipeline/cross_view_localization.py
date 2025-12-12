@@ -7,6 +7,7 @@ import argparse
 import pathlib
 from tqdm import tqdm
 import matplotlib.pyplot as plt
+import pickle
 
 from roman.map.fastsam_wrapper import FastSAMWrapper
 from roman.params.fastsam_params import FastSAMParams
@@ -36,6 +37,7 @@ from gen_seg_match.map3d.submap import (
     submaps_from_roman_map,
     RomanConversionParams,
 )
+from gen_seg_match.viz.cross_view_viz import viz_cross_view_matches
 
 Crop = Tuple[int, int, int, int]
 
@@ -93,6 +95,7 @@ class CrossViewLocalization:
                         cos_feature=segment.semantic_descriptor,
                         first_seen=segment.first_seen,
                         last_seen=segment.last_seen,
+                        history=[segment.id],
                     )
                 )
                 continue
@@ -122,6 +125,7 @@ class CrossViewLocalization:
                             cos_feature=segment.semantic_descriptor,
                             first_seen=segment.first_seen,
                             last_seen=segment.last_seen,
+                            history=[segment.id],
                         )
                     )
         result = SegmentList(center_points + lines)
@@ -136,6 +140,28 @@ class CrossViewLocalization:
             ground_map, self.ground_submap_params, conversion_params
         )
         return submaps
+
+    def load_segments_from_dir(
+        self,
+        segment_dir: Union[str, pathlib.Path],
+    ) -> Dict[str, SegmentList]:
+        """
+        Loads segments from a directory.
+
+        Args:
+            segment_dir (Union[str, pathlib.Path]): Directory containing segment files.
+
+        Returns:
+            Dict[str, SegmentList]: List of extracted segments for each submap
+        """
+        segment_dir = pathlib.Path(segment_dir)
+        segment_files = list(segment_dir.glob("*.pkl"))
+        segment_files.sort()
+        results = {}
+        for segment_file in segment_files:
+            segments = SegmentList.load(segment_file)
+            results[segment_file.stem] = segments
+        return results
 
     def batch_aerial_img_to_segments(
         self, img: np.ndarray, output_dir: Union[str, pathlib.Path] = None
@@ -264,6 +290,9 @@ class CrossViewLocalization:
             segment_output_dir.mkdir(parents=True, exist_ok=True)
 
         for k, submap in enumerate(tqdm(submaps)):
+            # first transform the submap from submap frame to 3D odometry for now
+            submap.segments.transform(submap.pose_flu)
+
             flattened_submap = self.ground_segmenter.flatten_3d_submap(submap)
             aerial_segments = self.ground_segmenter.submap_2d_to_aerial(
                 flattened_submap
@@ -287,6 +316,12 @@ class CrossViewLocalization:
                 )[0]
             )
             sparse_general_segments.reindex()
+            for seg in sparse_general_segments:
+                history_heights = [
+                    submap.segments.get_segment_from_id(id_hist).point.item(2)
+                    for id_hist in seg.history
+                ]
+                seg.height = np.mean(history_heights)
             results.append(sparse_general_segments)
 
             if output_dir is not None:
@@ -305,6 +340,109 @@ class CrossViewLocalization:
                 fig.savefig(fname_general, dpi=400)
 
         return results
+
+    def batch_cross_view_match(
+        self,
+        aerial_segments: Dict[str, SegmentList],
+        ground_segments: Dict[str, SegmentList],
+        output_dir: Union[str, pathlib.Path] = None,
+    ) -> None:
+        """
+        Batch process of cross-view segment matching. For each aerial image crop and ground submap,
+            matches segments and if an output_dir is provided, saves visualizations of the matches.
+
+        Args:
+            aerial_segments (Dict[str, SegmentList]): Aerial image name to extracted segments
+            ground_segments (Dict[str, SegmentList]): Ground image name to extracted segments
+            output_dir (Union[str, pathlib.Path], optional): Directory to save visualizations. Defaults to None.
+        """
+        assert output_dir is not None, (
+            "Output directory must be provided for match visualization."
+        )
+
+        output_dir = pathlib.Path(output_dir)
+        viz_output_dir = output_dir / "viz"
+        viz_output_dir.mkdir(parents=True, exist_ok=True)
+        segments_output_dir = output_dir / "segments"
+        segments_output_dir.mkdir(parents=True, exist_ok=True)
+
+        aerial_key_to_tuple = lambda key: tuple(int(x) for x in key.split("_"))
+        aerial_x_max = np.max(
+            [aerial_key_to_tuple(key)[0] for key in aerial_segments.keys()]
+        )
+        aerial_y_max = np.max(
+            [aerial_key_to_tuple(key)[1] for key in aerial_segments.keys()]
+        )
+
+        # minor processing on segments
+        # TODO: put to 3d (dim = 3) and filter by length
+        aerial_segments_2d = {}
+        ground_segments_2d = {}
+        for segments_2d_dict, original_segments_dict in [
+            (aerial_segments_2d, aerial_segments),
+            (ground_segments_2d, ground_segments),
+        ]:
+            for key, segments in original_segments_dict.items():
+                segments_2d = segments.to_dim(2)
+                filtered_lines = [
+                    line
+                    for line in segments_2d.get_lines()
+                    if line.get_length() >= self.pipeline_params.match_min_len_m
+                ]
+                segments_2d = segments_2d.get_points() + SegmentList(filtered_lines)
+                segments_2d_dict[key] = segments_2d
+
+        # make sure to transfer height (TODO: figure out how to handle this cleanly)
+        for ground_key in ground_segments_2d.keys():
+            for segment in ground_segments_2d[ground_key]:
+                segment.height = (
+                    ground_segments[ground_key].get_segment_from_id(segment.id).height
+                )
+
+        # iterate over all aerial crops and ground submaps
+        for ground_key, ground_segs_i in tqdm(ground_segments_2d.items()):
+            num_associations = np.zeros((aerial_x_max + 1, aerial_y_max + 1), dtype=int)
+            ground_sub_dir = viz_output_dir / f"ground_{ground_key}"
+            ground_sub_dir.mkdir(parents=True, exist_ok=True)
+            for aerial_key, aerial_segs_j in aerial_segments_2d.items():
+                matches = self.matcher.match(
+                    ground_segs_i,
+                    aerial_segs_j,
+                )
+
+                # -------- Match visualization --------
+                viz_cross_view_matches(aerial_segs_j, ground_segs_i, matches)
+                fname_viz = (
+                    ground_sub_dir / f"ground_{ground_key}_aerial_{aerial_key}.png"
+                )
+                fig = plt.gcf()
+                fig.savefig(fname_viz, dpi=400)
+                plt.close(fig)
+                num_associations[*aerial_key_to_tuple(aerial_key)] = len(matches)
+
+                # -------- Save matches --------
+                matched_ground = SegmentList(
+                    [ground_segs_i.get_segment_from_id(g_id) for g_id, _ in matches]
+                )
+                matched_aerial = SegmentList(
+                    [aerial_segs_j.get_segment_from_id(a_id) for _, a_id in matches]
+                )
+                fname_matches = (
+                    segments_output_dir / f"ground_{ground_key}_aerial_{aerial_key}.pkl"
+                )
+                with open(fname_matches, "wb") as f:
+                    pickle.dump([matched_ground, matched_aerial], f)
+
+            # Save number of associations heatmap
+            plt.figure(figsize=(8, 6))
+            plt.imshow(num_associations.T)
+            plt.colorbar(label="Number of Matches")
+            plt.xlabel("Aerial Crop X Index")
+            plt.ylabel("Aerial Crop Y Index")
+            plt.title(f"Number of Matches for Ground Submap {ground_key}")
+            fname_heatmap = viz_output_dir / f"ground_{ground_key}_all.png"
+            plt.savefig(fname_heatmap, dpi=400)
+            plt.close()
 
     # TODO: all of these visualizations should probably be moved to the viz module
     def _viz_aerial_segments(
@@ -458,12 +596,16 @@ def cross_view_localization(
 ):
     pipeline_params = CrossViewLocalizationParams.load(params)
     pipeline_params.output_directory = output_dir
+    segment_match_params = SegmentMatchParams.load(params)
+    segment_match_params.dim = 2
     runner = CrossViewLocalization(
         pipeline_params=pipeline_params,
-        matcher=SegmentMatcher(SegmentMatchParams.load(params)),
+        matcher=SegmentMatcher(segment_match_params),
         aerial_segmenter=AerialSegmenter(AerialSegmenterParams.load(params)),
         ground_submap_params=SubmapParams.load(params),
     )
+    initial_aerial_segments = None
+    initial_ground_segments = None
 
     # Load data
     data_params = CrossViewLocalizationDataParams.load(params)
@@ -479,6 +621,9 @@ def cross_view_localization(
         initial_aerial_segments = runner.batch_aerial_img_to_segments(
             data.aerial_img, aerial_output_dir
         )
+        initial_aerial_segments = {
+            "{i}_{j}": segs for (i, j), segs in initial_aerial_segments.items()
+        }
 
     # Extract ground segments
     if not skip_ground:
@@ -487,9 +632,24 @@ def cross_view_localization(
         initial_ground_segments = runner.batch_ground_submaps_to_segments(
             ground_submaps, ground_output_dir
         )
+        initial_ground_segments = {
+            str(k): segs for k, segs in enumerate(initial_ground_segments)
+        }
 
     if not skip_match:
-        pass
+        if initial_aerial_segments is None:
+            initial_aerial_segments = runner.load_segments_from_dir(
+                os.path.join(aerial_output_dir, "segments")
+            )
+        if initial_ground_segments is None:
+            initial_ground_segments = runner.load_segments_from_dir(
+                os.path.join(ground_output_dir, "segments")
+            )
+        runner.batch_cross_view_match(
+            initial_aerial_segments,
+            initial_ground_segments,
+            match_output_dir,
+        )
 
 
 if __name__ == "__main__":
