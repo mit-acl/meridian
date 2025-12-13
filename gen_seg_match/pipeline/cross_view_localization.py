@@ -9,6 +9,7 @@ from tqdm import tqdm
 import matplotlib.pyplot as plt
 import pickle
 from copy import deepcopy
+import shutil
 
 from roman.map.fastsam_wrapper import FastSAMWrapper
 from roman.params.fastsam_params import FastSAMParams
@@ -631,6 +632,13 @@ def cross_view_localization(
     aerial_output_dir = os.path.join(output_dir, "aerial")
     ground_output_dir = os.path.join(output_dir, "ground")
     match_output_dir = os.path.join(output_dir, "match")
+
+    # copy params to main output directory
+    pathlib.Path(output_dir).mkdir(parents=True, exist_ok=True)
+    if os.path.isfile(params):
+        shutil.copy2(params, os.path.join(output_dir, os.path.basename(params)))
+    else:
+        shutil.copytree(params, output_dir, dirs_exist_ok=True)
 
     # Extract aerial segments
     if not skip_aerial:
