@@ -429,9 +429,9 @@ class SegmentLine(GeneralSegment):
                 closest_pt = ep
         return closest_pt
 
-    def min_dist_to_point(self, point: np.ndarray) -> float:
+    def min_dist_to_point(self, point: np.ndarray, use_infinite_line: bool = False) -> float:
         """Returns the minimum distance between the line segment and a point."""
-        closest_pt = self.closest_point_to_point(point)
+        closest_pt = self.closest_point_to_point(point, use_infinite_line)
         return np.linalg.norm(closest_pt - point)
 
     def min_dist_to(self, other: "SegmentLine") -> float:

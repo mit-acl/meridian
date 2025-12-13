@@ -1,6 +1,7 @@
 import numpy as np
 import copy
 from typing import List
+from copy import deepcopy
 
 from gen_seg_match.segment.segment_types import SegmentLine, SegmentPoint, SegmentList
 
@@ -59,7 +60,7 @@ def merge_lines(line1: SegmentLine, line2: SegmentLine) -> SegmentLine:
     # TODO: we should probably keep track of the history of cosine features as we are
     # merging lines. Also, should probably weight by length.
     if line1.cos_feature is not None and line2.cos_feature is not None:
-        merged_cos_feature = line1.cos_feature + line2.cos_feature
+        merged_cos_feature = line1.cos_feature * line1.get_length() + line2.cos_feature * line2.get_length()
         merged_cos_feature /= np.linalg.norm(merged_cos_feature)
     else:
         merged_cos_feature = None
@@ -92,12 +93,26 @@ def clean_up_line_map(
     max_iter: int = 1000,
     angle_tol: float = np.deg2rad(5),
     dist_tol: float = 0.5,
+    perp_dist_tol: float = 0.5,
 ) -> SegmentList:
-    def merge_check(line1, line2):
+    def merge_check(line1: SegmentLine, line2: SegmentLine):
+        # First check perpendicular distance
+        if line1.is_parallel_to(line2):
+            if line1.min_dist_to(line2) > perp_dist_tol:
+                return False
+        else:
+            closest_points = line1.closest_points(line2)
+            perp_dist_1 = line1.min_dist_to_point(closest_points[1], use_infinite_line=True)
+            perp_dist_2 = line2.min_dist_to_point(closest_points[0], use_infinite_line=True)
+            if perp_dist_1 > perp_dist_tol or perp_dist_2 > perp_dist_tol:
+                return False
+            
         return (
             line1.is_parallel_to(line2, tol=angle_tol)
             and line1.min_dist_to(line2) < dist_tol
         )
+    
+    assert perp_dist_tol <= dist_tol, "perp_dist_tol should be less than or equal to dist_tol"
 
     return _clean_up_map(lines, merge_check, merge_lines, max_iter)
 
@@ -109,6 +124,28 @@ def clean_up_point_map(
         return np.linalg.norm(pt1.get_point() - pt2.get_point()) < dist_tol
 
     return _clean_up_map(points, merge_check, merge_points, max_iter)
+
+def split_long_lines(
+    lines: SegmentList, max_length: float
+) -> SegmentList:
+    new_lines = []
+    for line in lines:
+        line_length = line.get_length()
+        if line_length <= max_length:
+            new_lines.append(line)
+        else:
+            num_splits = int(np.ceil(line_length / max_length))
+            start_pt = line.endpoints[0]
+            end_pt = line.endpoints[1]
+            direction = (end_pt - start_pt) / line_length
+            segment_length = line_length / num_splits
+            for i in range(num_splits):
+                seg_start = start_pt + i * segment_length * direction
+                seg_end = start_pt + (i + 1) * segment_length * direction
+                new_line = deepcopy(line)
+                new_line.endpoints = (seg_start, seg_end)
+                new_lines.append(new_line)
+    return SegmentList(new_lines)
 
 
 def _clean_up_map(

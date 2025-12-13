@@ -8,6 +8,7 @@ import pathlib
 from tqdm import tqdm
 import matplotlib.pyplot as plt
 import pickle
+from copy import deepcopy
 
 from roman.map.fastsam_wrapper import FastSAMWrapper
 from roman.params.fastsam_params import FastSAMParams
@@ -29,7 +30,7 @@ from gen_seg_match.pipeline.data import CrossViewLocalizationData
 from gen_seg_match.utils import expandvars_recursive
 from gen_seg_match.map2d.aerial_segmenter import AerialSegmenter
 from gen_seg_match.map2d.ground_segmenter import GroundSegmenter
-from gen_seg_match.map2d.map_processing import clean_up_line_map
+from gen_seg_match.map2d.map_processing import clean_up_line_map, split_long_lines
 from gen_seg_match.segment.aerial_segment import AerialSegment
 from gen_seg_match.segment.segment_types import SegmentPoint, SegmentLine
 from gen_seg_match.map3d.submap import (
@@ -84,10 +85,16 @@ class CrossViewLocalization:
             x2_border = np.inf
             y2_border = np.inf
 
+        pt_within_border = lambda pt: (
+            x1_border <= pt[0] <= x2_border and y1_border <= pt[1] <= y2_border
+        )
+
         lines = []
         center_points = []
         for j, segment in enumerate(segments):
-            if segment.area < self.pipeline_params.point_max_area_m_sq:
+            if segment.area < self.pipeline_params.point_max_area_m_sq and segment.max_extent < self.pipeline_params.point_max_len_m:
+                if not pt_within_border(segment.center):
+                    continue
                 center_points.append(
                     SegmentPoint(
                         j,
@@ -112,10 +119,7 @@ class CrossViewLocalization:
                 keep = (
                     np.linalg.norm(pt1 - pt0) > self.pipeline_params.line_min_length_m
                 )
-                keep &= pt0[0] >= x1_border or pt1[0] >= x1_border
-                keep &= pt0[0] <= x2_border or pt1[0] <= x2_border
-                keep &= pt0[1] >= y1_border or pt1[1] >= y1_border
-                keep &= pt0[1] <= y2_border or pt1[1] <= y2_border
+                keep &= pt_within_border(pt0) and pt_within_border(pt1)
                 if keep:
                     lines.append(
                         SegmentLine.from_endpoints(
@@ -229,6 +233,7 @@ class CrossViewLocalization:
                         general_segments.get_lines(),
                         angle_tol=self.pipeline_params.line_merge_ang_thresh_rad,
                         dist_tol=self.pipeline_params.line_merge_dist_thresh_m,
+                        perp_dist_tol=self.pipeline_params.line_merge_perp_dist_thresh_m,
                     )[0]
                 )
                 sparse_general_segments.reindex()
@@ -313,6 +318,7 @@ class CrossViewLocalization:
                     general_segments.get_lines(),
                     angle_tol=self.pipeline_params.line_merge_ang_thresh_rad,
                     dist_tol=self.pipeline_params.line_merge_dist_thresh_m,
+                    perp_dist_tol=self.pipeline_params.line_merge_perp_dist_thresh_m,
                 )[0]
             )
             sparse_general_segments.reindex()
@@ -405,6 +411,16 @@ class CrossViewLocalization:
             ground_sub_dir = viz_output_dir / f"ground_{ground_key}"
             ground_sub_dir.mkdir(parents=True, exist_ok=True)
             for aerial_key, aerial_segs_j in aerial_segments_2d.items():
+                # split long lines before matching
+                ground_segs_i = ground_segs_i.get_points() + split_long_lines(
+                    ground_segs_i.get_lines(), max_length=15.0
+                )
+                ground_segs_i.reindex()
+                aerial_segs_j = aerial_segs_j.get_points() + split_long_lines(
+                    aerial_segs_j.get_lines(), max_length=15.0
+                )
+                aerial_segs_j.reindex()
+                
                 matches = self.matcher.match(
                     ground_segs_i,
                     aerial_segs_j,
@@ -618,12 +634,12 @@ def cross_view_localization(
 
     # Extract aerial segments
     if not skip_aerial:
-        initial_aerial_segments = runner.batch_aerial_img_to_segments(
+        runner.batch_aerial_img_to_segments(
             data.aerial_img, aerial_output_dir
         )
-        initial_aerial_segments = {
-            "{i}_{j}": segs for (i, j), segs in initial_aerial_segments.items()
-        }
+        # initial_aerial_segments = {
+        #     f"{i}_{j}": segs for (i, j), segs in initial_aerial_segments.items()
+        # }
 
     # Extract ground segments
     if not skip_ground:

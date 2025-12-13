@@ -27,16 +27,18 @@ class CrossViewLocalizationParams(ParamsBase):
     params_key: ClassVar[str] = "cross_view_localization"
 
     point_max_area_m_sq: float = 5.0
-    line_min_length_m: float = 0.5
-    alpha_shape_alpha: float = 0.25
+    point_max_len_m: float = 5.0
+    line_min_length_m: float = 0.0
+    alpha_shape_alpha: float = 0.2
     alpha_shape_grid_downsample: float = 0.25
 
     line_merge_dist_thresh_m = 1.0
+    line_merge_perp_dist_thresh_m = 0.5
     line_merge_ang_thresh_deg = 10.0
 
     aerial_img_patch_side_len_m: float = 30.0
     aerial_img_patch_overlap: float = 0.5
-    aerial_min_dist_to_border_m: float = 0.1
+    aerial_min_dist_to_border_m: float = 0.5
 
     match_min_len_m: float = 5.0
 
