@@ -93,7 +93,10 @@ class CrossViewLocalization:
         lines = []
         center_points = []
         for j, segment in enumerate(segments):
-            if segment.area < self.pipeline_params.point_max_area_m_sq and segment.max_extent < self.pipeline_params.point_max_len_m:
+            if (
+                segment.area < self.pipeline_params.point_max_area_m_sq
+                and segment.max_extent < self.pipeline_params.point_max_len_m
+            ):
                 if not pt_within_border(segment.center):
                     continue
                 center_points.append(
@@ -421,7 +424,7 @@ class CrossViewLocalization:
                     aerial_segs_j.get_lines(), max_length=15.0
                 )
                 aerial_segs_j.reindex()
-                
+
                 matches = self.matcher.match(
                     ground_segs_i,
                     aerial_segs_j,
@@ -642,9 +645,7 @@ def cross_view_localization(
 
     # Extract aerial segments
     if not skip_aerial:
-        runner.batch_aerial_img_to_segments(
-            data.aerial_img, aerial_output_dir
-        )
+        runner.batch_aerial_img_to_segments(data.aerial_img, aerial_output_dir)
         # initial_aerial_segments = {
         #     f"{i}_{j}": segs for (i, j), segs in initial_aerial_segments.items()
         # }

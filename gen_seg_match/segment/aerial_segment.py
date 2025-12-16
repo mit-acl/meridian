@@ -36,7 +36,7 @@ class AerialSegment:
         convex_hull_shapely = shapely.convex_hull(shapely.MultiPoint(self.points))
         self._convex_hull = np.array(convex_hull_shapely.exterior.coords)
         return self._convex_hull
-    
+
     @property
     def max_extent(self) -> float:
         if self.convex_hull is None:

@@ -60,7 +60,10 @@ def merge_lines(line1: SegmentLine, line2: SegmentLine) -> SegmentLine:
     # TODO: we should probably keep track of the history of cosine features as we are
     # merging lines. Also, should probably weight by length.
     if line1.cos_feature is not None and line2.cos_feature is not None:
-        merged_cos_feature = line1.cos_feature * line1.get_length() + line2.cos_feature * line2.get_length()
+        merged_cos_feature = (
+            line1.cos_feature * line1.get_length()
+            + line2.cos_feature * line2.get_length()
+        )
         merged_cos_feature /= np.linalg.norm(merged_cos_feature)
     else:
         merged_cos_feature = None
@@ -102,17 +105,23 @@ def clean_up_line_map(
                 return False
         else:
             closest_points = line1.closest_points(line2)
-            perp_dist_1 = line1.min_dist_to_point(closest_points[1], use_infinite_line=True)
-            perp_dist_2 = line2.min_dist_to_point(closest_points[0], use_infinite_line=True)
+            perp_dist_1 = line1.min_dist_to_point(
+                closest_points[1], use_infinite_line=True
+            )
+            perp_dist_2 = line2.min_dist_to_point(
+                closest_points[0], use_infinite_line=True
+            )
             if perp_dist_1 > perp_dist_tol or perp_dist_2 > perp_dist_tol:
                 return False
-            
+
         return (
             line1.is_parallel_to(line2, tol=angle_tol)
             and line1.min_dist_to(line2) < dist_tol
         )
-    
-    assert perp_dist_tol <= dist_tol, "perp_dist_tol should be less than or equal to dist_tol"
+
+    assert perp_dist_tol <= dist_tol, (
+        "perp_dist_tol should be less than or equal to dist_tol"
+    )
 
     return _clean_up_map(lines, merge_check, merge_lines, max_iter)
 
@@ -125,9 +134,8 @@ def clean_up_point_map(
 
     return _clean_up_map(points, merge_check, merge_points, max_iter)
 
-def split_long_lines(
-    lines: SegmentList, max_length: float
-) -> SegmentList:
+
+def split_long_lines(lines: SegmentList, max_length: float) -> SegmentList:
     new_lines = []
     for line in lines:
         line_length = line.get_length()
