@@ -28,6 +28,7 @@ from gen_seg_match.viz.utils import color_from_seed
 from gen_seg_match.viz.img_sparse_viz import img_sparse_viz
 from gen_seg_match.pipeline.data import RGBDPoseEstimationData
 from gen_seg_match.utils import expandvars_recursive
+from gen_seg_match.map3d.segments_from_roman import GeneralSegmentConverter
 
 
 @dataclass
@@ -70,6 +71,11 @@ class RGBDPoseEstimation:
     matcher: SegmentMatcher
     roman_conversion_params: RomanConversionParams = None
 
+    def __post_init__(self):
+        self.segment_converter = GeneralSegmentConverter(
+            params=self.roman_conversion_params
+        )
+
     def rgbd_pose_estimation(self, input1: RGBDInput, input2: RGBDInput):
         t0 = time.time()
         associated_ids = self.matcher.match(
@@ -101,6 +107,11 @@ class RGBDPoseEstimation:
             # TODO: roman conversion params as input below
             general_segments = roman_segments_to_general_segments(
                 roman_segments, roman_conversion_params=self.roman_conversion_params
+            )
+            general_segments = (
+                self.segment_converter.segment_with_occlusion_to_general_segments(
+                    roman_segments
+                )
             )
             general_segments = SegmentList(general_segments)
             inputs_with_segments.append(

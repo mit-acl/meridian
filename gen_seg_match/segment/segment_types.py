@@ -429,7 +429,9 @@ class SegmentLine(GeneralSegment):
                 closest_pt = ep
         return closest_pt
 
-    def min_dist_to_point(self, point: np.ndarray, use_infinite_line: bool = False) -> float:
+    def min_dist_to_point(
+        self, point: np.ndarray, use_infinite_line: bool = False
+    ) -> float:
         """Returns the minimum distance between the line segment and a point."""
         closest_pt = self.closest_point_to_point(point, use_infinite_line)
         return np.linalg.norm(closest_pt - point)
@@ -488,6 +490,13 @@ class SegmentPlane(GeneralSegment):
                 features,
             ]
         )
+
+    def transform(self, T: np.ndarray):
+        self.point = transform.transform(T, self.point)
+        self.normal = (T[0:3, 0:3] @ self.normal.reshape((3, 1))).flatten()
+        if self.dense_points is not None:
+            self.dense_points = transform.transform(T, self.dense_points)
+        return self
 
     def get_normal(self) -> np.ndarray:
         return self.normal.flatten()

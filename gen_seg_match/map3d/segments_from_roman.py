@@ -7,8 +7,12 @@ from gen_seg_match.segment.segment_types import (
     SegmentPoint,
     SegmentLine,
     SegmentPlane,
+    SegmentList,
 )
 from gen_seg_match.params.roman_conversion_params import RomanConversionParams
+from gen_seg_match.map3d.segments_from_img import (
+    get_line_general_segments as get_line_with_occlusion,
+)
 
 
 class GeneralSegmentConverter:
@@ -24,6 +28,7 @@ class GeneralSegmentConverter:
         principal_components = (
             mean_center_points @ U
         )  # U[:, i] is the i-th principal component
+        # principal_components shape: (num_points, 3)
 
         return mean, eigvals, U, principal_components
 
@@ -55,13 +60,17 @@ class GeneralSegmentConverter:
         self, roman_segment: RomanSegment, mean: np.ndarray, U: np.ndarray
     ) -> GeneralSegment:
         normal = U[:, 2]
+        dense_points = roman_segment.points if self.params.copy_dense_points else None
 
         return SegmentPlane(
             id=roman_segment.id,
             point=mean,  # avoid using roman_segment.center in case _center_ref == 'bottom-middle'
             normal=normal,
-            ratio_feature=None,
+            ratio_feature=self.get_roman_ratio_feature(roman_segment),
             cos_feature=roman_segment.semantic_descriptor,
+            first_seen=roman_segment.first_seen,
+            last_seen=roman_segment.last_seen,
+            dense_points=dense_points,
         )
 
     def to_line_segment(
@@ -115,9 +124,14 @@ class GeneralSegmentConverter:
         )
 
     def get_roman_ratio_feature(self, roman_segment: RomanSegment) -> np.ndarray:
+        # volume computation may fail for flat segments
+        try:
+            volume = roman_segment.volume
+        except:
+            volume = 0.0
         return np.array(
             [
-                roman_segment.volume,
+                volume,
                 roman_segment.linearity,
                 roman_segment.planarity,
                 roman_segment.scattering,
@@ -169,4 +183,63 @@ class GeneralSegmentConverter:
                 for j, seg_j in enumerate(matching_segs[1:]):
                     seg_j.id = new_seg_id
                     new_seg_id += 1
+        return general_segments
+
+    def segment_with_occlusion_to_general_segments(
+        self,
+        segments: List[RomanSegment],
+    ) -> SegmentList:
+        general_segments = SegmentList([])
+
+        for roman_segment in segments:
+            if self.params.force_points_only:
+                general_segments.append(self.to_point_segment(roman_segment))
+                continue
+
+            if roman_segment.num_points == 0:
+                continue
+
+            mean, eigvals, U, principal_components = self.pca(roman_segment)
+            max_extents = np.max(principal_components, axis=0) - np.min(
+                principal_components, axis=0
+            )
+            # assert max_extents[0] >= max_extents[1] >= max_extents[2], (
+            #     "PCA principal components are not sorted correctly."
+            # )
+            # since extents may not perfectly align with eigvals, reorder extents
+            max_extents = np.sort(
+                max_extents,
+            )[::-1]
+
+            if (
+                max_extents[2]
+                < max_extents[1]
+                < max_extents[0]
+                < self.params.max_minor_axis_extent
+            ):
+                general_segments.append(self.to_point_segment(roman_segment))
+            elif (
+                max_extents[2] < max_extents[1] < self.params.max_minor_axis_extent
+                and eigvals[2] / eigvals[0]
+                < eigvals[2] / eigvals[1]
+                < self.params.max_eigval_ratio
+            ):
+                print("line")
+                general_segments.extend(
+                    get_line_with_occlusion(
+                        roman_segment, roman_segment.occluded_points
+                    )
+                )
+            elif (
+                max_extents[2] < self.params.max_minor_axis_extent
+                and eigvals[2] / eigvals[0]
+                < eigvals[2] / eigvals[1]
+                < self.params.max_eigval_ratio
+            ):
+                print("plane")
+                general_segments.append(self.to_plane_segment(roman_segment, mean, U))
+            else:
+                general_segments.append(self.to_point_segment(roman_segment))
+
+        general_segments.reindex()
         return general_segments
