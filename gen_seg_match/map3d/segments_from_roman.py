@@ -215,7 +215,7 @@ class GeneralSegmentConverter:
                 max_extents[2]
                 < max_extents[1]
                 < max_extents[0]
-                < self.params.max_minor_axis_extent
+                < self.params.non_point_min_extent
             ):
                 general_segments.append(self.to_point_segment(roman_segment))
             elif (
@@ -224,7 +224,6 @@ class GeneralSegmentConverter:
                 < eigvals[2] / eigvals[1]
                 < self.params.max_eigval_ratio
             ):
-                print("line")
                 general_segments.extend(
                     get_line_with_occlusion(
                         roman_segment, roman_segment.occluded_points
@@ -236,7 +235,6 @@ class GeneralSegmentConverter:
                 < eigvals[2] / eigvals[1]
                 < self.params.max_eigval_ratio
             ):
-                print("plane")
                 general_segments.append(self.to_plane_segment(roman_segment, mean, U))
             else:
                 general_segments.append(self.to_point_segment(roman_segment))
