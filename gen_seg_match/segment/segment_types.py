@@ -170,7 +170,7 @@ class SegmentLine(GeneralSegment):
             raise ValueError("Missing required field 'direction' for SegmentLine")
         if self.cos_feature is not None:
             self.cos_feature /= np.linalg.norm(self.cos_feature)
-        self.direction = self.direction / np.linalg.norm(self.direction)
+        self._normalize_direction()
 
     def __str__(self):
         return (
@@ -266,7 +266,7 @@ class SegmentLine(GeneralSegment):
         )
 
     def get_direction(self) -> np.ndarray:
-        return self.direction.flatten() / np.linalg.norm(self.direction)
+        return self._normalize_direction()
 
     def transform(self, T: np.ndarray):
         self.point = transform.transform(T, self.point)
@@ -460,6 +460,13 @@ class SegmentLine(GeneralSegment):
             closest_pts = self.closest_points(other)
             return np.linalg.norm(closest_pts[0] - closest_pts[1])
 
+    def _normalize_direction(self):
+        normalized_direction = self.direction / np.linalg.norm(self.direction)
+        if np.dot(self.direction, normalized_direction) < 0:
+            normalized_direction = -normalized_direction
+        self.direction = normalized_direction
+        return self.direction
+
 
 @dataclass
 class SegmentPlane(GeneralSegment):
@@ -510,7 +517,7 @@ class ParallelLinesException(Exception):
         super().__init__(message)
 
 
-class SegmentList(list):
+class SegmentList(List[GeneralSegment]):
     """A list of GeneralSegment objects with some helper functions."""
 
     def __add__(self, other: "SegmentList") -> "SegmentList":
@@ -540,14 +547,14 @@ class SegmentList(list):
     def ids(self) -> List[int]:
         return [seg.id for seg in self]
 
-    def get_points(self) -> "SegmentList":
-        return SegmentList([seg for seg in self if type(seg) is SegmentPoint])
+    def get_points(self) -> "PointList":
+        return PointList([seg for seg in self if type(seg) is SegmentPoint])
 
-    def get_lines(self) -> "SegmentList":
-        return SegmentList([seg for seg in self if type(seg) is SegmentLine])
+    def get_lines(self) -> "LineList":
+        return LineList([seg for seg in self if type(seg) is SegmentLine])
 
-    def get_planes(self) -> "SegmentList":
-        return SegmentList([seg for seg in self if type(seg) is SegmentPlane])
+    def get_planes(self) -> "PlaneList":
+        return PlaneList([seg for seg in self if type(seg) is SegmentPlane])
 
     def type_ordered(self) -> "SegmentList":
         points = self.get_points()
@@ -573,6 +580,9 @@ class SegmentList(list):
         for seg in self:
             seg.transform(T)
         return self
+    
+    def copy(self) -> "SegmentList":
+        return SegmentList([seg.copy() for seg in self])
 
     def get_mean_point(self) -> np.ndarray:
         all_points = np.array([seg.get_point() for seg in self])
@@ -585,3 +595,33 @@ class SegmentList(list):
 
     def to_dim(self, dim: int) -> "SegmentList":
         return SegmentList([seg.to_dim(dim) for seg in self])
+
+class PointList(SegmentList[SegmentPoint]):
+    
+    def __post_init__(self):
+        for seg in self:
+            assert type(seg) == SegmentPoint, "All segments must be of type SegmentPoint"
+
+    @property
+    def points(self) -> np.ndarray:
+        return np.array([seg.point for seg in self])
+
+class LineList(SegmentList[SegmentLine]):
+    
+    def __post_init__(self):
+        for seg in self:
+            assert type(seg) == SegmentLine, "All segments must be of type SegmentLine"
+
+    @property
+    def directions(self) -> np.ndarray:
+        return np.array([seg.direction for seg in self])
+    
+    @property
+    def moments(self) -> np.ndarray:
+        return np.array([np.cross(seg.point, seg.direction) for seg in self])
+
+class PlaneList(SegmentList[SegmentPlane]):
+    
+    def __post_init__(self):
+        for seg in self:
+            assert type(seg) == SegmentPlane, "All segments must be of type SegmentPlane"

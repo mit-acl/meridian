@@ -5,6 +5,8 @@ import robotdatapy as rdp
 from gen_seg_match.segment.segment_types import SegmentLine, SegmentPoint
 from gen_seg_match.match.segment_matcher import SegmentMatcher
 from gen_seg_match.params.segment_match_params import SegmentMatchParams
+from gen_seg_match.params import RegisterParams
+from gen_seg_match.register.registerer import Registerer
 
 
 @pytest.fixture
@@ -55,7 +57,7 @@ def default_matcher_params():
     return SegmentMatchParams(
         dim=3,
         ratio_feature_dim=0,
-        cos_feature_dim=0,
+        cos_feature_dim=6,
         sigma_dist=1.0,
         epsilon_dist=1.0,
         min_dist=0.0,
@@ -72,17 +74,21 @@ def default_matcher_params():
         gravity_unc_ang_rad=0.0,
     )
 
+@pytest.fixture
+def default_register_params():
+    return RegisterParams()
 
-def test_point_registration_1(default_matcher_params, three_line_segments):
+
+def test_point_registration_1(default_register_params, three_line_segments):
     """Test registration with points only"""
     linesa, linesb = three_line_segments
     pointsa = [SegmentPoint(id=line.id, point=line.point) for line in linesa]
     pointsb = [SegmentPoint(id=line.id, point=line.point) for line in linesb]
-    matcher = SegmentMatcher(default_matcher_params)
+    registerer = Registerer(default_register_params)
     correspondences = np.array([[1, 1], [2, 2], [3, 3]])
-    T_pointsa_pointsb_est = matcher.register(
+    T_pointsa_pointsb_est = registerer.register(
         pointsa, pointsb, correspondences=correspondences
-    )
+    ).transformation
     T_pointsb_pointsa_gt = rdp.transform.xyz_rpy_to_transform(
         np.array([0.5, 0.0, 0.0]), np.array([0.0, 0.0, np.pi / 6])
     )
@@ -94,14 +100,14 @@ def test_point_registration_1(default_matcher_params, three_line_segments):
             )
 
 
-def test_line_registration_1(default_matcher_params, three_line_segments):
+def test_line_registration_1(default_register_params, three_line_segments):
     """Test registration with KNOWN correspondences"""
     linesa, linesb = three_line_segments
-    matcher = SegmentMatcher(default_matcher_params)
+    registerer = Registerer(default_register_params)
     correspondences = np.array([[1, 1], [2, 2], [3, 3]])
-    T_linesa_linesb_est = matcher.register(
+    T_linesa_linesb_est = registerer.register(
         linesa, linesb, correspondences=correspondences
-    )
+    ).transformation
     T_linesb_linesa_gt = rdp.transform.xyz_rpy_to_transform(
         np.array([0.5, 0.0, 0.0]), np.array([0.0, 0.0, np.pi / 6])
     )
@@ -111,14 +117,15 @@ def test_line_registration_1(default_matcher_params, three_line_segments):
             assert pytest.approx(T_linesa_linesb_est[i, j]) == T_linesa_linesb_gt[i, j]
 
 
-def test_line_registration_2(default_matcher_params, three_line_segments):
+def test_line_registration_2(default_matcher_params, default_register_params, three_line_segments):
     """Test registration with UNKNOWN correspondences"""
     linesa, linesb = three_line_segments
     matcher = SegmentMatcher(default_matcher_params)
-    correspondences = np.array([[1, 1], [2, 2], [3, 3]])
-    T_linesa_linesb_est = matcher.register(
+    registerer = Registerer(default_register_params)
+    correspondences = matcher.match(linesa, linesb)
+    T_linesa_linesb_est = registerer.register(
         linesa, linesb, correspondences=correspondences
-    )
+    ).transformation
     T_linesb_linesa_gt = rdp.transform.xyz_rpy_to_transform(
         np.array([0.5, 0.0, 0.0]), np.array([0.0, 0.0, np.pi / 6])
     )
