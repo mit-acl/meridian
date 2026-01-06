@@ -4,7 +4,7 @@ import robotdatapy as rdp
 from robotdatapy.data import PoseData
 from typing import List, Dict
 from tqdm import tqdm
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from copy import deepcopy
 import time
 from scipy.spatial.transform import Rotation as Rot
@@ -51,8 +51,8 @@ class SingleAlignResult:
     inlier_ratio: float = np.nan
     gt_distance_m: float = np.nan
     submap_yaw_diff_rad: float = np.nan
-    T_i_j: np.ndarray = np.zeros((4, 4)) * np.nan
-    T_i_j_hat: np.ndarray = np.zeros((4, 4)) * np.nan
+    T_i_j: np.ndarray = field(default_factory=lambda: np.full((4, 4), np.nan))
+    T_i_j_hat: np.ndarray = field(default_factory=lambda: np.full((4, 4), np.nan))
     runtime_s: float = np.nan
 
     @property
