@@ -55,11 +55,7 @@ class SegmentMatcher:
         clipper = self._setup_solver(bidirectional=bidirectional)
 
         if putative_match_matrix is None:
-            clipper, A_init = self._setup_problem(
-                clipper,
-                map1, 
-                map2
-            )
+            clipper, A_init = self._setup_problem(clipper, map1, map2)
         else:
             map1_lists = [self._get_seg_array(obj) for obj in map1]
             map2_lists = [self._get_seg_array(obj) for obj in map2]
@@ -83,11 +79,7 @@ class SegmentMatcher:
         map1 = SegmentList(map1)
         map2 = SegmentList(map2)
         clipper = self._setup_solver()
-        clipper, A_init = self._setup_problem(
-            clipper,
-            map1,
-            map2
-        )
+        clipper, A_init = self._setup_problem(clipper, map1, map2)
         M = clipper.get_affinity_matrix()
         C = clipper.get_constraint_matrix()
         return M, C, A_init
@@ -306,7 +298,7 @@ class SegmentMatcher:
         points2 = map2.get_points()
         lines2 = map2.get_lines()
         planes2 = map2.get_planes()
-        
+
         # set up all to all matching between points and lines separately
         A_init_points = clipperpy.utils.create_all_to_all(len(points1), len(points2))
         A_init_lines = clipperpy.utils.create_all_to_all(len(lines1), len(lines2))
@@ -317,12 +309,16 @@ class SegmentMatcher:
         A_init_planes[:, 1] += len(points2) + len(lines2)
         A_init = np.vstack([A_init_points, A_init_lines, A_init_planes])
 
-        map1_arrays = [self._get_seg_array(obj) for obj in points1] + [
-            self._get_seg_array(obj) for obj in lines1
-        ] + [self._get_seg_array(obj) for obj in planes1]
-        map2_arrays = [self._get_seg_array(obj) for obj in points2] + [
-            self._get_seg_array(obj) for obj in lines2
-        ] + [self._get_seg_array(obj) for obj in planes2]
+        map1_arrays = (
+            [self._get_seg_array(obj) for obj in points1]
+            + [self._get_seg_array(obj) for obj in lines1]
+            + [self._get_seg_array(obj) for obj in planes1]
+        )
+        map2_arrays = (
+            [self._get_seg_array(obj) for obj in points2]
+            + [self._get_seg_array(obj) for obj in lines2]
+            + [self._get_seg_array(obj) for obj in planes2]
+        )
         map1_cl, map2_cl = self._create_padded_map_arrays(map1_arrays, map2_arrays)
 
         clipper.score_pairwise_and_single_consistency(map1_cl.T, map2_cl.T, A_init)

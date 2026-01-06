@@ -74,6 +74,7 @@ def default_matcher_params():
         gravity_unc_ang_rad=0.0,
     )
 
+
 @pytest.fixture
 def default_register_params():
     return RegisterParams()
@@ -117,7 +118,9 @@ def test_line_registration_1(default_register_params, three_line_segments):
             assert pytest.approx(T_linesa_linesb_est[i, j]) == T_linesa_linesb_gt[i, j]
 
 
-def test_line_registration_2(default_matcher_params, default_register_params, three_line_segments):
+def test_line_registration_2(
+    default_matcher_params, default_register_params, three_line_segments
+):
     """Test registration with UNKNOWN correspondences"""
     linesa, linesb = three_line_segments
     matcher = SegmentMatcher(default_matcher_params)

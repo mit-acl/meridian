@@ -580,7 +580,7 @@ class SegmentList(List[GeneralSegment]):
         for seg in self:
             seg.transform(T)
         return self
-    
+
     def copy(self) -> "SegmentList":
         return SegmentList([seg.copy() for seg in self])
 
@@ -596,32 +596,44 @@ class SegmentList(List[GeneralSegment]):
     def to_dim(self, dim: int) -> "SegmentList":
         return SegmentList([seg.to_dim(dim) for seg in self])
 
+
 class PointList(SegmentList[SegmentPoint]):
-    
     def __post_init__(self):
         for seg in self:
-            assert type(seg) == SegmentPoint, "All segments must be of type SegmentPoint"
+            assert type(seg) == SegmentPoint, (
+                "All segments must be of type SegmentPoint"
+            )
 
     @property
     def points(self) -> np.ndarray:
-        return np.array([seg.point for seg in self])
+        if len(self) == 0:
+            return np.zeros((0, 3))
+        return np.array([seg.point for seg in self]).reshape(len(self), -1)
+
 
 class LineList(SegmentList[SegmentLine]):
-    
     def __post_init__(self):
         for seg in self:
             assert type(seg) == SegmentLine, "All segments must be of type SegmentLine"
 
     @property
     def directions(self) -> np.ndarray:
-        return np.array([seg.direction for seg in self])
-    
+        if len(self) == 0:
+            return np.zeros((0, 3))
+        return np.array([seg.direction for seg in self]).reshape(len(self), -1)
+
     @property
     def moments(self) -> np.ndarray:
-        return np.array([np.cross(seg.point, seg.direction) for seg in self])
+        if len(self) == 0:
+            return np.zeros((0, 3))
+        return np.array([np.cross(seg.point, seg.direction) for seg in self]).reshape(
+            len(self), -1
+        )
+
 
 class PlaneList(SegmentList[SegmentPlane]):
-    
     def __post_init__(self):
         for seg in self:
-            assert type(seg) == SegmentPlane, "All segments must be of type SegmentPlane"
+            assert type(seg) == SegmentPlane, (
+                "All segments must be of type SegmentPlane"
+            )
