@@ -67,18 +67,10 @@ def register_submaps(
     T_sm1_sm2_gt: np.ndarray,
     params: ROMANBasedSubmapAlignParams,
 ):
-    gt_distance = np.linalg.norm(T_sm1_sm2_gt[:3, 3])
     result = PoseEstimationResult(T_i_j=T_sm1_sm2_gt)
 
-    # if submaps are close enough (based on gt)
-    # then record ground truth distance between submaps, and the
-    # heading difference between the submap centers
-    if gt_distance < params.max_distance:
-        result.gt_distance_m = gt_distance
-        result.gt_rotation_diff_rad = np.abs(
-            Rot.from_matrix(T_sm1_sm2_gt[:3, :3]).magnitude()
-        )
-    elif params.skip_distant_submaps:
+    # if submaps are close enough (based on gt) run pose estimation
+    if result.gt_distance_m < params.max_distance and params.skip_distant_submaps:
         return result
 
     # compute assocations
@@ -114,9 +106,6 @@ def register_submaps(
         T_sm1_sm2_hat = (
             T_sm1_sm1grav @ T_sm1grav_sm2grav_hat @ np.linalg.inv(T_sm2_sm2grav)
         )
-        T_error = np.linalg.inv(T_sm1_sm2_hat) @ T_sm1_sm2_gt
-        result.angle_error_rad = Rot.from_matrix(T_error[:3, :3]).magnitude()
-        result.translation_error_m = np.linalg.norm(T_error[:3, 3])
         result.inlier_ratio = (
             (
                 len(associations)

@@ -115,7 +115,7 @@ class SubmapAlignEvaluator:
             correct_alignments = (
                 results.translation_error_m <= self.params.distance_err_thresh_m
             ) & (
-                results.angle_error_rad
+                results.rotation_error_rad
                 <= np.deg2rad(self.params.angular_err_thresh_deg)
             )
             num_relevant = np.nansum(relevant_alignments)

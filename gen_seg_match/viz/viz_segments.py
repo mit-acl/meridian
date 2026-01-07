@@ -1,8 +1,12 @@
 import numpy as np
 import open3d as o3d
 from scipy.spatial.transform import Rotation as Rot
+from scipy import ndimage
+from typing import List
 
+from roman.map.observation import Observation
 from gen_seg_match.segment.segment_types import SegmentList, SegmentPoint, SegmentLine
+from gen_seg_match.viz.utils import color_from_seed
 
 
 def viz_segments(
@@ -103,3 +107,19 @@ def render3d_onscreen(geometry_list, label_list, mean_point):
     vis.setup_camera(K, T, 400, 400)
     app.add_window(vis)
     app.run()
+
+
+def viz_masks_on_img(
+    img_bgr: np.ndarray, observations: List[Observation], alpha: float = 0.5
+) -> np.ndarray:
+    viz_img = np.array(img_bgr).copy().astype(np.float32)
+    for obs in observations:
+        mask = obs.mask.astype(bool)
+        color = np.array(color_from_seed(np.random.randint(0, 1000)), dtype=np.float32)
+
+        viz_img[mask] = (1 - alpha) * viz_img[mask] + alpha * color
+        edges = ndimage.binary_dilation(mask) ^ mask
+        viz_img[edges] = 0
+
+    viz_img = np.clip(viz_img, 0, 255).astype(np.uint8)
+    return viz_img

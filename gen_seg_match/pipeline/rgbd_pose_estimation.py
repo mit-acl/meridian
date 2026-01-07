@@ -1,4 +1,5 @@
 import numpy as np
+import matplotlib.pyplot as plt
 from dataclasses import dataclass
 from typing import List, Tuple, Any
 import robotdatapy as rdp
@@ -8,9 +9,8 @@ import cv2 as cv
 import os
 import argparse
 import trimesh
-
-from roman.map.fastsam_wrapper import FastSAMWrapper
-from roman.params.fastsam_params import FastSAMParams
+import pickle
+import tqdm
 
 from gen_seg_match.segment.segment_types import SegmentList
 from gen_seg_match.match.segment_matcher import SegmentMatcher
@@ -18,17 +18,29 @@ from gen_seg_match.map3d.segments_from_img import (
     get_segments_with_occlusion,
     roman_segments_to_general_segments,
 )
+from gen_seg_match.map3d.segmenter import Segmenter
 from gen_seg_match.params import (
     SegmentMatchParams,
     RGBDPoseEstimationParams,
     RomanConversionParams,
     RGBDPoseEstimationDataParams,
+    SegmenterParams,
+    RegisterParams,
 )
 from gen_seg_match.viz.utils import color_from_seed
 from gen_seg_match.viz.img_sparse_viz import img_sparse_viz
+from gen_seg_match.viz.viz_segments import viz_masks_on_img
 from gen_seg_match.pipeline.data import RGBDPoseEstimationData
+from gen_seg_match.pipeline.result import (
+    PoseEstimationResult,
+    PoseEstimationResultMatrix,
+)
 from gen_seg_match.utils import expandvars_recursive
 from gen_seg_match.map3d.segments_from_roman import GeneralSegmentConverter
+from gen_seg_match.register.registerer import (
+    Registerer,
+    InsufficientAssociationsException,
+)
 
 
 @dataclass
@@ -39,6 +51,7 @@ class RGBDInput:
     camera_params: rdp.camera.CameraParams
     gravity_direction: np.ndarray = None
     segments: SegmentList = None
+    pose_gt: np.ndarray = None  # optional ground truth pose
 
     @property
     def bgr(self) -> np.ndarray:
@@ -50,31 +63,33 @@ class RGBDInput:
 
 
 @dataclass
-class PoseEstimationResult:
-    pose_estimate: np.ndarray = None
-    pose_gt: np.ndarray = None
-    matched_segment_ids: np.ndarray = None
-    runtime: float = None
-
-    @property
-    def num_matches(self):
-        return (
-            int(len(self.matched_segment_ids.flatten()) / 2)
-            if self.matched_segment_ids is not None
-            else 0
-        )
-
-
-@dataclass
 class RGBDPoseEstimation:
     pipeline_params: RGBDPoseEstimationParams
     matcher: SegmentMatcher
+    registerer: Registerer
     roman_conversion_params: RomanConversionParams = None
 
     def __post_init__(self):
         self.segment_converter = GeneralSegmentConverter(
             params=self.roman_conversion_params
         )
+        for dir_path in [
+            self.pipeline_params.output_directory,
+            self.segment_directory,
+            f"{self.segment_directory}/run1",
+            f"{self.segment_directory}/run2",
+            self.match_directory,
+        ]:
+            if not os.path.isdir(expandvars_recursive(dir_path)):
+                os.mkdir(expandvars_recursive(dir_path))
+
+    @property
+    def segment_directory(self):
+        return os.path.join(self.pipeline_params.output_directory, "segment")
+
+    @property
+    def match_directory(self):
+        return os.path.join(self.pipeline_params.output_directory, "match")
 
     def rgbd_pose_estimation(self, input1: RGBDInput, input2: RGBDInput):
         t0 = time.time()
@@ -84,21 +99,35 @@ class RGBDPoseEstimation:
             input1.gravity_direction,
             input2.gravity_direction,
         )
+        try:
+            transformation = self.registerer.register(
+                input1.segments,
+                input2.segments,
+                input1.gravity_direction,
+                input2.gravity_direction,
+                correspondences=associated_ids,
+            ).transformation
+        except InsufficientAssociationsException:
+            transformation = np.zeros((4, 4)) * np.nan
+
         tf = time.time()
 
+        T_i_j = None
+        if input1.pose_gt is not None and input2.pose_gt is not None:
+            T_i_j = np.linalg.inv(input1.pose_gt) @ input2.pose_gt
         return PoseEstimationResult(
-            pose_estimate=None,
-            pose_gt=None,
-            matched_segment_ids=associated_ids,
-            runtime=tf - t0,
+            T_i_j=T_i_j,
+            T_i_j_hat=transformation,
+            associations=associated_ids,
+            runtime_s=tf - t0,
         )
 
     def batch_extract_segments(
-        self, inputs: List[RGBDInput], segmenter: FastSAMWrapper
+        self, inputs: List[RGBDInput], segmenter: Segmenter, output_dir: str = None
     ) -> List[RGBDInput]:
-        for rgbd_input in inputs:
-            raw_observations = segmenter.run(
-                rgbd_input.time, np.eye(4), rgbd_input.bgr, rgbd_input.depth
+        for i, rgbd_input in enumerate(inputs):
+            raw_observations, _ = segmenter.segment(
+                rgbd_input.bgr, rgbd_input.time, np.eye(4), rgbd_input.depth
             )
             roman_segments = get_segments_with_occlusion(
                 np.eye(4), raw_observations, rgbd_input.depth, rgbd_input.camera_params
@@ -114,6 +143,17 @@ class RGBDPoseEstimation:
             )
             general_segments = SegmentList(general_segments)
             rgbd_input.segments = general_segments
+            if output_dir is not None:
+                self.draw_segments(
+                    rgbd_input,
+                    raw_observations,
+                    general_segments,
+                    output_file=f"{output_dir}/{i}.png",
+                )
+
+        if output_dir is not None:
+            with open(f"{output_dir}/segments.pkl", "wb") as f:
+                pickle.dump(rgbd_input, f)
 
         return inputs
 
@@ -121,39 +161,62 @@ class RGBDPoseEstimation:
         self,
         inputs1: List[RGBDInput],
         inputs2: List[RGBDInput],
-        segmenter1: FastSAMWrapper,
-        segmenter2: FastSAMWrapper,
-        gt1: PoseData = None,
-        gt2: PoseData = None,
+        segmenter1: Segmenter = None,
+        segmenter2: Segmenter = None,
+        has_segments: bool = False,
     ):
-        inputs1 = self.batch_extract_segments(inputs1, segmenter1)
-        inputs2 = self.batch_extract_segments(inputs2, segmenter2)
+        assert (segmenter1 is not None and segmenter2 is not None) or has_segments, (
+            "Either segmenters must be provided or inputs must already have segments."
+        )
 
-        for in1 in inputs1:
-            for in2 in inputs2:
+        if not has_segments:
+            inputs1 = self.batch_extract_segments(
+                inputs1, segmenter1, output_dir=f"{self.segment_directory}/run1"
+            )
+            inputs2 = self.batch_extract_segments(
+                inputs2, segmenter2, output_dir=f"{self.segment_directory}/run2"
+            )
+
+        results_matrix = PoseEstimationResultMatrix((len(inputs1), len(inputs2)))
+
+        for i, in1 in enumerate(tqdm.tqdm(inputs1)):
+            for j, in2 in enumerate(inputs2):
                 if (
-                    gt1 is not None
-                    and gt2 is not None
-                    and self.fov_iou(in1, in2, gt1, gt2)
-                    < self.pipeline_params.min_fov_iou
+                    in1.pose_gt is not None
+                    and in2.pose_gt is not None
+                    and self.fov_iou(in1, in2) < self.pipeline_params.min_fov_iou
                 ):
                     continue
 
                 result = self.rgbd_pose_estimation(in1, in2)
 
                 if self.pipeline_params.viz_img_matches:
+                    output_file = f"{self.match_directory}/{i}_{j}.png"
                     self.draw_matches(
                         in1,
                         in2,
                         in1.segments,
                         in2.segments,
-                        in1.segments.sublist_from_ids(result.matched_segment_ids[:, 0])
-                        if result.num_matches > 0
+                        in1.segments.sublist_from_ids(result.associations[:, 0])
+                        if result.num_associations > 0
                         else [],
-                        in2.segments.sublist_from_ids(result.matched_segment_ids[:, 1])
-                        if result.num_matches > 0
+                        in2.segments.sublist_from_ids(result.associations[:, 1])
+                        if result.num_associations > 0
                         else [],
+                        output_file=output_file,
                     )
+
+                results_matrix[i, j] = result
+
+        results_matrix.save(f"{self.match_directory}/results.npz")
+        results_matrix.plot()
+        plt.savefig(f"{self.match_directory}/results.png")
+        plt.close()
+        # results_matrix.plot_point_vs_line_associations()
+        # plt.savefig(run_output_dir / "point_vs_line_associations.png")
+        # plt.close()
+
+        return inputs1, inputs2
 
     def draw_matches(
         self,
@@ -163,7 +226,7 @@ class RGBDPoseEstimation:
         segments2: SegmentList,
         segments1_matches: SegmentList,
         segments2_matches: SegmentList,
-        save=True,
+        output_file: str = None,
     ):
         assert input1.rgb.shape == input2.rgb.shape, (
             "Only inputs of the same shape are currently supported"
@@ -221,11 +284,44 @@ class RGBDPoseEstimation:
             write_ids=self.pipeline_params.viz_write_ids,
         )
 
-        if save:
-            file_name = f"{self.pipeline_params.output_directory}/{input1.time}_{input2.time}.png"
-            cv.imwrite(file_name, output)
+        if output_file is not None:
+            cv.imwrite(output_file, output)
 
         return output
+
+    def draw_segments(
+        self,
+        rgbd_input: RGBDInput,
+        observations,
+        segments: SegmentList,
+        output_file: str = None,
+    ):
+        output = np.zeros(
+            (
+                rgbd_input.shape[0],
+                rgbd_input.shape[1] * 2 + self.pipeline_params.viz_img_pixel_sep,
+                3,
+            )
+        )
+
+        # draw raw observations
+        output[:, : rgbd_input.shape[1]] = viz_masks_on_img(
+            rgbd_input.bgr, observations, alpha=0.5
+        )
+
+        # draw segments
+        output[
+            :,
+            rgbd_input.shape[1] + self.pipeline_params.viz_img_pixel_sep :,
+        ] = img_sparse_viz(
+            rgbd_input.bgr,
+            segments,
+            rgbd_input.camera_params.K,
+            write_ids=self.pipeline_params.viz_write_ids,
+        )
+
+        if output_file is not None:
+            cv.imwrite(output_file, output)
 
     def data_to_rgbd_input(self, data: RGBDPoseEstimationData):
         t0s = [data.img_data.t0, data.depth_data.t0]
@@ -276,6 +372,11 @@ class RGBDPoseEstimation:
                     T_world_cam = data.camera_gt_pose_data.pose(t)
                 gravity_cam = T_world_cam[:3, :3].T @ gravity_world
                 gravity_direction = gravity_cam
+            pose_gt = (
+                data.camera_gt_pose_data.pose(t)
+                if data.camera_gt_pose_data is not None
+                else None
+            )
             rgbd_inputs.append(
                 RGBDInput(
                     time=t,
@@ -283,6 +384,7 @@ class RGBDPoseEstimation:
                     depth=data.depth_data.img(t),
                     camera_params=data.img_data.camera_params,
                     gravity_direction=gravity_direction,
+                    pose_gt=pose_gt,
                 )
             )
         return rgbd_inputs
@@ -291,8 +393,6 @@ class RGBDPoseEstimation:
         self,
         input1: RGBDInput,
         input2: RGBDInput,
-        gt1: PoseData,
-        gt2: PoseData,
     ) -> float:
         """
         Returns the fraction of the field of views that overlap between two RGBD inputs.
@@ -309,8 +409,8 @@ class RGBDPoseEstimation:
             float: Field of view intersection over union.
         """
         # get camera poses
-        T_world_cam1 = gt1.pose(input1.time)
-        T_world_cam2 = gt2.pose(input2.time)
+        T_world_cam1 = input1.pose_gt
+        T_world_cam2 = input2.pose_gt
 
         # get frustums
         frustum1 = self.get_camera_frustum(input1, T_world_cam1)
@@ -363,12 +463,15 @@ class RGBDPoseEstimation:
         return frustum_mesh
 
 
-def rgbd_pose_estimation(params, output_dir, runs=Tuple[str, str]):
+def rgbd_pose_estimation(
+    params, output_dir, runs=Tuple[str, str], segmentation_dir=None
+):
     pipeline_params = RGBDPoseEstimationParams.load(params)
     pipeline_params.output_directory = output_dir
     runner = RGBDPoseEstimation(
         pipeline_params=pipeline_params,
         matcher=SegmentMatcher(SegmentMatchParams.load(params)),
+        registerer=Registerer(RegisterParams.load(params)),
         roman_conversion_params=RomanConversionParams.load(params),
     )
 
@@ -376,36 +479,44 @@ def rgbd_pose_estimation(params, output_dir, runs=Tuple[str, str]):
     rgbd_data = []
     segmenters = []
 
-    for run in runs:
-        os.environ["RUN"] = run
-        data_params = RGBDPoseEstimationDataParams.load(params, run=run)
-        rgbd_data.append(RGBDPoseEstimationData.from_params(data_params))
-        rgbd_input_lists.append(runner.data_to_rgbd_input(rgbd_data[-1]))
-        segmenters.append(
-            FastSAMWrapper.from_params(
-                FastSAMParams(
-                    semantics="dino",
-                    device="cuda",
-                    max_depth=8.0,
-                    imgsz=(512, 512),
-                    plane_filter_params=tuple([np.inf, 1.0, 0.2]),
-                    conf=0.15,
-                    iou=0.7,
-                    max_mask_len_div=1,
-                    erosion_size=3,
-                ),
-                rgbd_data[-1].depth_data.camera_params,
-            )
+    if segmentation_dir is not None:
+        for i in range(2):
+            with open(f"{segmentation_dir}/run{i + 1}/segments.pkl", "rb") as f:
+                rgbd_input_lists.append(pickle.load(f))
+
+        runner.batch_rgbd_pose_estimation(
+            rgbd_input_lists[0],
+            rgbd_input_lists[1],
+            has_segments=True,
         )
 
-    runner.batch_rgbd_pose_estimation(
-        rgbd_input_lists[0],
-        rgbd_input_lists[1],
-        segmenters[0],
-        segmenters[1],
-        rgbd_data[0].camera_gt_pose_data,
-        rgbd_data[1].camera_gt_pose_data,
-    )
+    else:
+        for run in runs:
+            os.environ["RUN"] = run
+            data_params = RGBDPoseEstimationDataParams.load(params, run=run)
+            rgbd_data.append(RGBDPoseEstimationData.from_params(data_params))
+            rgbd_input_lists.append(runner.data_to_rgbd_input(rgbd_data[-1]))
+            segmenters.append(
+                Segmenter(
+                    SegmenterParams(
+                        semantics="dino",
+                        device="cuda",
+                        max_depth=8.0,
+                        imgsz=(512, 512),
+                        conf=0.15,
+                        iou=0.7,
+                        erosion_size=3,
+                    ),
+                    rgbd_data[-1].depth_data.camera_params,
+                )
+            )
+
+        runner.batch_rgbd_pose_estimation(
+            rgbd_input_lists[0],
+            rgbd_input_lists[1],
+            segmenters[0],
+            segmenters[1],
+        )
 
 
 if __name__ == "__main__":
@@ -427,9 +538,15 @@ if __name__ == "__main__":
     parser.add_argument(
         "-r", "--runs", type=str, nargs=2, required=True, help="Run names."
     )
+    parser.add_argument(
+        "-s",
+        "--segment-dir",
+        type=str,
+        default=None,
+        help="Directory to load precomputed segments.",
+    )
     args = parser.parse_args()
 
-    if not os.path.isdir(args.output):
-        os.mkdir(expandvars_recursive(args.output))
-
-    rgbd_pose_estimation(args.params, args.output, args.runs)
+    rgbd_pose_estimation(
+        args.params, args.output, args.runs, segmentation_dir=args.segment_dir
+    )

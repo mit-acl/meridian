@@ -27,13 +27,12 @@ from fastsam import FastSAM
 import clip
 from transformers import AutoImageProcessor, AutoModel
 from typing import List
-from scipy import ndimage
 
 from robotdatapy.camera import CameraParams
 
 from roman.map.observation import Observation
 from gen_seg_match.params import SegmenterParams
-from gen_seg_match.viz.utils import color_from_seed
+from gen_seg_match.viz.viz_segments import viz_masks_on_img
 
 
 class Segmenter:
@@ -219,15 +218,10 @@ class Segmenter:
             # Extract point cloud of object from RGBD
             ptcld = None
             if depth_data is not None:
-                if self.use_point_cloud:
+                if self.params.use_point_cloud:
                     # get 3D points that project within the mask
                     inside_mask = mask[pcl_proj[:, 1], pcl_proj[:, 0]] == 1
                     inside_mask_points = pcl[inside_mask]
-                    pre_truncate_len = len(inside_mask_points)
-                    ptcld_test = inside_mask_points[
-                        inside_mask_points[:, 2] < self.max_depth
-                    ]
-
                     pcd = o3d.geometry.PointCloud()
                     pcd.points = o3d.utility.Vector3dVector(inside_mask_points)
 
@@ -245,17 +239,17 @@ class Segmenter:
                                 np.dtype(depth_obj.dtype).type
                             )
                         ),
-                        self.depth_cam_intrinsics,
-                        depth_scale=self.depth_scale,
-                        depth_trunc=self.max_depth,
-                        stride=self.pcd_stride,
+                        self.open3d_cam_intrinsics,
+                        depth_scale=self.params.depth_scale,
+                        depth_trunc=self.params.max_depth,
+                        stride=self.params.pcd_stride,
                         project_valid_depth_only=True,
                     )
 
                 # shared for depth & rangesens, once PointCloud object is created
 
                 pcd.remove_non_finite_points()
-                pcd_sampled = pcd.voxel_down_sample(voxel_size=self.voxel_size)
+                pcd_sampled = pcd.voxel_down_sample(voxel_size=self.params.voxel_size)
                 if not pcd_sampled.is_empty():
                     ptcld = np.asarray(pcd_sampled.points)
                 if ptcld is None:
@@ -310,19 +304,7 @@ class Segmenter:
     def visualize_segments(
         self, img_bgr: np.ndarray, observations: List[Observation], alpha: float = 0.5
     ) -> np.ndarray:
-        viz_img = np.array(img_bgr).copy().astype(np.float32)
-        for obs in observations:
-            mask = obs.mask.astype(bool)
-            color = np.array(
-                color_from_seed(np.random.randint(0, 1000)), dtype=np.float32
-            )
-
-            viz_img[mask] = (1 - alpha) * viz_img[mask] + alpha * color
-            edges = ndimage.binary_dilation(mask) ^ mask
-            viz_img[edges] = 0
-
-        viz_img = np.clip(viz_img, 0, 255).astype(np.uint8)
-        return viz_img
+        return viz_masks_on_img(img_bgr, observations, alpha)
 
     def apply_rotation(self, img, unrotate=False):
         if self.params.rotate_img is None:

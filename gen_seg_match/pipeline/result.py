@@ -2,6 +2,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 from dataclasses import dataclass, field
 from enum import Enum
+from scipy.spatial.transform import Rotation as Rot
 
 
 class AssociationType(Enum):
@@ -11,17 +12,48 @@ class AssociationType(Enum):
 
 @dataclass
 class PoseEstimationResult:
-    translation_error_m: float = np.nan
-    angle_error_rad: float = np.nan
     associations: tuple = tuple([])
     association_types: tuple = tuple([])
     inlier_ratio: float = np.nan
-    gt_distance_m: float = np.nan
-    gt_rotation_diff_rad: float = np.nan
     T_i_j: np.ndarray = field(default_factory=lambda: np.full((4, 4), np.nan))
     T_i_j_hat: np.ndarray = field(default_factory=lambda: np.full((4, 4), np.nan))
     descriptor_similarity: float = np.nan
     runtime_s: float = np.nan
+
+    @property
+    def T_error(self):
+        if np.any(np.isnan(self.T_i_j)) or np.any(np.isnan(self.T_i_j_hat)):
+            return None
+        return np.linalg.inv(self.T_i_j_hat) @ self.T_i_j
+
+    @property
+    def translation_error_m(self):
+        if self.T_error is None:
+            return np.nan
+        return np.linalg.norm(self.T_error[:3, 3])
+
+    @property
+    def rotation_error_rad(self):
+        if self.T_error is None:
+            return np.nan
+        return Rot.from_matrix(self.T_error[:3, :3]).magnitude()
+
+    @property
+    def gt_distance_m(self):
+        if np.any(np.isnan(self.T_i_j)):
+            return np.nan
+        return np.linalg.norm(self.T_i_j[:3, 3])  # translation norm
+
+    @property
+    def gt_rotation_diff_rad(self):
+        if np.any(np.isnan(self.T_i_j)):
+            return np.nan
+        return Rot.from_matrix(self.T_i_j[:3, :3]).magnitude()
+
+    @property
+    def angle_error_rad(self):
+        print("Warning: angle_error_rad is deprecated, use rotation_error_rad instead.")
+        return self.rotation_error_rad
 
     @property
     def num_associations(self):
@@ -44,6 +76,7 @@ class PoseEstimationResultMatrix(np.ndarray):
     """A numpy ndarray subclass holding PoseEstimationResult objects."""
 
     def __new__(cls, shape, fill_value: PoseEstimationResult = None):
+        assert len(shape) >= 2, "Shape dimension must be at least 2."
         obj = np.empty(shape, dtype=object).view(cls)
 
         if fill_value is None:
@@ -81,7 +114,13 @@ class PoseEstimationResultMatrix(np.ndarray):
     @property
     def angle_error_rad(self):
         """Return a matrix of angle errors."""
-        return np.vectorize(lambda r: r.angle_error_rad)(self)
+        print("Warning: angle_error_rad is deprecated, use rotation_error_rad instead.")
+        return self.rotation_error_rad
+
+    @property
+    def rotation_error_rad(self):
+        """Return a matrix of rotation errors."""
+        return np.vectorize(lambda r: r.rotation_error_rad)(self)
 
     @property
     def num_associations(self):
@@ -145,16 +184,18 @@ class PoseEstimationResultMatrix(np.ndarray):
         angle_thresh = 10.0
         dist_thresh = 5.0
 
-        angle_error_mat = np.rad2deg(self.angle_error_rad.copy())
+        rotation_error_mat = np.rad2deg(self.rotation_error_rad.copy())
         dist_error_mat = self.translation_error_m.copy()
-        angle_error_mat[
+        rotation_error_mat[
             np.bitwise_and(
-                dist_error_mat > dist_thresh, np.bitwise_not(np.isnan(angle_error_mat))
+                dist_error_mat > dist_thresh,
+                np.bitwise_not(np.isnan(rotation_error_mat)),
             )
         ] = angle_thresh
         dist_error_mat[
             np.bitwise_and(
-                angle_error_mat > angle_thresh, np.bitwise_not(np.isnan(dist_error_mat))
+                rotation_error_mat > angle_thresh,
+                np.bitwise_not(np.isnan(dist_error_mat)),
             )
         ] = dist_thresh
 
@@ -165,10 +206,10 @@ class PoseEstimationResultMatrix(np.ndarray):
         ax[1, 0].set_title("Registration Translation Error (m)")
 
         mp = ax[1, 1].imshow(
-            angle_error_mat, cmap="viridis_r", vmax=angle_thresh, vmin=0.0
+            rotation_error_mat, cmap="viridis_r", vmax=angle_thresh, vmin=0.0
         )
         fig.colorbar(mp, fraction=0.04, pad=0.04)
-        ax[1, 1].set_title("Registration Angle Error (deg)")
+        ax[1, 1].set_title("Registration Rotation Error (deg)")
 
         mp = ax[2, 0].imshow(self.num_associations, cmap="viridis", vmin=0)
         fig.colorbar(mp, fraction=0.04, pad=0.04)
@@ -185,7 +226,7 @@ class PoseEstimationResultMatrix(np.ndarray):
             for j in range(len(ax[i])):
                 ax[i, j].set_xlabel("submap index (robot 2)")
                 ax[i, j].set_ylabel("submap index (robot 1)")
-                ax[i, j].grid(False)
+                ax[i, j].grid(True)
 
         if not show_sim:
             fig.delaxes(ax[2, 1])
