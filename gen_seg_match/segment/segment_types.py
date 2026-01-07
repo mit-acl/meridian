@@ -18,6 +18,10 @@ class GeneralSegment:
     dense_points: np.ndarray = None  # optional dense point cloud
     history: List[int] = None  # optional list of past segment ids
 
+    def __post_init__(self):
+        self.ratio_feature = self._reshape_vector(self.ratio_feature)
+        self.cos_feature = self._reshape_vector(self.cos_feature)
+
     @property
     def dim(self) -> int:
         return self.point.shape[0]
@@ -72,6 +76,9 @@ class GeneralSegment:
             cos_feature = []
         return np.concatenate([ratio_feature, cos_feature])
 
+    def _reshape_vector(self, vec: np.ndarray) -> np.ndarray:
+        return vec.reshape(-1) if vec is not None else None
+
 
 @dataclass
 class SegmentPoint(GeneralSegment):
@@ -87,6 +94,8 @@ class SegmentPoint(GeneralSegment):
     def __post_init__(self):
         if self.cos_feature is not None:
             self.cos_feature /= np.linalg.norm(self.cos_feature)
+        self.point = self._reshape_vector(self.point)
+        super().__post_init__()
 
     def __str__(self):
         return (
@@ -171,6 +180,13 @@ class SegmentLine(GeneralSegment):
         if self.cos_feature is not None:
             self.cos_feature /= np.linalg.norm(self.cos_feature)
         self._normalize_direction()
+        self.point = self._reshape_vector(self.point)
+        self.direction = self._reshape_vector(self.direction)
+        self.endpoints = (
+            self._reshape_vector(self.endpoints[0]),
+            self._reshape_vector(self.endpoints[1]),
+        )
+        super().__post_init__()
 
     def __str__(self):
         return (
@@ -482,9 +498,12 @@ class SegmentPlane(GeneralSegment):
 
     def __post_init__(self):
         if self.normal is None:
-            raise ValueError("Missing required field 'normal' for SegmentLine")
+            raise ValueError("Missing required field 'normal' for SegmentPlane")
         if self.cos_feature is not None:
             self.cos_feature /= np.linalg.norm(self.cos_feature)
+        self.point = self._reshape_vector(self.point)
+        self.normal = self._reshape_vector(self.normal)
+        super().__post_init__()
 
     def to_array(self, include_ratio=True, include_cos=True) -> np.ndarray:
         features = self._to_array_features(include_ratio, include_cos)

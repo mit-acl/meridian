@@ -11,6 +11,8 @@ class RegisterParams(ParamsBase):
     params_key: ClassVar[str] = "register"
 
     # Parameters
+    only_use_points: bool = False
+
     point_weight: float = 1.0
     line_direction_weight: float = 1.0
     line_moment_weight: float = 1.0

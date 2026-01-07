@@ -64,12 +64,29 @@ class Registerer:
                 [[seg1.id, seg2.id] for seg1, seg2 in zip(source, target)]
             )
 
-        source = SegmentList(source).sublist_from_ids(correspondences[:, 0])
-        target = SegmentList(target).sublist_from_ids(correspondences[:, 1])
+        source = SegmentList(source)
+        target = SegmentList(target)
+
+        if self.params.only_use_points:
+            correspondences = np.array(
+                [
+                    correspondence
+                    for correspondence in correspondences
+                    if isinstance(
+                        source.get_segment_from_id(correspondence[0]), SegmentPoint
+                    )
+                ]
+            )
+            if len(correspondences) == 0:
+                raise InsufficientAssociationsException(len(source), len(target))
+
+        source = source.sublist_from_ids(correspondences[:, 0])
+        target = target.sublist_from_ids(correspondences[:, 1])
 
         for i in range(len(correspondences)):
             assert type(source[i]) == type(target[i]), (
-                "Corresponded segments must be of the same type"
+                "Corresponded segments must be of the same type. "
+                + f"Got match between {type(source[i])} and {type(target[i])}."
             )
 
         num_points = len(source.get_points())

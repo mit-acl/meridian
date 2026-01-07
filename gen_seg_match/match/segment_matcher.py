@@ -41,7 +41,7 @@ class SegmentMatcher:
 
         # return empty associations if map is empty
         if len(map1) == 0 or len(map2) == 0:
-            return np.array([[]])
+            return np.array([])
 
         # transform into gravity aligned frame
         if self.params.gravity_guided:
@@ -56,6 +56,8 @@ class SegmentMatcher:
 
         if putative_match_matrix is None:
             clipper, A_init = self._setup_problem(clipper, map1, map2)
+            if len(A_init) == 0:
+                return np.array([])
         else:
             map1_lists = [self._get_seg_array(obj) for obj in map1]
             map2_lists = [self._get_seg_array(obj) for obj in map2]
@@ -72,6 +74,14 @@ class SegmentMatcher:
         else:
             Ain_by_ids = np.array(
                 [[map1[pair[0]].id, map2[pair[1]].id] for pair in Ain]
+            )
+
+        for Ain_pair in Ain_by_ids:
+            assert type(map1.get_segment_from_id(Ain_pair[0])) == type(
+                map2.get_segment_from_id(Ain_pair[1])
+            ), (
+                "Corresponded segments must be of the same type. "
+                + f"Got match between {type(map1.get_segment_from_id(Ain_pair[0]))} and {type(map2.get_segment_from_id(Ain_pair[1]))}."
             )
         return Ain_by_ids
 
@@ -340,8 +350,8 @@ class SegmentMatcher:
     def _assoc_idx_to_ids(
         self,
         association_matrix: np.ndarray,
-        map1: List[GeneralSegment],
-        map2: List[GeneralSegment],
+        map1: SegmentList,
+        map2: SegmentList,
     ) -> np.ndarray:
         Ain_by_ids = np.zeros_like(association_matrix)
         for i in range(association_matrix.shape[0]):
