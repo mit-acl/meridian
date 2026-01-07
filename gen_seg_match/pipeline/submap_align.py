@@ -36,6 +36,7 @@ from gen_seg_match.register.registerer import (
     Registerer,
     InsufficientAssociationsException,
 )
+from gen_seg_match.pipeline.result import PoseEstimationResult, PoseEstimationResultMatrix, AssociationType
 
 
 GRAVITY_DIR_NEG_Z: np.ndarray = np.array([0.0, 0.0, -1.0])
@@ -53,127 +54,6 @@ class ROMANBasedSubmapAlignParams:
     is_single_robot: bool = False
 
 
-@dataclass
-class SingleAlignResult:
-    translation_error_m: float = np.nan
-    angle_error_rad: float = np.nan
-    associations: tuple = tuple([])
-    association_types: tuple = tuple([])
-    inlier_ratio: float = np.nan
-    gt_distance_m: float = np.nan
-    submap_yaw_diff_rad: float = np.nan
-    T_i_j: np.ndarray = field(default_factory=lambda: np.full((4, 4), np.nan))
-    T_i_j_hat: np.ndarray = field(default_factory=lambda: np.full((4, 4), np.nan))
-    runtime_s: float = np.nan
-
-    @property
-    def num_associations(self):
-        return len(self.associations)
-
-    @property
-    def num_point_associations(self):
-        return sum(
-            1 for t in self.association_types if t == AssociationType.POINT_TO_POINT
-        )
-
-    @property
-    def num_line_associations(self):
-        return sum(
-            1 for t in self.association_types if t == AssociationType.LINE_TO_LINE
-        )
-
-
-def results_matrix_to_roman_align_results(
-    results_matrix: np.ndarray,
-) -> SubmapAlignResults:
-    output_matrix = SubmapAlignResults(
-        robots_nearby_mat=np.array(
-            [
-                results_matrix[i, j].gt_distance_m
-                for i in range(results_matrix.shape[0])
-                for j in range(results_matrix.shape[1])
-            ]
-        ).reshape(results_matrix.shape),
-        clipper_angle_mat=np.rad2deg(
-            np.array(
-                [
-                    results_matrix[i, j].angle_error_rad
-                    for i in range(results_matrix.shape[0])
-                    for j in range(results_matrix.shape[1])
-                ]
-            )
-        ).reshape(results_matrix.shape),
-        clipper_dist_mat=np.array(
-            [
-                results_matrix[i, j].translation_error_m
-                for i in range(results_matrix.shape[0])
-                for j in range(results_matrix.shape[1])
-            ]
-        ).reshape(results_matrix.shape),
-        clipper_num_associations=np.array(
-            [
-                results_matrix[i, j].num_associations
-                for i in range(results_matrix.shape[0])
-                for j in range(results_matrix.shape[1])
-            ]
-        ).reshape(results_matrix.shape),
-        submap_yaw_diff_mat=np.rad2deg(
-            np.array(
-                [
-                    results_matrix[i, j].submap_yaw_diff_rad
-                    for i in range(results_matrix.shape[0])
-                    for j in range(results_matrix.shape[1])
-                ]
-            )
-        ).reshape(results_matrix.shape),
-        T_ij_mat=np.array(
-            [
-                results_matrix[i, j].T_i_j
-                for i in range(results_matrix.shape[0])
-                for j in range(results_matrix.shape[1])
-            ]
-        ).reshape((*results_matrix.shape, 4, 4)),
-        T_ij_hat_mat=np.array(
-            [
-                results_matrix[i, j].T_i_j_hat
-                for i in range(results_matrix.shape[0])
-                for j in range(results_matrix.shape[1])
-            ]
-        ).reshape((*results_matrix.shape, 4, 4)),
-        associated_objs_mat=[
-            [results_matrix[i, j].associations for j in range(results_matrix.shape[1])]
-            for i in range(results_matrix.shape[0])
-        ],  # cannot be a numpy array because of differing shapes
-        timing_list=np.array(
-            [
-                results_matrix[i, j].runtime_s
-                for i in range(results_matrix.shape[0])
-                for j in range(results_matrix.shape[1])
-                if not np.isnan(results_matrix[i, j].runtime_s)
-            ]
-        ),
-        submap_align_params=None,
-        submap_io=None,
-        total_time=np.inf,
-        similarity_mat=None,
-    )
-    output_matrix.num_point_associations_mat = np.array(
-        [
-            results_matrix[i, j].num_point_associations
-            for i in range(results_matrix.shape[0])
-            for j in range(results_matrix.shape[1])
-        ]
-    ).reshape(results_matrix.shape)
-    output_matrix.num_line_associations_mat = np.array(
-        [
-            results_matrix[i, j].num_line_associations
-            for i in range(results_matrix.shape[0])
-            for j in range(results_matrix.shape[1])
-        ]
-    ).reshape(results_matrix.shape)
-    return output_matrix
-
-
 # TODO: probably want to move this to gsm_tools while we are testing on many different registration methods
 def register_submaps(
     submap_1: Submap,
@@ -184,15 +64,15 @@ def register_submaps(
     params: ROMANBasedSubmapAlignParams,
 ):
     gt_distance = np.linalg.norm(T_sm1_sm2_gt[:3, 3])
-    result = SingleAlignResult(T_i_j=T_sm1_sm2_gt)
+    result = PoseEstimationResult(T_i_j=T_sm1_sm2_gt)
 
     # if submaps are close enough (based on gt)
     # then record ground truth distance between submaps, and the
     # heading difference between the submap centers
     if gt_distance < params.max_distance:
         result.gt_distance_m = gt_distance
-        result.submap_yaw_diff_rad = np.abs(
-            rdp.transform.transform_to_xyzrpy(T_sm1_sm2_gt)[5]
+        result.gt_rotation_diff_rad = np.abs(
+            Rot.from_matrix(T_sm1_sm2_gt[:3, :3]).magnitude()
         )
     elif params.skip_distant_submaps:
         return result
@@ -259,13 +139,8 @@ def submap_align(
     matcher: SegmentMatcher,
     registerer: Registerer,
     params: ROMANBasedSubmapAlignParams = ROMANBasedSubmapAlignParams(),
-) -> SubmapAlignResults:
-    results_matrix = np.array(
-        [
-            [SingleAlignResult() for _ in range(len(submaps_2))]
-            for _ in range(len(submaps_1))
-        ]
-    )
+) -> PoseEstimationResultMatrix:
+    results_matrix = PoseEstimationResultMatrix((len(submaps_1), len(submaps_2)))
 
     for i in tqdm(range(len(submaps_1))):
         for j in range(len(submaps_2)):
@@ -287,7 +162,7 @@ def submap_align(
                 sm_i, sm_j, matcher, registerer, T_smi_smj, params
             )
 
-    return results_matrix_to_roman_align_results(results_matrix)
+    return results_matrix
 
 
 def batch_submap_align(
@@ -317,30 +192,13 @@ def batch_submap_align(
             if output_dir is not None and roman_maps is not None:
                 run_output_dir = output_dir / f"{run_names[i]}_{run_names[j]}"
                 run_output_dir.mkdir(parents=True, exist_ok=True)
-                results_ij.submap_io = SubmapAlignInputOutput(
-                    inputs=None,
-                    output_dir=str(run_output_dir),
-                    run_name="align",
-                    input_gt_pose_yaml=(True, True),
-                )
-                results_ij.submap_align_params = SubmapAlignParams()
-                save_submap_align_results(
-                    results_ij,
-                    [submap_lists[i], submap_lists[j]],
-                    [roman_maps[i], roman_maps[j]],
-                )
-                fig, ax = plt.subplots(1, 2, figsize=(12, 6))
-                mp = ax[0].imshow(
-                    results_ij.num_point_associations_mat, cmap="viridis", vmin=0
-                )
-                fig.colorbar(mp, fraction=0.04, pad=0.04)
-                mp = ax[1].imshow(
-                    results_ij.num_line_associations_mat, cmap="viridis", vmin=0
-                )
-                fig.colorbar(mp, fraction=0.04, pad=0.04)
-                ax[0].set_title("Number of Point Associations")
-                ax[1].set_title("Number of Line Associations")
+                results_ij.save(str(run_output_dir / "results.npz"))
+                results_ij.plot()
+                plt.savefig(run_output_dir / "results.png")
+                plt.close()
+                results_ij.plot_point_vs_line_associations()
                 plt.savefig(run_output_dir / "point_vs_line_associations.png")
+                plt.close()
             results_dict[run_names[i]][run_names[j]] = results_ij
     return results_dict
 
