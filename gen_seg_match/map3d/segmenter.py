@@ -314,14 +314,10 @@ class Segmenter:
         for obs in observations:
             mask = obs.mask.astype(bool)
             color = np.array(
-                color_from_seed(np.random.randint(0, 1000)),
-                dtype=np.float32
+                color_from_seed(np.random.randint(0, 1000)), dtype=np.float32
             )
 
-            viz_img[mask] = (
-                (1 - alpha) * viz_img[mask]
-                + alpha * color
-            )
+            viz_img[mask] = (1 - alpha) * viz_img[mask] + alpha * color
             edges = ndimage.binary_dilation(mask) ^ mask
             viz_img[edges] = 0
 

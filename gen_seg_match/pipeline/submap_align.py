@@ -36,7 +36,11 @@ from gen_seg_match.register.registerer import (
     Registerer,
     InsufficientAssociationsException,
 )
-from gen_seg_match.pipeline.result import PoseEstimationResult, PoseEstimationResultMatrix, AssociationType
+from gen_seg_match.pipeline.result import (
+    PoseEstimationResult,
+    PoseEstimationResultMatrix,
+    AssociationType,
+)
 
 
 GRAVITY_DIR_NEG_Z: np.ndarray = np.array([0.0, 0.0, -1.0])
