@@ -11,6 +11,7 @@ import argparse
 import trimesh
 import pickle
 import tqdm
+import shutil
 
 from gen_seg_match.segment.segment_types import SegmentList
 from gen_seg_match.match.segment_matcher import SegmentMatcher
@@ -161,20 +162,25 @@ class RGBDPoseEstimation:
         self,
         inputs1: List[RGBDInput],
         inputs2: List[RGBDInput],
-        segmenter1: Segmenter = None,
-        segmenter2: Segmenter = None,
+        segmenter: Segmenter = None,
+        depth_camera_params1: rdp.camera.CameraParams = None,
+        depth_camera_params2: rdp.camera.CameraParams = None,
         has_segments: bool = False,
     ):
-        assert (segmenter1 is not None and segmenter2 is not None) or has_segments, (
-            "Either segmenters must be provided or inputs must already have segments."
+        assert (
+            None not in [segmenter, depth_camera_params1, depth_camera_params2]
+        ) or has_segments, (
+            "Either segmenter must be provided or inputs must already have segments."
         )
 
         if not has_segments:
+            segmenter.set_depth_camera_params(depth_camera_params1)
             inputs1 = self.batch_extract_segments(
-                inputs1, segmenter1, output_dir=f"{self.segment_directory}/run1"
+                inputs1, segmenter, output_dir=f"{self.segment_directory}/run1"
             )
+            segmenter.set_depth_camera_params(depth_camera_params2)
             inputs2 = self.batch_extract_segments(
-                inputs2, segmenter2, output_dir=f"{self.segment_directory}/run2"
+                inputs2, segmenter, output_dir=f"{self.segment_directory}/run2"
             )
 
         results_matrix = PoseEstimationResultMatrix((len(inputs1), len(inputs2)))
@@ -475,6 +481,12 @@ def rgbd_pose_estimation(
         roman_conversion_params=RomanConversionParams.load(params),
     )
 
+    # copy params to output dir
+    if os.path.isfile(params):
+        shutil.copy2(params, os.path.join(output_dir, os.path.basename(params)))
+    else:
+        shutil.copytree(params, output_dir, dirs_exist_ok=True)
+
     rgbd_input_lists = []
     rgbd_data = []
     segmenters = []
@@ -496,26 +508,14 @@ def rgbd_pose_estimation(
             data_params = RGBDPoseEstimationDataParams.load(params, run=run)
             rgbd_data.append(RGBDPoseEstimationData.from_params(data_params))
             rgbd_input_lists.append(runner.data_to_rgbd_input(rgbd_data[-1]))
-            segmenters.append(
-                Segmenter(
-                    SegmenterParams(
-                        semantics="dino",
-                        device="cuda",
-                        max_depth=8.0,
-                        imgsz=(512, 512),
-                        conf=0.15,
-                        iou=0.7,
-                        erosion_size=3,
-                    ),
-                    rgbd_data[-1].depth_data.camera_params,
-                )
-            )
+        segmenter = Segmenter(SegmenterParams.load(params))
 
         runner.batch_rgbd_pose_estimation(
             rgbd_input_lists[0],
             rgbd_input_lists[1],
-            segmenters[0],
-            segmenters[1],
+            segmenter,
+            rgbd_data[0].depth_data.camera_params,
+            rgbd_data[1].depth_data.camera_params,
         )
 
 

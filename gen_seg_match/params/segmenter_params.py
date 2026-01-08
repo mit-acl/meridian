@@ -24,7 +24,7 @@ class SegmenterParams(ParamsBase):
     semantics_dim: int = 768
     erosion_size: int = 3
     voxel_size: float = 0.05
-    ignore_labels: list = tuple(["person"])
+    ignore_labels: list = tuple([])
     use_keep_labels: bool = False
     keep_labels: list = tuple([])
     keep_labels_option: dict = None
@@ -38,6 +38,8 @@ class SegmenterParams(ParamsBase):
     max_depth: float = 7.5
     mask_downsample_factor: int = 8
     pcd_stride: int = 4
+    min_mask_pixels: int = 0
+    min_mask_image_fraction: float = 0.0
     triangle_ignore_masks: List[
         Tuple[Tuple[int, int], Tuple[int, int], Tuple[int, int]]
     ] = None

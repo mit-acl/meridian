@@ -27,6 +27,7 @@ from fastsam import FastSAM
 import clip
 from transformers import AutoImageProcessor, AutoModel
 from typing import List
+from segment_anything import sam_model_registry, SamAutomaticMaskGenerator
 
 from robotdatapy.camera import CameraParams
 
@@ -47,6 +48,11 @@ class Segmenter:
         # Setup segmentation model
         if self.params.model_type == "fastsam":
             self.model = FastSAM(self.params.weights_path)
+        elif self.params.get_model_type() == "segment_anything":
+            sam = sam_model_registry["vit_l"](checkpoint=self.params.weights_path)
+            sam.to(self.params.device)
+            sam.eval()
+            self.model = SamAutomaticMaskGenerator(sam)
         else:
             raise ValueError(
                 f"Unsupported segmenter model type: {self.params.model_type}"
@@ -147,6 +153,17 @@ class Segmenter:
             )
         else:
             self.erosion_element = None
+
+    def set_depth_camera_params(self, depth_cam_params: CameraParams):
+        self.depth_cam_params = depth_cam_params
+        self.open3d_cam_intrinsics = o3d.camera.PinholeCameraIntrinsic(
+            width=int(self.depth_cam_params.width),
+            height=int(self.depth_cam_params.height),
+            fx=self.depth_cam_params.fx,
+            fy=self.depth_cam_params.fy,
+            cx=self.depth_cam_params.cx,
+            cy=self.depth_cam_params.cy,
+        )
 
     def segment(self, img_bgr, t=None, pose=None, depth_data=None):
         """
@@ -386,35 +403,55 @@ class Segmenter:
         # OpenCV uses BGR images, but FastSAM requires an RGB image, so convert.
         image_rgb = cv.cvtColor(image_bgr, cv.COLOR_BGR2RGB)
 
-        # Run FastSAM
-        everything_results = self.model(
-            image_rgb,
-            retina_masks=True,
-            device=self.params.device,
-            imgsz=self.params.imgsz,
-            conf=self.params.conf,
-            iou=self.params.iou,
-        )
-        prompt_process = FastSAMPrompt(
-            image_rgb, everything_results, device=self.params.device
-        )
-        segmask = prompt_process.everything_prompt()
+        # Run segmentation
+        if self.params.get_model_type() == "fastsam":
+            everything_results = self.model(
+                image_rgb,
+                retina_masks=True,
+                device=self.params.device,
+                imgsz=self.params.imgsz,
+                conf=self.params.conf,
+                iou=self.params.iou,
+            )
+            prompt_process = FastSAMPrompt(
+                image_rgb, everything_results, device=self.params.device
+            )
+            masks = prompt_process.everything_prompt()
+        elif self.params.get_model_type() == "segment_anything":
+            masks_output = self.model.generate(image_rgb)
+
+            # Convert SAM result masks into (N,H,W) boolean numpy array like FastSAM
+            mask_list = []
+            for obj in masks_output:
+                mask_list.append(obj["segmentation"].astype(np.uint8))
+
+            masks = torch.from_numpy(np.stack(mask_list)).to(self.params.device)
+        else:
+            raise ValueError(
+                f"Unsupported segmenter model type: {self.params.model_type}"
+            )
 
         # If there were segmentations detected by FastSAM, transfer them from GPU to CPU and convert to Numpy arrays
-        if len(segmask) > 0:
-            segmask = segmask.cpu().numpy()
+        if len(masks) > 0:
+            masks = masks.cpu().numpy()
         else:
-            segmask = None
+            masks = None
 
-        if segmask is not None:
+        if masks is not None:
             # FastSAM provides a numMask-channel image in shape C, H, W where each channel in the image is a binary mask
             # of the detected segment
-            [numMasks, h, w] = segmask.shape
+            [numMasks, h, w] = masks.shape
 
             to_delete = []
             for maskId in range(numMasks):
                 # Extract the single binary mask for this mask id
-                mask_this_id = segmask[maskId, :, :]
+                mask_this_id = masks[maskId, :, :]
+
+                # filter out small masks
+                num_pixels = mask_this_id.astype(np.int8).sum()
+                if num_pixels < self._min_mask_pixels(image_bgr.shape):
+                    to_delete.append(maskId)
+                    continue
 
                 # filter out ignore mask
                 if ignore_mask is not None and np.any(
@@ -443,12 +480,12 @@ class Segmenter:
 
                 # TODO: filter out based on number of pixels maybe
 
-            segmask = np.delete(segmask, to_delete, axis=0)
+            masks = np.delete(masks, to_delete, axis=0)
 
         else:
             return []
 
-        return segmask
+        return masks
 
     def mask_bounding_box(self, mask):
         # Find the indices of the True values
@@ -562,3 +599,9 @@ class Segmenter:
             frame_descriptor /= torch.norm(frame_descriptor)
 
         return frame_descriptor.cpu().detach().numpy()
+
+    def _min_mask_pixels(self, image_shape):
+        from_image_fraction = int(
+            self.params.min_mask_image_fraction * image_shape[0] * image_shape[1]
+        )
+        return max(self.params.min_mask_pixels, from_image_fraction)
