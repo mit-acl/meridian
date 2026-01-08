@@ -13,7 +13,7 @@ import pickle
 import tqdm
 import shutil
 
-from gen_seg_match.segment.segment_types import SegmentList
+from gen_seg_match.segment.segment_types import SegmentList, DenseSegment
 from gen_seg_match.match.segment_matcher import SegmentMatcher
 from gen_seg_match.map3d.segments_from_img import (
     get_segments_with_occlusion,
@@ -130,16 +130,12 @@ class RGBDPoseEstimation:
             raw_observations, _ = segmenter.segment(
                 rgbd_input.bgr, rgbd_input.time, np.eye(4), rgbd_input.depth
             )
-            roman_segments = get_segments_with_occlusion(
-                np.eye(4), raw_observations, rgbd_input.depth, rgbd_input.camera_params
-            )
-            # TODO: roman conversion params as input below
-            general_segments = roman_segments_to_general_segments(
-                roman_segments, roman_conversion_params=self.roman_conversion_params
-            )
+            dense_segments = [
+                DenseSegment.from_observation(obs) for obs in raw_observations
+            ]
             general_segments = (
                 self.segment_converter.segment_with_occlusion_to_general_segments(
-                    roman_segments
+                    dense_segments
                 )
             )
             general_segments = SegmentList(general_segments)

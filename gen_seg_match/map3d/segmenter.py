@@ -29,7 +29,8 @@ from transformers import AutoImageProcessor, AutoModel
 from typing import List
 from segment_anything import sam_model_registry, SamAutomaticMaskGenerator
 
-from robotdatapy.camera import CameraParams
+from robotdatapy.camera import CameraParams, pixel_depth_2_xyz
+from robotdatapy.transform import transform
 
 from roman.map.observation import Observation
 from gen_seg_match.params import SegmenterParams
@@ -227,6 +228,9 @@ class Segmenter:
         if self.frame_descriptor_type is not None:
             frame_descriptor = self.get_frame_descriptor(dino_output_patches)
 
+        if depth_data is not None:
+            occlusion_edge_mask = self._get_occlusion_edge_mask(depth_data.shape)
+
         for mask in masks:
             mask = self.unapply_rotation(mask)
             ptcld = None
@@ -268,8 +272,8 @@ class Segmenter:
                 pcd.remove_non_finite_points()
                 pcd_sampled = pcd.voxel_down_sample(voxel_size=self.params.voxel_size)
                 if not pcd_sampled.is_empty():
-                    ptcld = np.asarray(pcd_sampled.points)
-                if ptcld is None:
+                    ptcld = self._remove_point_cloud_outliers(pcd_sampled)
+                if ptcld is None or ptcld.size == 0:
                     continue
 
             # Generate downsampled mask
@@ -313,6 +317,11 @@ class Segmenter:
 
             new_observation = Observation(
                 t, pose, mask, mask_downsampled, ptcld, semantic_descriptor
+            )
+            new_observation.occluded_points = self._compute_occlusion_points(
+                observation=new_observation,
+                depth_img=depth_data,
+                occlusion_edge_mask=occlusion_edge_mask,
             )
             self.observations.append(new_observation)
 
@@ -605,3 +614,78 @@ class Segmenter:
             self.params.min_mask_image_fraction * image_shape[0] * image_shape[1]
         )
         return max(self.params.min_mask_pixels, from_image_fraction)
+
+    def _get_occlusion_edge_mask(self, img_shape):
+        edge_mask = np.zeros((img_shape[0], img_shape[1]), bool)
+        edge_mask[: self.params.occlusion_edge_pixels, :] = True
+        edge_mask[-self.params.occlusion_edge_pixels :, :] = True
+        edge_mask[:, : self.params.occlusion_edge_pixels] = True
+        edge_mask[:, -self.params.occlusion_edge_pixels :] = True
+        return edge_mask
+
+    def _compute_occlusion_points(
+        self, observation: Observation, depth_img, occlusion_edge_mask=None
+    ):
+        if occlusion_edge_mask is None:
+            occlusion_edge_mask = self._get_occlusion_edge_mask(depth_img.shape)
+
+        occluded_points = observation.point_cloud[
+            transform(np.linalg.inv(observation.pose), observation.point_cloud)[:, 2]
+            > self.params.occlusion_max_depth,
+            :,
+        ]
+
+        # TODO move observation into gen_seg_match
+        # TODO: support occlusion points for point cloud case
+
+        occluded_pixels = np.array(
+            np.where(np.bitwise_and(observation.mask.astype(bool), occlusion_edge_mask))
+        ).T  # (y, x)
+        occluded_pixels_depths = (
+            depth_img[occluded_pixels[:, 0], occluded_pixels[:, 1]] * 1e-3
+        )
+        occluded_pixels_3d_cam = pixel_depth_2_xyz(
+            occluded_pixels[:, 1],
+            occluded_pixels[:, 0],
+            occluded_pixels_depths,
+            self.depth_cam_params.K,
+        ).T
+        occluded_pixels_3d_world = transform(observation.pose, occluded_pixels_3d_cam)
+
+        occluded_points = (
+            np.vstack([occluded_points, occluded_pixels_3d_world])
+            if occluded_points.shape[0] > 0
+            else occluded_pixels_3d_world
+        )
+        return occluded_points
+
+    def _remove_point_cloud_outliers(self, pcd: o3d.geometry.PointCloud) -> np.ndarray:
+        if self.params.outlier_removal_std is not None:
+            pcd, _ = pcd.remove_statistical_outlier(10, self.params.outlier_removal_std)
+
+        points = np.asarray(pcd.points)
+
+        if self.params.outlier_removal_dbscan_eps is not None and points.size > 0:
+            # Perform DBSCAN clustering
+            labels = np.array(
+                pcd.cluster_dbscan(
+                    eps=self.params.outlier_removal_dbscan_eps,
+                    min_points=self.params.outlier_removal_dbscan_min_points,
+                )
+            )
+
+            # Number of clusters, ignoring noise if present
+            max_label = labels.max()
+
+            # get largest cluster
+            cluster_sizes = np.zeros(max_label + 1)
+            for i in range(max_label + 1):
+                cluster_sizes[i] = np.sum(labels == i)
+            if cluster_sizes.shape[0] == 0:
+                return np.array([])
+            max_cluster = np.argmax(cluster_sizes)
+
+            # Filter out any points not belonging to max cluster
+            filtered_indices = np.where(labels == max_cluster)[0]
+            points = points[filtered_indices]
+        return np.asarray(points)
