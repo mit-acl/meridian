@@ -323,6 +323,7 @@ class Segmenter:
                 depth_img=depth_data,
                 occlusion_edge_mask=occlusion_edge_mask,
             )
+            new_observation.id = len(self.observations)
             self.observations.append(new_observation)
 
         return self.observations, frame_descriptor

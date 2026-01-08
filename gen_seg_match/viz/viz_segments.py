@@ -3,6 +3,8 @@ import open3d as o3d
 from scipy.spatial.transform import Rotation as Rot
 from scipy import ndimage
 from typing import List
+from robotdatapy import camera
+import cv2 as cv
 
 from roman.map.observation import Observation
 from gen_seg_match.segment.segment_types import SegmentList, SegmentPoint, SegmentLine
@@ -110,16 +112,41 @@ def render3d_onscreen(geometry_list, label_list, mean_point):
 
 
 def viz_masks_on_img(
-    img_bgr: np.ndarray, observations: List[Observation], alpha: float = 0.5
+    img_bgr: np.ndarray,
+    observations: List[Observation],
+    alpha: float = 0.5,
+    colors=None,
+    draw_points=False,
+    cam_params=None,
 ) -> np.ndarray:
+    assert not (draw_points and cam_params is None), (
+        "If draw_points is True, cam_params must be provided."
+    )
+
     viz_img = np.array(img_bgr).copy().astype(np.float32)
     for obs in observations:
         mask = obs.mask.astype(bool)
-        color = np.array(color_from_seed(np.random.randint(0, 1000)), dtype=np.float32)
+        if colors is not None:
+            color = np.array(colors[obs.id % len(colors)], dtype=np.float32)
+        else:
+            color = np.array(
+                color_from_seed(np.random.randint(0, 1000)), dtype=np.float32
+            )
 
         viz_img[mask] = (1 - alpha) * viz_img[mask] + alpha * color
         edges = ndimage.binary_dilation(mask) ^ mask
         viz_img[edges] = 0
+
+        if draw_points and obs.point_cloud is not None:
+            # Project points to 2D
+            points_in_2d = [
+                camera.xyz_2_pixel(p.reshape((3, 1)), cam_params.K)
+                for p in obs.point_cloud
+                if p[2] > 0
+            ]
+            for px in points_in_2d:
+                px = px.reshape(-1)
+                cv.circle(viz_img, (int(px[0]), int(px[1])), 1, [0, 0, 0], -1)
 
     viz_img = np.clip(viz_img, 0, 255).astype(np.uint8)
     return viz_img

@@ -307,11 +307,18 @@ class RGBDPoseEstimation:
         )
 
         # draw raw observations
+        colors = [color_from_seed(obs.id) for obs in observations]
         output[:, : rgbd_input.shape[1]] = viz_masks_on_img(
-            rgbd_input.bgr, observations, alpha=0.5
+            rgbd_input.bgr,
+            observations,
+            alpha=0.5,
+            colors=colors,
+            draw_points=True,
+            cam_params=rgbd_input.camera_params,
         )
 
         # draw segments
+        colors = [color_from_seed(seg.history[0]) for seg in segments]
         output[
             :,
             rgbd_input.shape[1] + self.pipeline_params.viz_img_pixel_sep :,
@@ -320,6 +327,7 @@ class RGBDPoseEstimation:
             segments,
             rgbd_input.camera_params.K,
             write_ids=self.pipeline_params.viz_write_ids,
+            colors=colors,
         )
 
         if output_file is not None:

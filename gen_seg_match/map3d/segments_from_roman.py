@@ -71,6 +71,7 @@ class GeneralSegmentConverter:
             first_seen=roman_segment.first_seen,
             last_seen=roman_segment.last_seen,
             dense_points=dense_points,
+            history=getattr(roman_segment, "history", []),
         )
 
     def to_line_segment(
@@ -96,6 +97,7 @@ class GeneralSegmentConverter:
             first_seen=roman_segment.first_seen,
             last_seen=roman_segment.last_seen,
             dense_points=dense_points,
+            history=getattr(roman_segment, "history", []),
         )
         line_segments = []
         if self.params.line_inclusion:
@@ -108,17 +110,21 @@ class GeneralSegmentConverter:
         return line_segments
 
     def to_point_segment(
-        self, roman_segment: RomanSegment, mean: np.ndarray
+        self, roman_segment: RomanSegment, pt: np.ndarray
     ) -> SegmentPoint:
         dense_points = roman_segment.points if self.params.copy_dense_points else None
+        segment_history = []
+        if hasattr(roman_segment, "history"):
+            segment_history = roman_segment.history
         return SegmentPoint(
             id=roman_segment.id,
-            point=mean,  # TODO: is _center_ref == 'bottom-middle' an issue?
+            point=pt,  # TODO: is _center_ref == 'bottom-middle' an issue?
             ratio_feature=self.get_roman_ratio_feature(roman_segment),
             cos_feature=roman_segment.semantic_descriptor,
             first_seen=roman_segment.first_seen,
             last_seen=roman_segment.last_seen,
             dense_points=dense_points,
+            history=segment_history,
         )
 
     def get_roman_ratio_feature(self, roman_segment: RomanSegment) -> np.ndarray:
@@ -153,7 +159,7 @@ class GeneralSegmentConverter:
 
         for roman_segment in roman_segments:
             if self.params.force_points_only:
-                general_segments.append(self.to_point_segment(roman_segment))
+                general_segments.append(self.to_point_segment(roman_segment, pt=mean))
                 continue
 
             mean, eigvals, U, principal_components = self.pca(roman_segment)
@@ -166,13 +172,13 @@ class GeneralSegmentConverter:
                     self.to_line_segment(roman_segment, mean, U, principal_components)
                 )
             else:
-                general_segments.append(self.to_point_segment(roman_segment))
+                general_segments.append(self.to_point_segment(roman_segment, pt=mean))
 
         # Related line and point segments may have the same id -
         # ensure all segment ids are unique
         general_segments.reindex()
         return general_segments
-    
+
     # alternative to convert segments
     # def roman_to_general_segments(
     #     self, roman_segments: List[RomanSegment]

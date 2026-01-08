@@ -630,6 +630,7 @@ class DenseSegment(GeneralSegment):
             occluded_points=transform.transform(
                 observation.pose, observation.occluded_points
             ),
+            history=[observation.id],
         )
 
     def __post_init__(self):
