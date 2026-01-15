@@ -156,14 +156,15 @@ class GeneralSegmentConverter:
                 max_segment_id += 1
             segment_ids.add(seg.id)
 
-        general_segments = []
+        general_segments = SegmentList([])
 
         for roman_segment in roman_segments:
+            mean, eigvals, U, principal_components = self.pca(roman_segment)
+
             if self.params.force_points_only:
                 general_segments.append(self.to_point_segment(roman_segment, pt=mean))
                 continue
 
-            mean, eigvals, U, principal_components = self.pca(roman_segment)
             # if self.is_plane(eigvals, principal_components):
             #     general_segments.append(self.to_point_segment(roman_segment))
             #     # TODO: enable general segments
@@ -333,10 +334,18 @@ class GeneralSegmentConverter:
         occluded_points_2d = self.get_points_on_2d_plane(occluded_points, normal, mean, plane_basis_vectors)
         line_borders = self.get_line_borders_from_2d_points(points_2d, occluded_points_2d)
         for pt1, pt2 in line_borders:
+            pt1_3d = mean + pt1[0] * plane_basis_vectors[:, 0] + pt1[1] * plane_basis_vectors[:, 1]
+            pt2_3d = mean + pt2[0] * plane_basis_vectors[:, 0] + pt2[1] * plane_basis_vectors[:, 1]
+            # TODO: hard coding here, don't want to include lines
+            # are are just at the border of max depth
+            # if pt1_3d[2] > 4.0 and pt2_3d[2] > 4.0:
+            #     continue
+            # if pt1_3d[2] < 1.0 or pt2_3d[2] < 1.0:
+            #     continue
             sparse_segments.append(SegmentLine.from_endpoints(
                 id=segment.id,
-                pt1=mean + pt1[0] * plane_basis_vectors[:, 0] + pt1[1] * plane_basis_vectors[:, 1],
-                pt2=mean + pt2[0] * plane_basis_vectors[:, 0] + pt2[1] * plane_basis_vectors[:, 1],
+                pt1=pt1_3d,
+                pt2=pt2_3d,
                 ratio_feature=self.get_roman_ratio_feature(segment),
                 cos_feature=segment.semantic_descriptor,
                 first_seen=segment.first_seen,
@@ -401,7 +410,7 @@ class GeneralSegmentConverter:
             v2 = v2 / np.linalg.norm(v2)
             angle = np.arccos(np.clip(np.dot(v1, v2), -1.0, 1.0))
             # if angle < np.deg2rad(self.params.plane_border_smoothing_angle_deg):
-            if angle < np.deg2rad(20.0): # TODO: magic number
+            if angle < np.deg2rad(10.0): # TODO: magic number
                 # skip current point
                 continue
             else:
