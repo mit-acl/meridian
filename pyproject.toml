@@ -8,6 +8,8 @@ version = "0.0.1"
 dependencies = [
     "numpy",
     "alphashape",
+    "trimesh",
+    "manifold3d",
     #"git+https://github.com/facebookresearch/segment-anything.git"
 ]
 requires-python = ">=3.8"
