@@ -12,6 +12,7 @@ import argparse
 from pathlib import Path
 import json
 from enum import Enum
+import pickle
 
 from roman.align.results import SubmapAlignResults, save_submap_align_results
 from roman.align.dist_reg_with_pruning import GravityConstraintError
@@ -24,10 +25,12 @@ from gen_seg_match.match.segment_matcher import (
     InsufficientAssociationsException,
 )
 from gen_seg_match.params import SubmapParams, RomanConversionParams, SegmentMatchParams
-from gen_seg_match.map3d.submap import submaps_from_roman_map
+from gen_seg_match.map3d.submap import submaps_from_roman_map, GeneralSegmentConverter
 from gen_seg_match.utils import expandvars_recursive
 from gen_seg_match.segment.segment_types import SegmentList, SegmentLine, SegmentPoint
 
+
+GRAVITY_DIR_NEG_Z: np.ndarray = np.array([0.0, 0.0, -1.0])
 
 class AssociationType(Enum):
     POINT_TO_POINT = 1
@@ -129,10 +132,9 @@ def results_matrix_to_roman_align_results(
             ]
         ).reshape((*results_matrix.shape, 4, 4)),
         associated_objs_mat=[
-            results_matrix[i, j].associations
+            [results_matrix[i, j].associations for j in range(results_matrix.shape[1])]
             for i in range(results_matrix.shape[0])
-            for j in range(results_matrix.shape[1])
-        ],  # cannot be a numpy array because of differening shapes
+        ],  # cannot be a numpy array because of differing shapes
         timing_list=np.array(
             [
                 results_matrix[i, j].runtime_s
@@ -188,7 +190,12 @@ def register_submaps(
     start_t = time.time()
 
     try:
-        associations = matcher.match(submap_1.segments, submap_2.segments)
+        associations = matcher.match(
+            submap_1.segments,
+            submap_2.segments,
+            GRAVITY_DIR_NEG_Z,
+            GRAVITY_DIR_NEG_Z,
+        )
         association_types = []
         # track association types
         for assoc in associations:
@@ -200,7 +207,11 @@ def register_submaps(
         result.association_types = tuple(association_types)
 
         T_sm1grav_sm2grav_hat = matcher.register(
-            submap_1.segments, submap_2.segments, associations
+            submap_1.segments,
+            submap_2.segments,
+            GRAVITY_DIR_NEG_Z,
+            GRAVITY_DIR_NEG_Z,
+            associations,
         )
         # (T^odom_flu)^{-1} @ T^odom_gravaligned
         T_sm1_sm1grav = np.linalg.inv(submap_1.pose_flu) @ submap_1.pose_gravity_aligned
@@ -337,6 +348,7 @@ if __name__ == "__main__":
     parser.add_argument("-o", "--output-dir", type=str, required=True)
     parser.add_argument("-n", "--run-names", type=str, nargs="+", default=None)
     parser.add_argument("-e", "--run-env", type=str, default="RUN")
+    parser.add_argument("--save-general-segments", action="store_true")
     args = parser.parse_args()
 
     output_dir = Path(expandvars_recursive(args.output_dir))
@@ -388,6 +400,13 @@ if __name__ == "__main__":
     roman_conversion_params = RomanConversionParams.from_yaml(args.params)
     submap_lists = []
     for name, roman_map in zip(run_names, roman_maps):
+        if args.save_general_segments:
+            general_segments = GeneralSegmentConverter(
+                roman_conversion_params
+            ).roman_to_general_segments(roman_map.segments)
+            (output_dir / "gsm_maps").mkdir(parents=True, exist_ok=True)
+            with (output_dir / "gsm_maps" / f"{name}.pkl").open("wb") as f:
+                pickle.dump(general_segments, f, -1)
         submap_params.submap_times = submap_times[name]
         new_sm_list = submaps_from_roman_map(
             roman_map, submap_params, roman_conversion_params

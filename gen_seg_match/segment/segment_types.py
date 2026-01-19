@@ -20,6 +20,14 @@ class GeneralSegment:
     def dim(self) -> int:
         return self.point.shape[0]
 
+    @property
+    def ratio_feature_dim(self) -> int:
+        return self.ratio_feature.shape[0] if self.ratio_feature is not None else 0
+
+    @property
+    def cos_feature_dim(self) -> int:
+        return self.cos_feature.shape[0] if self.cos_feature is not None else 0
+
     def to_array(self, include_ratio=True, include_cos=True) -> np.ndarray:
         raise NotImplementedError("to_array not implemented")
 
@@ -74,6 +82,14 @@ class SegmentPoint(GeneralSegment):
         if self.cos_feature is not None:
             self.cos_feature /= np.linalg.norm(self.cos_feature)
 
+    def __str__(self):
+        return (
+            f"SegmentPoint(id={self.id}, point={self.point.reshape(-1)}, "
+            + f"ratio_feature_dim={self.ratio_feature_dim}, "
+            + f"cos_feature_dim={self.cos_feature_dim}, "
+            + f"first_seen={self.first_seen}, last_seen={self.last_seen})"
+        )
+
     def to_array(self, include_ratio=True, include_cos=True) -> np.ndarray:
         features = self._to_array_features(include_ratio, include_cos)
         return np.concatenate(
@@ -120,6 +136,15 @@ class SegmentLine(GeneralSegment):
         if self.cos_feature is not None:
             self.cos_feature /= np.linalg.norm(self.cos_feature)
         self.direction = self.direction / np.linalg.norm(self.direction)
+
+    def __str__(self):
+        return (
+            f"SegmentLine(id={self.id}, point={self.point}, direction={self.direction}, "
+            + f"num_endpoints={self.num_endpoints}, "
+            + f"ratio_feature_dim={self.ratio_feature_dim}, "
+            + f"cos_feature_dim={self.cos_feature_dim}, "
+            + f"first_seen={self.first_seen}, last_seen={self.last_seen})"
+        )
 
     @classmethod
     def from_endpoints(cls, id: int, pt1: np.ndarray, pt2: np.ndarray, **kwargs):
@@ -406,6 +431,10 @@ class SegmentList(list):
     @property
     def last_seen(self) -> float:
         return max(seg.last_seen for seg in self)
+
+    @property
+    def ids(self) -> List[int]:
+        return [seg.id for seg in self]
 
     def get_points(self) -> "SegmentList":
         return SegmentList([seg for seg in self if type(seg) is SegmentPoint])

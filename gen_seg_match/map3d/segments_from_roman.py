@@ -92,7 +92,7 @@ class GeneralSegmentConverter:
         if self.params.line_inclusion:
             line_segments.append(line)
         if self.params.line_separate_endpoints:
-            for pt in line.endpoints:
+            for pt in [line_min, line_max]:
                 line_segments.append(self.to_point_segment(roman_segment, pt=pt))
         if self.params.line_separate_center_point:
             line_segments.append(self.to_point_segment(roman_segment, pt=mean))
@@ -127,16 +127,26 @@ class GeneralSegmentConverter:
     def roman_to_general_segments(
         self, roman_segments: List[RomanSegment]
     ) -> List[GeneralSegment]:
+        # Temporary patch to get rid of duplicate segment ids
+        # TODO: fix this upstream in ROMAN
+        max_segment_id = np.max([seg.id for seg in roman_segments]) + 1
+        segment_ids = set()
+        for seg in roman_segments:
+            if seg.id in segment_ids:
+                seg.id = max_segment_id
+                max_segment_id += 1
+            segment_ids.add(seg.id)
+
         general_segments = []
 
         for roman_segment in roman_segments:
             mean, eigvals, U, principal_components = self.pca(roman_segment)
 
-            if self.is_plane(eigvals, principal_components):
-                general_segments.append(self.to_point_segment(roman_segment))
-                # TODO: enable general segments
-                # general_segments.append(self.to_plane_segment(roman_segment, mean, U))
-            elif self.is_line(eigvals, principal_components):
+            # if self.is_plane(eigvals, principal_components):
+            #     general_segments.append(self.to_point_segment(roman_segment))
+            #     # TODO: enable general segments
+            #     # general_segments.append(self.to_plane_segment(roman_segment, mean, U))
+            if self.is_line(eigvals, principal_components):
                 general_segments.extend(
                     self.to_line_segment(roman_segment, mean, U, principal_components)
                 )
