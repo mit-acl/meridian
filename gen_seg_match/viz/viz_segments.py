@@ -1,5 +1,7 @@
 import numpy as np
 import open3d as o3d
+from scipy.spatial.transform import Rotation as Rot
+
 from gen_seg_match.segment.segment_types import SegmentList, SegmentPoint, SegmentLine
 
 
@@ -47,15 +49,11 @@ def viz_segments(
                 cyl.compute_vertex_normals()
 
                 # Compute rotation
+                # Find some valid rotation matrix that aligns z axis to segment direction
                 z_axis = np.array([0, 0, 1.0])
-                v = np.cross(z_axis, seg.get_direction())
-                c = np.dot(z_axis, seg.get_direction())
-                if np.linalg.norm(v) > 1e-6:
-                    vx = np.array(
-                        [[0, -v[2], v[1]], [v[2], 0, -v[0]], [-v[1], v[0], 0]]
-                    )
-                    R = np.eye(3) + vx + vx @ vx * (1 / (1 + c))
-                    cyl.rotate(R)
+                target = seg.get_direction()
+                R = Rot.align_vectors([target], [z_axis]).as_matrix()[0].T
+                cyl.rotate(R)
 
                 # Move to midpoint
                 cyl.translate((seg.endpoints[0] + seg.endpoints[1]) / 2)
