@@ -25,6 +25,9 @@ def plot_seg(seg, ax, custom_color=None):
         else custom_color
     )
     if isinstance(seg, SegmentLine):
+        assert seg.num_endpoints == 2, (
+            "only supports line segments currently (no infinite lines)"
+        )
         ax.plot(
             [seg.endpoints[0][0], seg.endpoints[1][0]],
             [seg.endpoints[0][1], seg.endpoints[1][1]],

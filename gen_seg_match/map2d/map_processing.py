@@ -18,42 +18,23 @@ def merge_lines(line1: SegmentLine, line2: SegmentLine) -> SegmentLine:
         else direction2
     )
     direction /= np.linalg.norm(direction)
-    # TODO: maybe weight the direction by the length?
-    line1_infinite = SegmentLine(-1, line1.get_point(), line1.get_direction())
-    line2_infinite = SegmentLine(-1, line2.get_point(), line2.get_direction())
-    if line1.is_parallel_to(line2):
-        point1 = line1.get_point()
-        point2 = line2_infinite.closest_point_to_point(point1)
-        point = (point1 + point2) / 2
-    else:
-        point1, point2 = line1_infinite.closest_points(line2_infinite)
-        point = (point1 + point2) / 2
-
-    merged_infinite = SegmentLine(-1, point, direction)
 
     # project endpoints of both lines onto the merged line
-    endpoint_candidates = []
     endpoints = [
         line1.endpoints[0],
         line1.endpoints[1],
         line2.endpoints[0],
         line2.endpoints[1],
     ]
-    for pt in endpoints:
-        endpoint_candidates.append(merged_infinite.closest_point_to_point(pt))
 
-    pt1 = None
-    pt2 = None
     max_dist = -1
     pt1_idx = -1
     pt2_idx = -1
-    for i in range(len(endpoint_candidates)):
-        for j in range(i + 1, len(endpoint_candidates)):
-            dist = np.linalg.norm(endpoint_candidates[i] - endpoint_candidates[j])
+    for i in range(len(endpoints)):
+        for j in range(i + 1, len(endpoints)):
+            dist = np.linalg.norm(endpoints[i] - endpoints[j])
             if dist > max_dist:
                 max_dist = dist
-                pt1 = endpoint_candidates[i]
-                pt2 = endpoint_candidates[j]
                 pt1_idx = i
                 pt2_idx = j
 
@@ -105,6 +86,9 @@ def clean_up_line_map(
                 return False
         else:
             closest_points = line1.closest_points(line2)
+            # need to use infinite lines as that allows us to actually get a
+            # perpendicular distance - otherwise, two collinear line segments
+            # with endpoints far apart would fail this check
             perp_dist_1 = line1.min_dist_to_point(
                 closest_points[1], use_infinite_line=True
             )
@@ -167,7 +151,6 @@ def _clean_up_map(
     for outer_iter in range(max_iter):
         outer_changed = False
         for i in range(len(prev_objects) - 1, -1, -1):
-            changed = False
             for j in range(i + 1, len(objects)):
                 obj_i = prev_objects[i]
                 obj_j = objects[j]
@@ -175,11 +158,8 @@ def _clean_up_map(
                 if merge_check(obj_i, obj_j):
                     objects[i] = merge_objects(obj_i, obj_j)
                     del objects[j]
-                    changed = True
                     outer_changed = True
                     break
-            if changed:
-                continue
         if not outer_changed:
             break
         prev_objects = copy.deepcopy(objects)

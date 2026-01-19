@@ -32,6 +32,7 @@ from gen_seg_match.segment.segment_types import SegmentList, SegmentLine, Segmen
 
 GRAVITY_DIR_NEG_Z: np.ndarray = np.array([0.0, 0.0, -1.0])
 
+
 class AssociationType(Enum):
     POINT_TO_POINT = 1
     LINE_TO_LINE = 2
