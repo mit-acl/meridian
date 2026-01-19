@@ -38,6 +38,9 @@ from gen_seg_match.register.registerer import (
 )
 
 
+GRAVITY_DIR_NEG_Z: np.ndarray = np.array([0.0, 0.0, -1.0])
+
+
 class AssociationType(Enum):
     POINT_TO_POINT = 1
     LINE_TO_LINE = 2
@@ -201,8 +204,8 @@ def register_submaps(
         associations = matcher.match(
             submap_1.segments,
             submap_2.segments,
-            np.array([0.0, 0.0, -1.0]),
-            np.array([0.0, 0.0, -1.0]),
+            GRAVITY_DIR_NEG_Z,
+            GRAVITY_DIR_NEG_Z,
         )
         association_types = []
         # track association types
@@ -217,8 +220,8 @@ def register_submaps(
         T_sm1grav_sm2grav_hat = registerer.register(
             submap_1.segments,
             submap_2.segments,
-            np.array([0.0, 0.0, -1.0]),
-            np.array([0.0, 0.0, -1.0]),
+            GRAVITY_DIR_NEG_Z,
+            GRAVITY_DIR_NEG_Z,
             correspondences=associations,
         ).transformation
         # (T^odom_flu)^{-1} @ T^odom_gravaligned

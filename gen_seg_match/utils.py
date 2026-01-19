@@ -1,6 +1,7 @@
 import numpy as np
 from typing import Tuple, List, Union
 from os.path import expandvars, expanduser
+import open3d as o3d
 
 
 def sort_time_intervals(
@@ -68,3 +69,48 @@ def expandvars_recursive(source):
 
     else:
         return source
+
+
+def clean_up_points(
+    points: np.ndarray,
+    voxel_size: float = None,
+    outlier_removal_std: float = None,
+    dbscan_epsilon: float = None,
+    dbscan_min_points: int = 10,
+) -> np.ndarray:
+    if points is not None:
+        pcd = o3d.geometry.PointCloud()
+        pcd.points = o3d.utility.Vector3dVector(points)
+        if voxel_size is not None:
+            pcd = pcd.voxel_down_sample(voxel_size=voxel_size)
+        if outlier_removal_std is not None:
+            pcd, _ = pcd.remove_statistical_outlier(10, outlier_removal_std)
+
+        if pcd.is_empty():
+            points = None
+        else:
+            points = np.asarray(pcd.points)
+
+    if points is not None and dbscan_epsilon is not None:
+        # Perform DBSCAN clustering
+        labels = np.array(
+            pcd.cluster_dbscan(
+                eps=dbscan_epsilon,
+                min_points=dbscan_min_points,
+            )
+        )
+
+        # Number of clusters, ignoring noise if present
+        max_label = labels.max()
+
+        # get largest cluster
+        cluster_sizes = np.zeros(max_label + 1)
+        for i in range(max_label + 1):
+            cluster_sizes[i] = np.sum(labels == i)
+        max_cluster = np.argmax(cluster_sizes)
+
+        # Filter out any points not belonging to max cluster
+        filtered_indices = np.where(labels == max_cluster)[0]
+        points = points[filtered_indices]
+
+    return points

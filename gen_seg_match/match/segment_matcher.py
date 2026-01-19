@@ -176,12 +176,7 @@ class SegmentMatcher:
             (map1.get_segment_from_id(corr[0]), map2.get_segment_from_id(corr[1]))
             for corr in correspondences
         ]
-        all_pairs_correct_dir = self._correct_bilinear_directions(
-            all_pairs, gravity_dir1, gravity_dir2
-        )
-        correspondences = np.array(
-            [[corr[0].id, corr[1].id] for corr in all_pairs_correct_dir]
-        )
+        correspondences = np.array([[corr[0].id, corr[1].id] for corr in all_pairs])
 
         if len(filtered_correspondences) < self.params.dim:
             raise InsufficientAssociationsException(
@@ -387,79 +382,3 @@ class SegmentMatcher:
         transform = np.eye(4)
         transform[:3, :3] = np.hstack([e0, e1, e2])
         return transform
-
-    def _correct_bilinear_directions(
-        self,
-        segment_pairs: List[Tuple[GeneralSegment, GeneralSegment]],
-        gravity_dir1: np.ndarray = None,
-        gravity_dir2: np.ndarray = None,
-    ) -> List[Tuple[GeneralSegment, GeneralSegment]]:
-        segments1 = SegmentList([pair[0].copy() for pair in segment_pairs])
-        segments2 = SegmentList([pair[1].copy() for pair in segment_pairs])
-        Aput = [[i, i] for i in range(len(segment_pairs))]
-        for i, seg in enumerate([pair[1].copy() for pair in segment_pairs]):
-            if isinstance(seg, SegmentLine):
-                if seg.num_endpoints == 1:
-                    continue
-                seg.direction = -seg.direction
-            if isinstance(seg, SegmentPlane):
-                seg.normal = -seg.normal
-            seg.id = -seg.id - 1  # temporary id to avoid conflicts
-            segments2.append(seg)
-            Aput.append([i, len(segments2) - 1])
-
-        unidirectional_matches = self.match(
-            segments1,
-            segments2,
-            gravity_dir1,
-            gravity_dir2,
-            bidirectional=False,
-            putative_match_matrix=np.array(Aput),
-        )
-
-        corrected_pairs = []
-        for pair in unidirectional_matches:
-            seg1 = segments1.get_segment_from_id(pair[0])
-            seg2 = segments2.get_segment_from_id(pair[1])
-            # fix ids
-            if seg2.id < 0:
-                seg2.id = -seg2.id - 1
-            corrected_pairs.append((seg1, seg2))
-
-        # check that all line-plane pairs are included
-        for pair in unidirectional_matches:
-            if pair[1] < 0:
-                pair[1] = -pair[1] - 1
-
-        num_pairs_not_found = 0
-        for pair in segment_pairs:
-            if [pair[0].id, pair[1].id] not in unidirectional_matches.tolist():
-                num_pairs_not_found += 1
-        # TODO: currently this sometimes drops a few associations (probably due to CLIPPER initialization randomness?)
-        # I think it would be better to do this via the M matrix directly:
-        # Find a line in the M matrix and look at its two possible associations (represented as two rows or columns)
-        # One should row/column should have non-zero entries corresponding to associations involving fixed-direction segments
-        # while the other may not.
-
-        # print(
-        #     f"Num pairs not found / total pairs: {num_pairs_not_found} / {len(segment_pairs)}"
-        # )
-        # print(f"Num unidirectional matches: {len(unidirectional_matches)} / {len(segment_pairs)}")
-        # print(pair[0])
-        # print(pair[1])
-        # print()
-        # for match in unidirectional_matches:
-        #     print(segments1.get_segment_from_id(match[0]))
-        #     print(
-        #         SegmentList(
-        #             [pair[1].copy() for pair in segment_pairs]
-        #         ).get_segment_from_id(match[1])
-        #     )
-        #     print()
-        # print("Failed")
-        # print(
-        #     f"Pair [{pair[0].id}, {pair[1].id}] not found in "
-        #     + f"unidirectional_matches: {unidirectional_matches.tolist()}"
-        # )
-
-        return corrected_pairs

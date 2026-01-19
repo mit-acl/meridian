@@ -12,6 +12,9 @@ from roman.viz import visualize_segment_on_img
 from gen_seg_match.segment.aerial_segment import AerialSegment
 from gen_seg_match.segment.segment_types import SegmentList, SegmentLine, SegmentPoint
 
+# TODO: Figure out how to encode the height of the line
+LINE_CAMERA_HEIGHT_OFFSET = 0.5
+
 
 class FrameOrientation(Enum):
     SIDE_BY_SIDE = "side_by_side"
@@ -330,12 +333,9 @@ class AssociationViz:
     def get_line_pts_on_img(self, point3d_odom_1, point3d_odom_2, T_odom_cam):
         """Projects a 3D line in the odometry frame into a 2D line on the camera image."""
         point3d_odom_1[2] = (
-            T_odom_cam[2, 3] - 0.5
-        )  # TODO: for now put the line 1 meter below the camera
-        point3d_odom_2[2] = (
-            T_odom_cam[2, 3] - 0.5
-        )  # TODO: for now put the line 1 meter below the camera
-
+            T_odom_cam[2, 3] - LINE_CAMERA_HEIGHT_OFFSET
+        )  # TODO: Figure out how to encode the height of the line
+        point3d_odom_2[2] = T_odom_cam[2, 3] - LINE_CAMERA_HEIGHT_OFFSET
         point3d_cam_1 = rdp.transform.transform(
             np.linalg.inv(T_odom_cam), point3d_odom_1
         )
