@@ -1,6 +1,6 @@
 import numpy as np
 from dataclasses import dataclass
-from typing import List, Tuple
+from typing import List, Tuple, Any
 import robotdatapy as rdp
 import time
 from robotdatapy.data import PoseData, ImgData
@@ -90,7 +90,6 @@ class RGBDPoseEstimation:
     def batch_extract_segments(
         self, inputs: List[RGBDInput], segmenter: FastSAMWrapper
     ) -> List[RGBDInput]:
-        inputs_with_segments = []
         for rgbd_input in inputs:
             raw_observations = segmenter.run(
                 rgbd_input.time, np.eye(4), rgbd_input.bgr, rgbd_input.depth
@@ -103,18 +102,9 @@ class RGBDPoseEstimation:
                 roman_segments, roman_conversion_params=self.roman_conversion_params
             )
             general_segments = SegmentList(general_segments)
-            inputs_with_segments.append(
-                RGBDInput(
-                    time=rgbd_input.time,
-                    rgb=rgbd_input.rgb,
-                    depth=rgbd_input.depth,
-                    camera_params=rgbd_input.camera_params,
-                    gravity_direction=rgbd_input.gravity_direction,
-                    segments=general_segments,
-                )
-            )
+            rgbd_input.segments = general_segments
 
-        return inputs_with_segments
+        return inputs
 
     def batch_rgbd_pose_estimation(
         self,
@@ -326,7 +316,7 @@ class RGBDPoseEstimation:
 
     def get_camera_frustum(
         self, rgbd_input: RGBDInput, gt_pose: np.ndarray
-    ) -> np.ndarray:
+    ) -> trimesh.Trimesh:
         """
         Returns the 3D points representing the camera frustum for the given RGBD input
         and ground truth pose.
