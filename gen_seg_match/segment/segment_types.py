@@ -3,6 +3,7 @@ from dataclasses import dataclass
 import clipperpy
 from robotdatapy import transform as transform
 from typing import Tuple, List
+import pickle
 
 from gen_seg_match.viz.utils import color_from_seed
 
@@ -15,6 +16,7 @@ class GeneralSegment:
     first_seen: float = None  # optional timestamp of first observation
     last_seen: float = None  # optional timestamp of last observation
     dense_points: np.ndarray = None  # optional dense point cloud
+    history: List[int] = None  # optional list of past segment ids
 
     @property
     def dim(self) -> int:
@@ -30,6 +32,9 @@ class GeneralSegment:
 
     def to_array(self, include_ratio=True, include_cos=True) -> np.ndarray:
         raise NotImplementedError("to_array not implemented")
+
+    def to_dim(self, dim: int):
+        raise NotImplementedError("to_dim not implemented")
 
     def get_point(self) -> np.ndarray:
         return self.point.flatten()
@@ -77,6 +82,7 @@ class SegmentPoint(GeneralSegment):
     first_seen: float = None  # optional timestamp of first observation
     last_seen: float = None  # optional timestamp of last observation
     dense_points: np.ndarray = None  # optional dense point cloud
+    history: List[int] = None  # optional list of past segment ids
 
     def __post_init__(self):
         if self.cos_feature is not None:
@@ -100,6 +106,31 @@ class SegmentPoint(GeneralSegment):
             ]
         )
 
+    def to_dim(self, dim: int):
+        if self.dim == dim:
+            return self.copy()
+        elif dim < self.dim:
+            new_point = self.point[:dim]
+            new_dense_points = (
+                self.dense_points[:dim] if self.dense_points is not None else None
+            )
+        else:
+            new_point = np.zeros((dim,))
+            new_point[: self.dim] = self.point
+            new_dense_points = None
+            if self.dense_points is not None:
+                new_dense_points = np.zeros((dim, self.dense_points.shape[1]))
+                new_dense_points[: self.dim, :] = self.dense_points
+        return SegmentPoint(
+            self.id,
+            new_point,
+            self._copy_optional_array(self.ratio_feature),
+            self._copy_optional_array(self.cos_feature),
+            first_seen=self.first_seen,
+            last_seen=self.last_seen,
+            dense_points=new_dense_points,
+        )
+
     def transform(self, T):
         self.point = transform.transform(T, self.point)
         if self.dense_points is not None:
@@ -112,6 +143,9 @@ class SegmentPoint(GeneralSegment):
             self.point.copy(),
             self._copy_optional_array(self.ratio_feature),
             self._copy_optional_array(self.cos_feature),
+            first_seen=self.first_seen,
+            last_seen=self.last_seen,
+            dense_points=self._copy_optional_array(self.dense_points),
         )
 
 
@@ -126,6 +160,7 @@ class SegmentLine(GeneralSegment):
     first_seen: float = None  # optional timestamp of first observation
     last_seen: float = None  # optional timestamp of last observation
     dense_points: np.ndarray = None  # optional dense point cloud
+    history: List[int] = None  # optional list of past segment ids
 
     # endpoints can be given such that if only one endpoint is given, it is assumed
     # that the ray extends from that endpoint infinitely along the positive direction vector
@@ -189,6 +224,47 @@ class SegmentLine(GeneralSegment):
             ]
         )
 
+    def to_dim(self, dim):
+        if self.dim == dim:
+            return self.copy()
+        elif dim < self.dim:
+            new_point = self.point[:dim]
+            new_direction = self.direction[:dim]
+            new_endpoints = (
+                self.endpoints[0][:dim] if self.endpoints[0] is not None else None,
+                self.endpoints[1][:dim] if self.endpoints[1] is not None else None,
+            )
+            new_dense_points = (
+                self.dense_points[:dim] if self.dense_points is not None else None
+            )
+        else:
+            new_point = np.zeros((dim,))
+            new_point[: self.dim] = self.point
+            new_direction = np.zeros((dim,))
+            new_direction[: self.dim] = self.direction
+            new_endpoints = (None, None)
+            for i in [0, 1]:
+                if self.endpoints[i] is not None:
+                    new_endpoints = list(new_endpoints)
+                    new_endpoints[i] = np.zeros((dim,))
+                    new_endpoints[i][: self.dim] = self.endpoints[i]
+                    new_endpoints = tuple(new_endpoints)
+            new_dense_points = None
+            if self.dense_points is not None:
+                new_dense_points = np.zeros((dim, self.dense_points.shape[1]))
+                new_dense_points[: self.dim, :] = self.dense_points
+        return SegmentLine(
+            self.id,
+            new_point,
+            new_direction,
+            new_endpoints,
+            self._copy_optional_array(self.ratio_feature),
+            self._copy_optional_array(self.cos_feature),
+            first_seen=self.first_seen,
+            last_seen=self.last_seen,
+            dense_points=new_dense_points,
+        )
+
     def get_direction(self) -> np.ndarray:
         return self.direction.flatten() / np.linalg.norm(self.direction)
 
@@ -220,6 +296,9 @@ class SegmentLine(GeneralSegment):
             ),
             self._copy_optional_array(self.ratio_feature),
             self._copy_optional_array(self.cos_feature),
+            first_seen=self.first_seen,
+            last_seen=self.last_seen,
+            dense_points=self._copy_optional_array(self.dense_points),
         )
 
     def get_length(self):
@@ -350,9 +429,11 @@ class SegmentLine(GeneralSegment):
                 closest_pt = ep
         return closest_pt
 
-    def min_dist_to_point(self, point: np.ndarray) -> float:
+    def min_dist_to_point(
+        self, point: np.ndarray, use_infinite_line: bool = False
+    ) -> float:
         """Returns the minimum distance between the line segment and a point."""
-        closest_pt = self.closest_point_to_point(point)
+        closest_pt = self.closest_point_to_point(point, use_infinite_line)
         return np.linalg.norm(closest_pt - point)
 
     def min_dist_to(self, other: "SegmentLine") -> float:
@@ -390,6 +471,7 @@ class SegmentPlane(GeneralSegment):
     first_seen: float = None  # optional timestamp of first observation
     last_seen: float = None  # optional timestamp of last observation
     dense_points: np.ndarray = None  # optional dense point cloud
+    history: List[int] = None  # optional list of past segment ids
 
     def __post_init__(self):
         if self.normal is None:
@@ -423,6 +505,21 @@ class ParallelLinesException(Exception):
 
 class SegmentList(list):
     """A list of GeneralSegment objects with some helper functions."""
+
+    def __add__(self, other: "SegmentList") -> "SegmentList":
+        return SegmentList(super().__add__(other))
+
+    @classmethod
+    def load(cls, filepath: str) -> "SegmentList":
+        """Loads a segment list from a pickle file."""
+        with open(filepath, "rb") as f:
+            segment_list = pickle.load(f)
+        return segment_list
+
+    def save(self, filepath: str):
+        """Saves the segment list to a pickle file."""
+        with open(filepath, "wb") as f:
+            pickle.dump(self, f)
 
     @property
     def first_seen(self) -> float:
@@ -473,3 +570,11 @@ class SegmentList(list):
     def get_mean_point(self) -> np.ndarray:
         all_points = np.array([seg.get_point() for seg in self])
         return np.mean(all_points, axis=0)
+
+    def reindex(self):
+        for new_id, seg in enumerate(self):
+            seg.id = new_id
+        return self
+
+    def to_dim(self, dim: int) -> "SegmentList":
+        return SegmentList([seg.to_dim(dim) for seg in self])

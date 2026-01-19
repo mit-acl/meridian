@@ -11,6 +11,7 @@ class RomanConversionParams(ParamsBase):
 
     # general parameters ———————————————
     copy_dense_points: bool = False  # Whether to copy dense points into segments
+    force_points_only: bool = False  # Whether to force only point segments
 
     # parameters for plane —————————————
 

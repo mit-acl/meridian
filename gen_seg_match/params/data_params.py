@@ -52,3 +52,16 @@ class RGBDPoseEstimationDataParams(ParamsBase):
 
         if self.gravity_direction is not None:
             self.gravity_direction = np.array(self.gravity_direction).reshape((3, 1))
+
+
+@dataclass
+class CrossViewLocalizationDataParams(ParamsBase):
+    # class attribute
+    params_key: ClassVar[str] = "cross_view_localization_data"
+
+    ##################
+
+    aerial_img_path: str
+    ground_map_path: str
+
+    aerial_img_scale: float = 0.01

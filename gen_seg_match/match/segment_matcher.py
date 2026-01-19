@@ -178,9 +178,7 @@ class SegmentMatcher:
             (map1.get_segment_from_id(corr[0]), map2.get_segment_from_id(corr[1]))
             for corr in correspondences
         ]
-        correspondences = np.array(
-            [[corr[0].id, corr[1].id] for corr in all_pairs]
-        )
+        correspondences = np.array([[corr[0].id, corr[1].id] for corr in all_pairs])
 
         if len(filtered_correspondences) < self.params.dim:
             raise InsufficientAssociationsException(

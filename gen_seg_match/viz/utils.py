@@ -2,7 +2,7 @@ import numpy as np
 
 
 def color_from_seed(seed, order="rgb", num_type=int):
-    np.random.seed(seed)
+    np.random.seed(seed % (2**32))
     color_rgb = tuple((np.random.rand(3)))
     if order == "bgr":
         color = color_rgb[::-1]

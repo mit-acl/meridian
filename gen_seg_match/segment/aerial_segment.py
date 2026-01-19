@@ -2,8 +2,12 @@ import numpy as np
 from dataclasses import dataclass
 from typing import Tuple
 import shapely
+from shapely.geometry import MultiPoint
 import open3d as o3d
 import alphashape
+from typing import Dict
+
+from gen_seg_match.viz.utils import color_from_seed
 
 
 @dataclass
@@ -16,12 +20,14 @@ class AerialSegment:
     semantic_descriptor: np.ndarray = None
     first_seen: float = None
     last_seen: float = None
+    alpha_shapes: Dict[(float, float)] = None  # (alpha, grid_downsample) -> alpha shape
 
     def __post_init__(self):
         self._convex_hull = None
         self._gaussian = None
         self._eigvals = None
         self._pcd = None
+        self.alpha_shapes = {}
 
     @property
     def convex_hull(self) -> np.ndarray:
@@ -30,6 +36,16 @@ class AerialSegment:
         convex_hull_shapely = shapely.convex_hull(shapely.MultiPoint(self.points))
         self._convex_hull = np.array(convex_hull_shapely.exterior.coords)
         return self._convex_hull
+
+    @property
+    def max_extent(self) -> float:
+        if self.convex_hull is None:
+            return 0.0
+        dists = np.linalg.norm(
+            self.convex_hull[:, np.newaxis, :] - self.convex_hull[np.newaxis, :, :],
+            axis=-1,
+        )
+        return np.max(dists)
 
     def convex_hull_pixels(
         self,
@@ -43,6 +59,9 @@ class AerialSegment:
         )
 
     def get_alpha_shape(self, alpha=0.5, grid_downsample=None):
+        if (alpha, grid_downsample) in self.alpha_shapes:
+            return self.alpha_shapes[(alpha, grid_downsample)]
+
         points = self.points.copy()
         # print(len(points))
         if grid_downsample is not None:
@@ -57,13 +76,15 @@ class AerialSegment:
         alpha_shape = alphashape.alphashape(points, alpha=alpha)
         if type(alpha_shape) is shapely.geometry.polygon.Polygon:
             x, y = alpha_shape.exterior.xy
+            self.alpha_shapes[(alpha, grid_downsample)] = np.vstack([x, y]).T
         elif type(alpha_shape) is shapely.geometry.MultiPolygon:
             # x, y = [alpha_shape.geometry.exterior.xy for poly_item in alpha_shape]
             # x, y = shapely.concave_hull(alpha_shape).exterior.xy
-            return None
+            self.alpha_shapes[(alpha, grid_downsample)] = None
         else:
-            return None
-        return np.vstack([x, y]).T
+            self.alpha_shapes[(alpha, grid_downsample)] = None
+
+        return self.alpha_shapes[(alpha, grid_downsample)]
 
     def get_alpha_shape_pixels(
         self,
@@ -79,6 +100,14 @@ class AerialSegment:
             (alpha_shape - np.array(img_origin_m)) / img_pixel_scale
         ).astype(np.int32)
         return alpha_shape_pixels
+
+    def calculate_area_from_convex_hull(self) -> float:
+        self.area = MultiPoint(self.convex_hull).convex_hull.area
+        return self.area
+
+    def color_from_id(self, order="rgb", num_type=int) -> tuple:
+        """Returns a color tuple based on the segment ID."""
+        return color_from_seed(self.id, order, num_type)
 
     @property
     def viz_color(self):

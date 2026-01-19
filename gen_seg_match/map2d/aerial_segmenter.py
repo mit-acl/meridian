@@ -15,35 +15,14 @@ from transformers import AutoImageProcessor, AutoModel
 import torch
 from segment_anything import sam_model_registry, SamAutomaticMaskGenerator
 
-from roman.map.observation import Observation
 from roman.utils import expandvars_recursive
 
 from gen_seg_match.segment.aerial_segment import AerialSegment
+from gen_seg_match.params import AerialSegmenterParams
 
 
-@dataclass
-class AerialFastSAMParams:
-    model_type: str = "segment_anything"
-    weights_path: str = "$ROMAN_WEIGHTS/sam_vit_l_0b3195.pth"
-    conf: float = 0.25
-    iou: float = 0.9
-    imgsz: Tuple[int, int] = (256, 256)
-    device: str = "cuda"
-    pixel_len_m: float = 0.01
-    min_area: float = 0.01
-    max_area: float = 25.0
-    semantics: str = "dino"
-    semantics_dim: int = 768
-    triangle_ignore_masks: List[
-        Tuple[Tuple[int, int], Tuple[int, int], Tuple[int, int]]
-    ] = None
-
-    def get_model_type(self):
-        return self.model_type.lower()
-
-
-class AerialFastSAMWrapper:
-    def __init__(self, params: AerialFastSAMParams):
+class AerialSegmenter:
+    def __init__(self, params: AerialSegmenterParams):
         self.params = copy.deepcopy(params)
         if self.params.get_model_type() == "fastsam":
             self.model = FastSAM(expandvars_recursive(params.weights_path))
@@ -75,7 +54,7 @@ class AerialFastSAMWrapper:
             )
         self.semantic_patches_shape = None
 
-    def run(self, img_bgr, crop=None, downsample_factor: int = 1) -> List[Observation]:
+    def run(self, img_bgr, crop=None) -> List[AerialSegment]:
         """
         Run FastSAM on the given image and return a list of observations.
         """
@@ -86,12 +65,12 @@ class AerialFastSAMWrapper:
             img_origin = np.array([0.0, 0.0])
         image_rgb = cv.cvtColor(img_bgr, cv.COLOR_BGR2RGB)
 
-        if downsample_factor > 1:
+        if self.params.downsample_factor > 1:
             image_rgb = cv.resize(
                 image_rgb,
                 (
-                    image_rgb.shape[1] // downsample_factor,
-                    image_rgb.shape[0] // downsample_factor,
+                    image_rgb.shape[1] // self.params.downsample_factor,
+                    image_rgb.shape[0] // self.params.downsample_factor,
                 ),
                 interpolation=cv.INTER_LINEAR,
             )
@@ -139,16 +118,20 @@ class AerialFastSAMWrapper:
 
         aerial_segments = []
         for i, mask in enumerate(masks):
-            # if downsample_factor > 1:
-            #     mask = cv.resize(mask, (mask.shape[1] * downsample_factor, mask.shape[0] * downsample_factor), interpolation=cv.INTER_NEAREST)
+            # if self.params.downsample_factor > 1:
+            #     mask = cv.resize(mask, (mask.shape[1] * self.params.downsample_factor,
+            # mask.shape[0] * self.params.downsample_factor), interpolation=cv.INTER_NEAREST)
 
-            area = np.sum(mask) * self.params.pixel_len_m**2 * downsample_factor**2
-            # print(area)
+            area = (
+                np.sum(mask)
+                * self.params.pixel_len_m**2
+                * self.params.downsample_factor**2
+            )
             if area < self.params.min_area or area > self.params.max_area:
                 continue
             points = (
                 np.array(np.nonzero(mask)).astype(np.float64).T[:, ::-1]
-                * downsample_factor
+                * self.params.downsample_factor
                 * self.params.pixel_len_m
                 + img_origin * self.params.pixel_len_m
             )
@@ -171,8 +154,6 @@ class AerialFastSAMWrapper:
                     area=area,
                     points=points,
                     semantic_descriptor=semantic_descriptor,
-                    # img_pixel_location=(np.array(np.nonzero(mask)).astype(np.float64).mean(axis=1)[::-1] + img_origin).astype(np.int64),
-                    # convex_hull=np.array(convex_hull.exterior.coords)
                 )
             )
         return aerial_segments
