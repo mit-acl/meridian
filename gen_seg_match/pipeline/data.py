@@ -49,6 +49,9 @@ class RGBDPoseEstimationData:
     def __post_init__(self):
         if self.camera_est_pose_data is None and self.camera_est_pose_data is None:
             self.gravity_direction = None
+            raise Warning(
+                "No camera pose data provided; gravity direction will be set to None."
+            )
         else:
             self.gravity_direction = np.array(self.gravity_direction).reshape((3, 1))
 

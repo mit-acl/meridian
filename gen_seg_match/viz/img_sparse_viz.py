@@ -19,16 +19,15 @@ def draw_infinite_line_on_img(
     color=(0, 255, 0),
     thickness=2,
 ):
+    raise Warning(
+        "draw_infinite_line_on_img is deprecated; use draw_line_on_img instead."
+    )
     unit_vec = line.direction / np.linalg.norm(line.direction)
     points_in_3d = [line.point + unit_vec * i for i in np.linspace(-10, 10, 100)]
     # print(points_in_3d)
     points_in_2d = [
         rdp.camera.xyz_2_pixel(p.reshape((3, 1)), K) for p in points_in_3d if p[2] > 0
     ]
-    # print(points_in_2d)
-    for p in points_in_3d:
-        if p[2] < 0:
-            continue
     for i in range(len(points_in_2d) - 1):
         cv.line(
             img,
@@ -61,9 +60,6 @@ def draw_line_on_img(
     points_in_2d = [
         rdp.camera.xyz_2_pixel(p.reshape((3, 1)), K) for p in points_in_3d if p[2] > 0
     ]
-    for p in points_in_3d:
-        if p[2] < 0:
-            continue
     for i in range(len(points_in_2d) - 1):
         cv.line(
             img,
