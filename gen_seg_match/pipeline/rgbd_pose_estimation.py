@@ -28,6 +28,7 @@ from gen_seg_match.viz.utils import color_from_seed
 from gen_seg_match.viz.img_sparse_viz import img_sparse_viz
 from gen_seg_match.pipeline.data import RGBDPoseEstimationData
 from gen_seg_match.utils import expandvars_recursive
+from gen_seg_match.map3d.segments_from_roman import GeneralSegmentConverter
 
 
 @dataclass
@@ -70,6 +71,11 @@ class RGBDPoseEstimation:
     matcher: SegmentMatcher
     roman_conversion_params: RomanConversionParams = None
 
+    def __post_init__(self):
+        self.segment_converter = GeneralSegmentConverter(
+            params=self.roman_conversion_params
+        )
+
     def rgbd_pose_estimation(self, input1: RGBDInput, input2: RGBDInput):
         t0 = time.time()
         associated_ids = self.matcher.match(
@@ -100,6 +106,11 @@ class RGBDPoseEstimation:
             # TODO: roman conversion params as input below
             general_segments = roman_segments_to_general_segments(
                 roman_segments, roman_conversion_params=self.roman_conversion_params
+            )
+            general_segments = (
+                self.segment_converter.segment_with_occlusion_to_general_segments(
+                    roman_segments
+                )
             )
             general_segments = SegmentList(general_segments)
             rgbd_input.segments = general_segments
@@ -376,9 +387,10 @@ def rgbd_pose_estimation(params, output_dir, runs=Tuple[str, str]):
                     semantics="dino",
                     device="cuda",
                     max_depth=8.0,
+                    imgsz=(512, 512),
                     plane_filter_params=tuple([np.inf, 1.0, 0.2]),
-                    conf=0.2,
-                    iou=0.5,
+                    conf=0.15,
+                    iou=0.7,
                     max_mask_len_div=1,
                     erosion_size=3,
                 ),

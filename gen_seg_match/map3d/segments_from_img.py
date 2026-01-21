@@ -12,6 +12,7 @@ from gen_seg_match.segment.segment_types import (
     GeneralSegment,
     SegmentPoint,
     SegmentLine,
+    SegmentList,
 )
 from gen_seg_match.params.roman_conversion_params import RomanConversionParams
 
@@ -133,6 +134,39 @@ def get_line(segment: Segment, occluded_points: np.ndarray):
     return end_pts, offset, vector, line_pts
 
 
+def get_line_general_segments(
+    segment: Segment, occluded_points: np.ndarray
+) -> SegmentList:
+    general_segments = SegmentList()
+    end_pts, offset, vector, line_pts = get_line(segment, occluded_points)
+    if end_pts[0] is not None:
+        general_segments.append(
+            SegmentPoint(
+                id=-1,
+                point=end_pts[0].flatten(),
+                cos_feature=segment.semantic_descriptor,
+            )
+        )
+    if end_pts[1] is not None:
+        general_segments.append(
+            SegmentPoint(
+                id=-1,
+                point=end_pts[1].flatten(),
+                cos_feature=segment.semantic_descriptor,
+            )
+        )
+    general_segments.append(
+        SegmentLine(
+            id=segment.id,
+            point=offset.flatten(),
+            direction=vector.flatten(),
+            endpoints=[pt.flatten() if pt is not None else None for pt in end_pts],
+            cos_feature=segment.semantic_descriptor,
+        )
+    )
+    return general_segments
+
+
 def get_segments_with_occlusion(
     pose: np.ndarray,
     raw_observations: List[Observation],
@@ -188,39 +222,15 @@ def get_segments_with_occlusion(
 
 
 def roman_segments_to_general_segments(
-    segments: List[Segment], roman_conversion_params: RomanConversionParams
+    segments: List[Segment],
+    roman_conversion_params: RomanConversionParams,
+    max_minor_axis_extent: float = 1.0,
+    max_eigval_ratio: float = 0.1,
 ) -> List[GeneralSegment]:
     general_segments = []
     for seg in segments:
         if is_line(seg):
-            end_pts, offset, vector, _ = get_line(seg, seg.occluded_points)
-            if end_pts[0] is not None:
-                general_segments.append(
-                    SegmentPoint(
-                        id=-1,
-                        point=end_pts[0].flatten(),
-                        cos_feature=seg.semantic_descriptor,
-                    )
-                )
-            if end_pts[1] is not None:
-                general_segments.append(
-                    SegmentPoint(
-                        id=-1,
-                        point=end_pts[1].flatten(),
-                        cos_feature=seg.semantic_descriptor,
-                    )
-                )
-            general_segments.append(
-                SegmentLine(
-                    id=seg.id,
-                    point=offset.flatten(),
-                    direction=vector.flatten(),
-                    endpoints=[
-                        pt.flatten() if pt is not None else None for pt in end_pts
-                    ],
-                    cos_feature=seg.semantic_descriptor,
-                )
-            )
+            general_segments.extend(get_line_general_segments(seg, seg.occluded_points))
         elif is_plane(seg):
             pass
         else:

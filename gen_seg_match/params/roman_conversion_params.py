@@ -32,4 +32,10 @@ class RomanConversionParams(ParamsBase):
     line_separate_center_point: bool = True  # Create separate point for center point
     line_inclusion: bool = True  # Include line objects
 
+    # joint parameters (need to see if these work) ——————————————
+
+    non_point_min_extent: float = 1.0
+    max_minor_axis_extent: float = 1.5
+    max_eigval_ratio: float = 0.3
+
     # ——————————————————————————————————

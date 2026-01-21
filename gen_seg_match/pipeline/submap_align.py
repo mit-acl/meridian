@@ -4,7 +4,7 @@ import robotdatapy as rdp
 from robotdatapy.data import PoseData
 from typing import List, Dict
 from tqdm import tqdm
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from copy import deepcopy
 import time
 from scipy.spatial.transform import Rotation as Rot
@@ -22,12 +22,20 @@ from roman.params.submap_align_params import SubmapAlignInputOutput, SubmapAlign
 from gen_seg_match.map3d.submap import Submap
 from gen_seg_match.match.segment_matcher import (
     SegmentMatcher,
-    InsufficientAssociationsException,
 )
-from gen_seg_match.params import SubmapParams, RomanConversionParams, SegmentMatchParams
+from gen_seg_match.params import (
+    SubmapParams,
+    RomanConversionParams,
+    SegmentMatchParams,
+    RegisterParams,
+)
 from gen_seg_match.map3d.submap import submaps_from_roman_map, GeneralSegmentConverter
 from gen_seg_match.utils import expandvars_recursive
 from gen_seg_match.segment.segment_types import SegmentList, SegmentLine, SegmentPoint
+from gen_seg_match.register.registerer import (
+    Registerer,
+    InsufficientAssociationsException,
+)
 
 
 GRAVITY_DIR_NEG_Z: np.ndarray = np.array([0.0, 0.0, -1.0])
@@ -54,8 +62,8 @@ class SingleAlignResult:
     inlier_ratio: float = np.nan
     gt_distance_m: float = np.nan
     submap_yaw_diff_rad: float = np.nan
-    T_i_j: np.ndarray = np.zeros((4, 4)) * np.nan
-    T_i_j_hat: np.ndarray = np.zeros((4, 4)) * np.nan
+    T_i_j: np.ndarray = field(default_factory=lambda: np.full((4, 4), np.nan))
+    T_i_j_hat: np.ndarray = field(default_factory=lambda: np.full((4, 4), np.nan))
     runtime_s: float = np.nan
 
     @property
@@ -147,6 +155,7 @@ def results_matrix_to_roman_align_results(
         submap_align_params=None,
         submap_io=None,
         total_time=np.inf,
+        similarity_mat=None,
     )
     output_matrix.num_point_associations_mat = np.array(
         [
@@ -170,6 +179,7 @@ def register_submaps(
     submap_1: Submap,
     submap_2: Submap,
     matcher: SegmentMatcher,
+    registerer: Registerer,
     T_sm1_sm2_gt: np.ndarray,
     params: ROMANBasedSubmapAlignParams,
 ):
@@ -207,13 +217,13 @@ def register_submaps(
         result.associations = associations.copy()
         result.association_types = tuple(association_types)
 
-        T_sm1grav_sm2grav_hat = matcher.register(
+        T_sm1grav_sm2grav_hat = registerer.register(
             submap_1.segments,
             submap_2.segments,
             GRAVITY_DIR_NEG_Z,
             GRAVITY_DIR_NEG_Z,
-            associations,
-        )
+            correspondences=associations,
+        ).transformation
         # (T^odom_flu)^{-1} @ T^odom_gravaligned
         T_sm1_sm1grav = np.linalg.inv(submap_1.pose_flu) @ submap_1.pose_gravity_aligned
         T_sm2_sm2grav = np.linalg.inv(submap_2.pose_flu) @ submap_2.pose_gravity_aligned
@@ -247,6 +257,7 @@ def submap_align(
     gt_pose_1: PoseData,
     gt_pose_2: PoseData,
     matcher: SegmentMatcher,
+    registerer: Registerer,
     params: ROMANBasedSubmapAlignParams = ROMANBasedSubmapAlignParams(),
 ) -> SubmapAlignResults:
     results_matrix = np.array(
@@ -273,7 +284,7 @@ def submap_align(
 
             T_smi_smj = np.linalg.inv(T_w_smi) @ T_w_smj
             results_matrix[i, j] = register_submaps(
-                sm_i, sm_j, matcher, T_smi_smj, params
+                sm_i, sm_j, matcher, registerer, T_smi_smj, params
             )
 
     return results_matrix_to_roman_align_results(results_matrix)
@@ -284,6 +295,7 @@ def batch_submap_align(
     submap_lists: List[List[Submap]],
     gt_poses: List[PoseData],
     matcher: SegmentMatcher,
+    registerer: Registerer,
     submap_align_params: ROMANBasedSubmapAlignParams = ROMANBasedSubmapAlignParams(),
     output_dir: Path = None,
     roman_maps: List[ROMANMap] = None,
@@ -299,6 +311,7 @@ def batch_submap_align(
                 gt_poses[i],
                 gt_poses[j],
                 matcher,
+                registerer,
                 submap_align_params,
             )
             if output_dir is not None and roman_maps is not None:
@@ -381,6 +394,7 @@ if __name__ == "__main__":
 
     # Set up segment matcher
     matcher = SegmentMatcher(SegmentMatchParams.from_yaml(args.params))
+    registerer = Registerer(RegisterParams.from_yaml(args.params))
 
     # Load submap times
     submap_params = SubmapParams.from_yaml(args.params)
@@ -419,7 +433,8 @@ if __name__ == "__main__":
         run_names,
         submap_lists,
         gt_pose_data,
-        matcher,
+        matcher=matcher,
+        registerer=registerer,
         output_dir=output_dir,
         roman_maps=roman_maps,
         submap_align_params=ROMANBasedSubmapAlignParams(max_distance=20.0),
