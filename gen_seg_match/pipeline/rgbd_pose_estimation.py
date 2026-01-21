@@ -150,7 +150,7 @@ class RGBDPoseEstimation:
 
         if output_dir is not None:
             with open(f"{output_dir}/segments.pkl", "wb") as f:
-                pickle.dump(rgbd_input, f)
+                pickle.dump(inputs, f)
 
         return inputs
 
@@ -193,20 +193,33 @@ class RGBDPoseEstimation:
                 result = self.rgbd_pose_estimation(in1, in2)
 
                 if self.pipeline_params.viz_img_matches:
-                    output_file = f"{self.match_directory}/{i}_{j}.png"
+                    output_file_prefix = f"{self.match_directory}/{i}_{j}"
+                    matches1 = (in1.segments.sublist_from_ids(result.associations[:, 0])
+                        if result.num_associations > 0
+                        else [])
+                    matches2 = (
+                        in2.segments.sublist_from_ids(result.associations[:, 1])
+                        if result.num_associations > 0
+                        else []
+                    )
                     self.draw_matches(
                         in1,
                         in2,
                         in1.segments,
                         in2.segments,
-                        in1.segments.sublist_from_ids(result.associations[:, 0])
-                        if result.num_associations > 0
-                        else [],
-                        in2.segments.sublist_from_ids(result.associations[:, 1])
-                        if result.num_associations > 0
-                        else [],
-                        output_file=output_file,
+                        matches1,
+                        matches2,
+                        output_file=f"{output_file_prefix}_matches.png",
                     )
+                    if not np.any(np.isnan(result.T_i_j_hat)):
+                        self.draw_registration(
+                            in1,
+                            in2,
+                            matches1,
+                            matches2,
+                            transform=result.T_i_j_hat,
+                            output_file=f"{output_file_prefix}_reg.png",
+                        )
 
                 results_matrix[i, j] = result
 
@@ -290,6 +303,30 @@ class RGBDPoseEstimation:
             cv.imwrite(output_file, output)
 
         return output
+    
+    def draw_registration(
+        self,
+        input1: RGBDInput,
+        input2: RGBDInput,
+        segments1_matches: SegmentList,
+        segments2_matches: SegmentList,
+        transform: np.ndarray,
+        output_file: str = None,
+    ):
+        segments2_registered = segments2_matches.copy()
+        segments2_registered.transform(transform)
+
+        colors = [(1., 0., 0.) for _ in range(len(segments1_matches))] + \
+            [(0., 0., 1.) for _ in range(len(segments2_matches))]
+    
+        o3d_segments, _ = viz_segments(segments1_matches + segments2_registered, offscreen=True, show_dense=False, colors=colors)
+        output = render3d_on_img(o3d_segments, camera_params=input1.camera_params)
+
+        if output_file is not None:
+            cv.imwrite(output_file, output)
+
+        return output
+
 
     def draw_segments(
         self,

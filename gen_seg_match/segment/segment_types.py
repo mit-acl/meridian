@@ -524,6 +524,18 @@ class SegmentPlane(GeneralSegment):
         if self.dense_points is not None:
             self.dense_points = transform.transform(T, self.dense_points)
         return self
+    
+    def copy(self) -> "SegmentPlane":
+        return SegmentPlane(
+            self.id,
+            self.point.copy(),
+            self.normal.copy(),
+            self._copy_optional_array(self.ratio_feature),
+            self._copy_optional_array(self.cos_feature),
+            first_seen=self.first_seen,
+            last_seen=self.last_seen,
+            dense_points=self._copy_optional_array(self.dense_points),
+        )
 
     def get_normal(self) -> np.ndarray:
         return self.normal.flatten()

@@ -11,6 +11,7 @@ from gen_seg_match.map3d.observation import Observation
 from gen_seg_match.segment.segment_types import SegmentList, SegmentPoint, SegmentLine, GeneralSegment
 from gen_seg_match.viz.utils import color_from_seed
 
+INFINITE_LINE_VIZ_LEN = 20.0
 
 def viz_segments(
     segments: Union[SegmentList|List[Observation]],
@@ -21,6 +22,7 @@ def viz_segments(
     show_labels=False,
     show_dense=True,
     show_sparse=True,
+    colors=None
 ):
     geometry_list = []
     label_list = []
@@ -29,7 +31,9 @@ def viz_segments(
     if time_range is not None and time_range_relative:
         time_range = np.array(time_range) + segments.first_seen
 
-    for seg in segments:
+    if colors is None:
+        colors = [None for _ in range(len(segments))]
+    for seg, color in zip(segments, colors):
         if id_range is not None:
             if not (seg.id > id_range[0] and seg.id < id_range[1]):
                 continue
@@ -48,36 +52,48 @@ def viz_segments(
             num_pts = points.shape[0]
             pcd = o3d.geometry.PointCloud()
             pcd.points = o3d.utility.Vector3dVector(points)
-            color = np.repeat(
-                np.array(seg.color_from_id(num_type=float)).reshape((1, 3)),
-                num_pts,
-                axis=0,
-            )
-            pcd.colors = o3d.utility.Vector3dVector(color)
+            if color is None:
+                color_repeated = np.repeat(
+                    np.array(seg.color_from_id(num_type=float)).reshape((1, 3)),
+                    num_pts,
+                    axis=0,
+                )
+            else:
+                color_repeated = np.repeat(np.array(color).reshape((1, 3)), num_pts, axis=0)
+            pcd.colors = o3d.utility.Vector3dVector(color_repeated)
             geometry_list.append(pcd)
 
         if show_sparse:
+            if color is None:
+                color = seg.color_from_id(num_type=float)
             if type(seg) is SegmentLine:
-                cyl = o3d.geometry.TriangleMesh.create_cylinder(0.05, seg.get_length())
+                length = seg.get_length() if seg.num_endpoints == 2 else INFINITE_LINE_VIZ_LEN
+                cyl = o3d.geometry.TriangleMesh.create_cylinder(0.05, length)
                 cyl.compute_vertex_normals()
 
                 # Compute rotation
                 # Find some valid rotation matrix that aligns z axis to segment direction
                 z_axis = np.array([0, 0, 1.0])
                 target = seg.get_direction()
-                R = Rot.align_vectors([target], [z_axis]).as_matrix()[0].T
+                R = Rot.align_vectors([target], [z_axis])[0].as_matrix().T
                 cyl.rotate(R)
 
                 # Move to midpoint
-                cyl.translate((seg.endpoints[0] + seg.endpoints[1]) / 2)
-                cyl.paint_uniform_color(seg.color_from_id(num_type=float))
+                if seg.num_endpoints == 2:
+                    cyl.translate((seg.endpoints[0] + seg.endpoints[1]) / 2)
+                else:
+                    cyl.translate(seg.get_point() + seg.get_direction() * INFINITE_LINE_VIZ_LEN)
+                cyl.paint_uniform_color(color)
                 geometry_list.append(cyl)
             elif type(seg) is SegmentPoint:
                 sphere = o3d.geometry.TriangleMesh.create_sphere(radius=0.05)
                 sphere.compute_vertex_normals()
                 sphere.translate(seg.get_point())
-                sphere.paint_uniform_color(seg.color_from_id(num_type=float))
+                sphere.paint_uniform_color(color)
                 geometry_list.append(sphere)
+
+            #TODO:
+            # draw planes
 
         # if show_labels:
         #     label = [f"id: {seg.id}"]
@@ -117,9 +133,7 @@ def render3d_on_img(
         mat = o3d.visualization.rendering.MaterialRecord()
         mat.shader = "defaultUnlit"
         mat.point_size = 5.0
-        obj.translate([0, 0, -.1])
         scene.add_geometry(f"obj-{i}", obj, mat)
-        bbox = obj.get_axis_aligned_bounding_box()
 
     o3d_img = renderer.render_to_image()
     o3d_img = cv.cvtColor(np.asarray(o3d_img), cv.COLOR_RGB2BGR)
