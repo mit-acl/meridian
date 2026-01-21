@@ -280,7 +280,7 @@ class GeneralSegmentConverter:
             elif (
                 max_extents[2] < max_extents[1] < self.params.max_minor_axis_extent
                 and eigvals[2] / eigvals[0]
-                < eigvals[2] / eigvals[1]
+                < eigvals[1] / eigvals[0]
                 < self.params.max_eigval_ratio
             ):
                 general_segments.extend(
@@ -336,10 +336,21 @@ class GeneralSegmentConverter:
         for pt1, pt2 in line_borders:
             pt1_3d = mean + pt1[0] * plane_basis_vectors[:, 0] + pt1[1] * plane_basis_vectors[:, 1]
             pt2_3d = mean + pt2[0] * plane_basis_vectors[:, 0] + pt2[1] * plane_basis_vectors[:, 1]
+
+            if occluded_points.size > 0:
+                t = (np.ones((3, 10)) * np.linspace(0, 1, 10)).T
+                pts_3d = t * pt1_3d + (1 - t) * pt2_3d
+                occluded_points_dists_mins = []
+                for pt in pts_3d:
+                    occluded_points_dists = np.linalg.norm(pt - occluded_points, axis=1)
+                    occluded_points_dists_mins.append(np.min(occluded_points_dists))
+                if np.max(occluded_points_dists_mins) < 1.0:
+                    continue
+            
             # TODO: hard coding here, don't want to include lines
             # are are just at the border of max depth
-            # if pt1_3d[2] > 4.0 and pt2_3d[2] > 4.0:
-            #     continue
+            if pt1_3d[2] > 7.0 and pt2_3d[2] > 7.0:
+                continue
             # if pt1_3d[2] < 1.0 or pt2_3d[2] < 1.0:
             #     continue
             sparse_segments.append(SegmentLine.from_endpoints(

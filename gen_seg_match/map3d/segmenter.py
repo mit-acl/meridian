@@ -32,9 +32,9 @@ from segment_anything import sam_model_registry, SamAutomaticMaskGenerator
 from robotdatapy.camera import CameraParams, pixel_depth_2_xyz
 from robotdatapy.transform import transform
 
-from roman.map.observation import Observation
 from gen_seg_match.params import SegmenterParams
 from gen_seg_match.viz.viz_segments import viz_masks_on_img
+from gen_seg_match.map3d.observation import Observation
 
 
 class Segmenter:
@@ -229,15 +229,14 @@ class Segmenter:
             frame_descriptor = self.get_frame_descriptor(dino_output_patches)
 
         if depth_data is not None:
-            occlusion_edge_mask = self._get_occlusion_edge_mask(depth_data.shape)
+            occlusion_edge_mask = self._get_occlusion_edge_mask(depth_data)
 
         for mask in masks:
             mask = self.unapply_rotation(mask)
-            ptcld = None
+            points = None
             semantic_descriptor = None
 
             # Extract point cloud of object from RGBD
-            ptcld = None
             if depth_data is not None:
                 if self.params.use_point_cloud:
                     # get 3D points that project within the mask
@@ -262,7 +261,7 @@ class Segmenter:
                         ),
                         self.open3d_cam_intrinsics,
                         depth_scale=self.params.depth_scale,
-                        depth_trunc=self.params.max_depth,
+                        # depth_trunc=self.params.max_depth,
                         stride=self.params.pcd_stride,
                         project_valid_depth_only=True,
                     )
@@ -271,9 +270,15 @@ class Segmenter:
 
                 pcd.remove_non_finite_points()
                 pcd_sampled = pcd.voxel_down_sample(voxel_size=self.params.voxel_size)
-                if not pcd_sampled.is_empty():
-                    ptcld = self._remove_point_cloud_outliers(pcd_sampled)
-                if ptcld is None or ptcld.size == 0:
+                original_points = np.asarray(pcd_sampled.points)
+                points_in_depth_range = original_points[original_points[:,2] < self.params.max_depth]
+
+                pcd_in_depth_range = o3d.geometry.PointCloud()
+                pcd_in_depth_range.points = o3d.utility.Vector3dVector(points_in_depth_range)
+                
+                if not pcd_in_depth_range.is_empty():
+                    points = self._remove_point_cloud_outliers(pcd_in_depth_range)
+                if points is None or points.size == 0:
                     continue
 
             # Generate downsampled mask
@@ -316,14 +321,24 @@ class Segmenter:
                 semantic_descriptor = mean_dino
 
             new_observation = Observation(
-                t, pose, mask, mask_downsampled, ptcld, semantic_descriptor
+                id=len(self.observations),
+                time=t, 
+                pose=pose, 
+                mask=mask, 
+                mask_downsampled=mask_downsampled, 
+                semantic_descriptor=semantic_descriptor
             )
-            new_observation.occluded_points = self._compute_occlusion_points(
-                observation=new_observation,
-                depth_img=depth_data,
-                occlusion_edge_mask=occlusion_edge_mask,
-            )
-            new_observation.id = len(self.observations)
+
+            if depth_obj is not None:
+                new_observation.point_cloud = points
+                new_observation.points_beyond_max_depth = original_points[original_points[:,2] > self.params.max_depth]
+                new_observation.occluded_points = self._compute_occlusion_points(
+                    points=original_points,
+                    mask=mask,
+                    depth_img=depth_data,
+                    occlusion_edge_mask=occlusion_edge_mask,
+                )
+
             self.observations.append(new_observation)
 
         return self.observations, frame_descriptor
@@ -616,34 +631,40 @@ class Segmenter:
         )
         return max(self.params.min_mask_pixels, from_image_fraction)
 
-    def _get_occlusion_edge_mask(self, img_shape):
-        edge_mask = np.zeros((img_shape[0], img_shape[1]), bool)
-        edge_mask[: self.params.occlusion_edge_pixels, :] = True
-        edge_mask[-self.params.occlusion_edge_pixels :, :] = True
-        edge_mask[:, : self.params.occlusion_edge_pixels] = True
-        edge_mask[:, -self.params.occlusion_edge_pixels :] = True
-        return edge_mask
+    def _get_occlusion_edge_mask(self, depth_img):
+        occlusion_edge_mask = np.zeros_like(depth_img, dtype=bool)
+
+        xmin_non_nan = np.argmax(depth_img > 0, axis=1)
+        xmax_non_nan = depth_img.shape[1] - np.argmax(depth_img[:, ::-1] > 0, axis=1) - 1
+
+        for i in range(depth_img.shape[0]):
+            occlusion_edge_mask[i, :xmin_non_nan[i] + self.params.occlusion_edge_pixels] = True
+            occlusion_edge_mask[i, xmax_non_nan[i] - self.params.occlusion_edge_pixels:] = True
+
+        ymin_non_nan = np.argmax(depth_img > 0, axis=0)
+        ymax_non_nan = depth_img.shape[0] - np.argmax(depth_img[::-1, :] > 0, axis=0) - 1
+
+        for j in range(depth_img.shape[1]):
+            occlusion_edge_mask[:ymin_non_nan[j] + self.params.occlusion_edge_pixels, j] = True
+            occlusion_edge_mask[ymax_non_nan[j] - self.params.occlusion_edge_pixels:, j] = True
+
+        return occlusion_edge_mask
 
     def _compute_occlusion_points(
-        self, observation: Observation, depth_img, occlusion_edge_mask=None
+        self, points: np.ndarray, mask: np.ndarray, depth_img, occlusion_edge_mask=None
     ):
         if occlusion_edge_mask is None:
-            occlusion_edge_mask = self._get_occlusion_edge_mask(depth_img.shape)
+            occlusion_edge_mask = self._get_occlusion_edge_mask(depth_img)
 
-        occluded_points = observation.point_cloud[
-            transform(np.linalg.inv(observation.pose), observation.point_cloud)[:, 2]
-            > self.params.occlusion_max_depth,
-            :,
-        ]
+        occluded_points = points[points[:,2] > self.params.max_depth]
 
-        # TODO move observation into gen_seg_match
         # TODO: support occlusion points for point cloud case
 
         occluded_pixels = np.array(
-            np.where(np.bitwise_and(observation.mask.astype(bool), occlusion_edge_mask))
+            np.where(np.bitwise_and(mask.astype(bool), occlusion_edge_mask))
         ).T  # (y, x)
         occluded_pixels_depths = (
-            depth_img[occluded_pixels[:, 0], occluded_pixels[:, 1]] * 1e-3
+            depth_img[occluded_pixels[:, 0], occluded_pixels[:, 1]] / self.params.depth_scale
         )
         occluded_pixels_3d_cam = pixel_depth_2_xyz(
             occluded_pixels[:, 1],
@@ -651,12 +672,11 @@ class Segmenter:
             occluded_pixels_depths,
             self.depth_cam_params.K,
         ).T
-        occluded_pixels_3d_world = transform(observation.pose, occluded_pixels_3d_cam)
 
         occluded_points = (
-            np.vstack([occluded_points, occluded_pixels_3d_world])
+            np.vstack([occluded_points, occluded_pixels_3d_cam])
             if occluded_points.shape[0] > 0
-            else occluded_pixels_3d_world
+            else occluded_pixels_3d_cam
         )
         return occluded_points
 

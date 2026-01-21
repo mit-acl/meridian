@@ -30,7 +30,7 @@ from gen_seg_match.params import (
 )
 from gen_seg_match.viz.utils import color_from_seed
 from gen_seg_match.viz.img_sparse_viz import img_sparse_viz
-from gen_seg_match.viz.viz_segments import viz_masks_on_img
+from gen_seg_match.viz.viz_segments import viz_masks_on_img, viz_segments, render3d_on_img
 from gen_seg_match.pipeline.data import RGBDPoseEstimationData
 from gen_seg_match.pipeline.result import (
     PoseEstimationResult,
@@ -298,10 +298,14 @@ class RGBDPoseEstimation:
         segments: SegmentList,
         output_file: str = None,
     ):
+        if self.pipeline_params.viz_observations_3d:
+            width = 3 * rgbd_input.shape[1] + 2 * self.pipeline_params.viz_img_pixel_sep
+        else:
+            width = rgbd_input.shape[1] * 2 + self.pipeline_params.viz_img_pixel_sep
         output = np.zeros(
             (
                 rgbd_input.shape[0],
-                rgbd_input.shape[1] * 2 + self.pipeline_params.viz_img_pixel_sep,
+                width,
                 3,
             )
         )
@@ -314,6 +318,7 @@ class RGBDPoseEstimation:
             alpha=0.5,
             colors=colors,
             draw_points=True,
+            draw_occluded_points=True,
             cam_params=rgbd_input.camera_params,
         )
 
@@ -321,7 +326,7 @@ class RGBDPoseEstimation:
         colors = [color_from_seed(seg.history[0]) for seg in segments]
         output[
             :,
-            rgbd_input.shape[1] + self.pipeline_params.viz_img_pixel_sep :,
+            rgbd_input.shape[1] + self.pipeline_params.viz_img_pixel_sep : rgbd_input.shape[1] * 2 + self.pipeline_params.viz_img_pixel_sep,
         ] = img_sparse_viz(
             rgbd_input.bgr,
             segments,
@@ -329,6 +334,13 @@ class RGBDPoseEstimation:
             write_ids=self.pipeline_params.viz_write_ids,
             colors=colors,
         )
+
+        if self.pipeline_params.viz_observations_3d:
+            o3d_segments, _ = viz_segments(observations, offscreen=True, show_sparse=False)
+            output[
+                :,
+                rgbd_input.shape[1] * 2 + self.pipeline_params.viz_img_pixel_sep * 2 :
+            ] = render3d_on_img(o3d_segments, camera_params=rgbd_input.camera_params)
 
         if output_file is not None:
             cv.imwrite(output_file, output)
