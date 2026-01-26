@@ -28,9 +28,9 @@ class PoseEstimationResult:
 
     @property
     def translation_error_m(self):
-        if self.T_error is None:
+        if np.any(np.isnan(self.T_i_j)) or np.any(np.isnan(self.T_i_j_hat)):
             return np.nan
-        return np.linalg.norm(self.T_error[:3, 3])
+        return np.linalg.norm((self.T_i_j - self.T_i_j_hat)[:3, 3])
 
     @property
     def rotation_error_rad(self):

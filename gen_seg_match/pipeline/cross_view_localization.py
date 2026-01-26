@@ -10,6 +10,7 @@ import matplotlib.pyplot as plt
 import pickle
 from copy import deepcopy
 import shutil
+import robotdatapy as rdp
 
 from roman.map.fastsam_wrapper import FastSAMWrapper
 from roman.params.fastsam_params import FastSAMParams
@@ -17,6 +18,10 @@ from roman.map.map import ROMANMap
 
 from gen_seg_match.segment.segment_types import SegmentList
 from gen_seg_match.match.segment_matcher import SegmentMatcher
+from gen_seg_match.register.registerer import (
+    Registerer,
+    InsufficientAssociationsException,
+)
 from gen_seg_match.params import (
     SegmentMatchParams,
     CrossViewLocalizationParams,
@@ -24,10 +29,15 @@ from gen_seg_match.params import (
     AerialSegmenterParams,
     SubmapParams,
     GroundSegmenterParams,
+    RegisterParams,
 )
 from gen_seg_match.viz.utils import color_from_seed
 from gen_seg_match.viz.img_sparse_viz import img_sparse_viz
 from gen_seg_match.pipeline.data import CrossViewLocalizationData
+from gen_seg_match.pipeline.result import (
+    PoseEstimationResultMatrix,
+    PoseEstimationResult,
+)
 from gen_seg_match.utils import expandvars_recursive
 from gen_seg_match.map2d.aerial_segmenter import AerialSegmenter
 from gen_seg_match.map2d.ground_segmenter import GroundSegmenter
@@ -49,6 +59,7 @@ class CrossViewLocalization:
     pipeline_params: CrossViewLocalizationParams
     aerial_segmenter: AerialSegmenter
     matcher: SegmentMatcher
+    registerer: Registerer
     ground_submap_params: SubmapParams = None
     ground_segmenter: GroundSegmenter = None
 
@@ -152,7 +163,7 @@ class CrossViewLocalization:
     def load_segments_from_dir(
         self,
         segment_dir: Union[str, pathlib.Path],
-    ) -> Dict[str, SegmentList]:
+    ) -> Dict[str, Submap]:
         """
         Loads segments from a directory.
 
@@ -160,19 +171,22 @@ class CrossViewLocalization:
             segment_dir (Union[str, pathlib.Path]): Directory containing segment files.
 
         Returns:
-            Dict[str, SegmentList]: List of extracted segments for each submap
+            Dict[str, Submap]: List of extracted segments for each submap
         """
         segment_dir = pathlib.Path(segment_dir)
         segment_files = list(segment_dir.glob("*.pkl"))
         segment_files.sort()
         results = {}
         for segment_file in segment_files:
-            segments = SegmentList.load(segment_file)
-            results[segment_file.stem] = segments
+            submap = Submap.load(segment_file)
+            results[segment_file.stem] = submap
         return results
 
     def batch_aerial_img_to_segments(
-        self, img: np.ndarray, output_dir: Union[str, pathlib.Path] = None
+        self,
+        img: np.ndarray,
+        output_dir: Union[str, pathlib.Path] = None,
+        img_origin: np.ndarray = None,
     ) -> Dict[Crop, SegmentList]:
         """
         Batch process of an aerial image. Splits the image into patches,
@@ -207,7 +221,12 @@ class CrossViewLocalization:
             viz_output_dir.mkdir(parents=True, exist_ok=True)
             segment_output_dir.mkdir(parents=True, exist_ok=True)
 
-        results = {}
+        pose_flu = np.eye(4)
+        if img_origin is not None:
+            pose_flu[0, 3] = img_origin[0]
+            pose_flu[1, 3] = img_origin[1]
+
+        results: Dict[Crop, Submap] = {}
 
         # ------------------------------------------------------
         # Patch iteration
@@ -242,7 +261,18 @@ class CrossViewLocalization:
                 )
                 sparse_general_segments.reindex()
 
-                results[crop] = sparse_general_segments
+                results[crop] = Submap(
+                    id=(i, j),
+                    time=0.0,
+                    segments=sparse_general_segments,
+                    pose_flu=pose_flu,
+                    segment_frame="odometry-2d",
+                    metadata={
+                        "crop_center_m": np.array(
+                            [(i + 0.5) * patch_size_m, (j + 0.5) * patch_size_m]
+                        )
+                    },
+                )
 
                 # ------------------------------------------------------
                 # 3. Visualization and store segments (if output_dir provided)
@@ -250,7 +280,7 @@ class CrossViewLocalization:
                 if output_dir is not None:
                     # -------- Save aerial segments --------
                     fname_segment = segment_output_dir / f"{i}_{j}.pkl"
-                    sparse_general_segments.save(fname_segment)
+                    results[crop].save(fname_segment)
 
                     # -------- Raw AerialSegments overlay --------
                     aerial_viz = self._viz_aerial_segments(
@@ -277,7 +307,7 @@ class CrossViewLocalization:
 
     def batch_ground_submaps_to_segments(
         self, submaps: List[Submap], output_dir: Union[str, pathlib.Path] = None
-    ) -> List[SegmentList]:
+    ) -> List[Submap]:
         """
         Batch process of ground submaps. For each submap, creates a 2D aerial segments
             and if an output_dir is provided, saves visualizations of the segments.
@@ -287,7 +317,7 @@ class CrossViewLocalization:
             output_dir (Union[str, pathlib.Path], optional): Directory to save visualizations. Defaults to None.
 
         Returns:
-            List[SegmentList]: List of extracted fine-grained segments for each submap
+            List[Submap]: List of extracted fine-grained segments for each submap
         """
         results = []
 
@@ -332,12 +362,19 @@ class CrossViewLocalization:
                     for id_hist in seg.history
                 ]
                 seg.height = np.mean(history_heights)
-            results.append(sparse_general_segments)
+            submap_2d = Submap(
+                id=k,
+                time=submap.time,
+                segments=sparse_general_segments,
+                pose_flu=submap.pose_flu,
+                segment_frame="odometry-2d",
+            )
+            results.append(submap_2d)
 
             if output_dir is not None:
                 # -------- Save aerial segments --------
                 fname_segment = segment_output_dir / f"{k}.pkl"
-                sparse_general_segments.save(fname_segment)
+                submap_2d.save(fname_segment)
 
                 # -------- GeneralSegments overlay --------
                 fig, ax = self._viz_ground_segments(
@@ -353,8 +390,9 @@ class CrossViewLocalization:
 
     def batch_cross_view_match(
         self,
-        aerial_segments: Dict[str, SegmentList],
-        ground_segments: Dict[str, SegmentList],
+        aerial_submaps: Dict[str, Submap],
+        ground_submaps: Dict[str, Submap],
+        ground_gt_pose: rdp.data.PoseData = None,
         output_dir: Union[str, pathlib.Path] = None,
     ) -> None:
         """
@@ -362,8 +400,9 @@ class CrossViewLocalization:
             matches segments and if an output_dir is provided, saves visualizations of the matches.
 
         Args:
-            aerial_segments (Dict[str, SegmentList]): Aerial image name to extracted segments
-            ground_segments (Dict[str, SegmentList]): Ground image name to extracted segments
+            aerial_submaps (Dict[str, Submap]): Aerial image name to extracted segments
+            ground_submaps (Dict[str, Submap]): Ground image name to extracted segments
+            ground_gt_pose (rdp.data.PoseData, optional): Ground truth ground poses. Defaults to None.
             output_dir (Union[str, pathlib.Path], optional): Directory to save visualizations. Defaults to None.
         """
         assert output_dir is not None, (
@@ -378,56 +417,112 @@ class CrossViewLocalization:
 
         aerial_key_to_tuple = lambda key: tuple(int(x) for x in key.split("_"))
         aerial_x_max = np.max(
-            [aerial_key_to_tuple(key)[0] for key in aerial_segments.keys()]
+            [aerial_key_to_tuple(key)[0] for key in aerial_submaps.keys()]
         )
         aerial_y_max = np.max(
-            [aerial_key_to_tuple(key)[1] for key in aerial_segments.keys()]
+            [aerial_key_to_tuple(key)[1] for key in aerial_submaps.keys()]
         )
 
         # minor processing on segments
         # TODO: put to 3d (dim = 3) and filter by length
-        aerial_segments_2d = {}
-        ground_segments_2d = {}
-        for segments_2d_dict, original_segments_dict in [
-            (aerial_segments_2d, aerial_segments),
-            (ground_segments_2d, ground_segments),
+        aerial_submaps_2d: Dict[str, Submap] = {}
+        ground_submaps_2d: Dict[str, Submap] = {}
+        for submaps_2d_dict, original_submaps_dict in [
+            (aerial_submaps_2d, aerial_submaps),
+            (ground_submaps_2d, ground_submaps),
         ]:
-            for key, segments in original_segments_dict.items():
-                segments_2d = segments.to_dim(2)
+            for key, submap in original_submaps_dict.items():
+                segments_2d = submap.segments.to_dim(2)
                 filtered_lines = [
                     line
                     for line in segments_2d.get_lines()
                     if line.get_length() >= self.pipeline_params.match_min_len_m
                 ]
                 segments_2d = segments_2d.get_points() + SegmentList(filtered_lines)
-                segments_2d_dict[key] = segments_2d
+                submaps_2d_dict[key] = deepcopy(submap)
+                submaps_2d_dict[key].segments = segments_2d
 
         # make sure to transfer height (TODO: figure out how to handle this cleanly)
-        for ground_key in ground_segments_2d.keys():
-            for segment in ground_segments_2d[ground_key]:
+        for ground_key in ground_submaps_2d.keys():
+            for segment in ground_submaps_2d[ground_key].segments:
                 segment.height = (
-                    ground_segments[ground_key].get_segment_from_id(segment.id).height
+                    ground_submaps[ground_key]
+                    .segments.get_segment_from_id(segment.id)
+                    .height
                 )
 
         # iterate over all aerial crops and ground submaps
-        for ground_key, ground_segs_i in tqdm(ground_segments_2d.items()):
-            num_associations = np.zeros((aerial_x_max + 1, aerial_y_max + 1), dtype=int)
+        for ground_key, ground_sm_i in tqdm(ground_submaps_2d.items()):
+            results_matrix = PoseEstimationResultMatrix(
+                (aerial_x_max + 1, aerial_y_max + 1)
+            )
             ground_sub_dir = viz_output_dir / f"ground_{ground_key}"
             ground_sub_dir.mkdir(parents=True, exist_ok=True)
-            for aerial_key, aerial_segs_j in aerial_segments_2d.items():
+            ground_pose_gt = None
+            if ground_gt_pose is not None:
+                ground_pose_gt = ground_gt_pose.pose(ground_submaps[ground_key].time)
+                ground_pose_gt = rdp.transform.T2d_2_T3d(
+                    rdp.transform.T3d_2_T2d(ground_pose_gt)
+                )
+            T_ground_odom_ground_robot = ground_sm_i.pose_flu
+
+            for aerial_key, aerial_sm_j in aerial_submaps_2d.items():
+                # check if the aerial crop is within range of the ground submap
+                if ground_pose_gt is not None:
+                    aerial_crop_position = aerial_sm_j.pose_flu[:2, 3].copy()
+                    aerial_crop_position[0] += aerial_sm_j.metadata["crop_center_m"][0]
+                    aerial_crop_position[1] -= aerial_sm_j.metadata["crop_center_m"][1]
+                    if (
+                        np.linalg.norm(
+                            aerial_crop_position.flatten()[:2] - ground_pose_gt[:2, 3]
+                        )
+                        > self.pipeline_params.ground_dist_from_aerial_patch_center_m
+                    ):
+                        continue
+                    aerial_sm_j.pose_flu[:3, :3] = np.array(
+                        [
+                            [1, 0, 0],
+                            [0, -1, 0],
+                            [0, 0, -1],
+                        ],
+                        dtype=float,
+                    )
+                    T_aerial_ground = (
+                        np.linalg.inv(aerial_sm_j.pose_flu) @ ground_pose_gt
+                    )
+                else:
+                    T_aerial_ground = np.zeros((4, 4)) * np.nan
+
                 # split long lines before matching
-                ground_segs_i = ground_segs_i.get_points() + split_long_lines(
-                    ground_segs_i.get_lines(), max_length=15.0
+                ground_segs_i = ground_sm_i.segments.get_points() + split_long_lines(
+                    ground_sm_i.segments.get_lines(), max_length=15.0
                 )
                 ground_segs_i.reindex()
-                aerial_segs_j = aerial_segs_j.get_points() + split_long_lines(
-                    aerial_segs_j.get_lines(), max_length=15.0
+                aerial_segs_j = aerial_sm_j.segments.get_points() + split_long_lines(
+                    aerial_sm_j.segments.get_lines(), max_length=15.0
                 )
                 aerial_segs_j.reindex()
 
                 matches = self.matcher.match(
-                    ground_segs_i,
                     aerial_segs_j,
+                    ground_segs_i,
+                )
+                try:
+                    T_aerial_ground_odom_hat = self.registerer.register(
+                        aerial_segs_j.to_dim(3),
+                        ground_segs_i.to_dim(3),
+                        correspondences=matches,
+                    ).transformation
+                    T_aerial_ground_hat = (
+                        T_aerial_ground_odom_hat @ T_ground_odom_ground_robot
+                    )
+                except InsufficientAssociationsException:
+                    T_aerial_ground_hat = np.zeros((4, 4)) * np.nan
+
+                result = PoseEstimationResult(
+                    T_i_j_hat=T_aerial_ground_hat,
+                    T_i_j=T_aerial_ground,
+                    associations=matches,
                 )
 
                 # -------- Match visualization --------
@@ -438,7 +533,7 @@ class CrossViewLocalization:
                 fig = plt.gcf()
                 fig.savefig(fname_viz, dpi=400)
                 plt.close(fig)
-                num_associations[*aerial_key_to_tuple(aerial_key)] = len(matches)
+                results_matrix[*aerial_key_to_tuple(aerial_key)] = result
 
                 # -------- Save matches --------
                 matched_ground = SegmentList(
@@ -454,12 +549,10 @@ class CrossViewLocalization:
                     pickle.dump([matched_ground, matched_aerial], f)
 
             # Save number of associations heatmap
-            plt.figure(figsize=(8, 6))
-            plt.imshow(num_associations.T)
-            plt.colorbar(label="Number of Matches")
-            plt.xlabel("Aerial Crop X Index")
-            plt.ylabel("Aerial Crop Y Index")
-            plt.title(f"Number of Matches for Ground Submap {ground_key}")
+            results_matrix.save(
+                segments_output_dir / f"ground_{ground_key}_results_matrix.pkl"
+            )
+            results_matrix.plot()
             fname_heatmap = viz_output_dir / f"ground_{ground_key}_all.png"
             plt.savefig(fname_heatmap, dpi=400)
             plt.close()
@@ -621,6 +714,7 @@ def cross_view_localization(
     runner = CrossViewLocalization(
         pipeline_params=pipeline_params,
         matcher=SegmentMatcher(segment_match_params),
+        registerer=Registerer(RegisterParams.load(params)),
         aerial_segmenter=AerialSegmenter(AerialSegmenterParams.load(params)),
         ground_submap_params=SubmapParams.load(params),
     )
@@ -645,20 +739,19 @@ def cross_view_localization(
 
     # Extract aerial segments
     if not skip_aerial:
-        runner.batch_aerial_img_to_segments(data.aerial_img, aerial_output_dir)
-        # initial_aerial_segments = {
-        #     f"{i}_{j}": segs for (i, j), segs in initial_aerial_segments.items()
-        # }
+        runner.batch_aerial_img_to_segments(
+            data.aerial_img, aerial_output_dir, data.aerial_img_origin
+        )
 
     # Extract ground segments
     if not skip_ground:
         ground_map = data.ground_map
         ground_submaps = runner.ground_map_to_submaps(ground_map)
-        initial_ground_segments = runner.batch_ground_submaps_to_segments(
+        initial_ground_submaps = runner.batch_ground_submaps_to_segments(
             ground_submaps, ground_output_dir
         )
-        initial_ground_segments = {
-            str(k): segs for k, segs in enumerate(initial_ground_segments)
+        initial_ground_submaps = {
+            str(k): segs for k, segs in enumerate(initial_ground_submaps)
         }
 
     if not skip_match:
@@ -673,6 +766,7 @@ def cross_view_localization(
         runner.batch_cross_view_match(
             initial_aerial_segments,
             initial_ground_segments,
+            data.gt_pose_data,
             match_output_dir,
         )
 
