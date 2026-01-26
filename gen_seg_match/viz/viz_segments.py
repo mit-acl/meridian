@@ -208,11 +208,8 @@ def viz_masks_on_img(
         for points3d, color in zip(point_collections_to_draw, point_collections_color):
             
             # Project points to 2D
-            points_in_2d = [
-                camera.xyz_2_pixel(p.reshape((3, 1)), cam_params.K)
-                for p in points3d
-                if p[2] > 0
-            ]
+            points3d_in_front = np.array([p for p in points3d if p[2] > 0])
+            points_in_2d = camera.xyz_2_pixel(points3d_in_front, cam_params.K, axis=0)
             for px in points_in_2d:
                 px = px.reshape(-1)
                 cv.circle(viz_img, (int(px[0]), int(px[1])), 1, color, -1)

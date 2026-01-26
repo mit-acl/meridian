@@ -632,7 +632,6 @@ class DenseSegment(GeneralSegment):
 
     @classmethod
     def from_observation(cls, observation):
-        # TODO: this is using roman observations - move to gen_seg_match
         return cls(
             id=0,
             dense_points=transform.transform(observation.pose, observation.point_cloud),

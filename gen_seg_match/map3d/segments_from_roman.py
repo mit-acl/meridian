@@ -114,9 +114,6 @@ class GeneralSegmentConverter:
         self, roman_segment: RomanSegment, pt: np.ndarray
     ) -> SegmentPoint:
         dense_points = roman_segment.points if self.params.copy_dense_points else None
-        segment_history = []
-        if hasattr(roman_segment, "history"):
-            segment_history = roman_segment.history
         return SegmentPoint(
             id=roman_segment.id,
             point=pt,  # TODO: is _center_ref == 'bottom-middle' an issue?
@@ -125,7 +122,7 @@ class GeneralSegmentConverter:
             first_seen=roman_segment.first_seen,
             last_seen=roman_segment.last_seen,
             dense_points=dense_points,
-            history=segment_history,
+            history=getattr(roman_segment, "history", []),
         )
 
     def get_roman_ratio_feature(self, roman_segment: RomanSegment) -> np.ndarray:
@@ -347,9 +344,7 @@ class GeneralSegmentConverter:
                 if np.max(occluded_points_dists_mins) < 1.0:
                     continue
             
-            # TODO: hard coding here, don't want to include lines
-            # are are just at the border of max depth
-            if pt1_3d[2] > 7.0 and pt2_3d[2] > 7.0:
+            if pt1_3d[2] > self.params.plane_border_max_depth and pt2_3d[2] > self.params.plane_border_max_depth:
                 continue
             # if pt1_3d[2] < 1.0 or pt2_3d[2] < 1.0:
             #     continue
@@ -385,10 +380,9 @@ class GeneralSegmentConverter:
         plane_normal = plane_normal / np.linalg.norm(plane_normal)
         e1 = plane_basis_vectors[:, 0] / np.linalg.norm(plane_basis_vectors[:, 0])
         e2 = plane_basis_vectors[:, 1] / np.linalg.norm(plane_basis_vectors[:, 1])
-        R = np.column_stack((e1, e2, plane_normal))
-        points_on_plane = (np.eye(3) - np.outer(plane_normal, plane_normal)) @ (points - plane_offset).T
-        points_on_2d = R.T @ points_on_plane
-        return points_on_2d[:2, :].T
+        centered_points = points - plane_offset
+        points_on_2d = np.stack([np.dot(e1, centered_points.T), np.dot(e2, centered_points.T)], axis=-1)
+        return points_on_2d
     
     def get_line_borders_from_2d_points(self, points_2d: np.ndarray, occluded_points_2d: np.ndarray) -> List[Tuple[np.ndarray, np.ndarray]]:
         """
