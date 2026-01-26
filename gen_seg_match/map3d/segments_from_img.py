@@ -77,13 +77,16 @@ def get_line(segment: Segment, occluded_points: np.ndarray):
 
     mean = mean.reshape((3, 1))
     num_endpoints = 0
+    pt0_axis_aligned = np.array([np.min(axis_aligned_points[:, 0]), 0.0, 0.0])
+    pt1_axis_aligned = np.array([np.max(axis_aligned_points[:, 0]), 0.0, 0.0])
     if len(occluded_points) == 0:
-        end_pts = [None, None]
-        end_pts_dist_from_center = [-default_dist, default_dist]
+        end_pts = [
+            U @ pt0_axis_aligned.reshape((3, 1)) + mean,
+            U @ pt1_axis_aligned.reshape((3, 1)) + mean,
+        ]
+        num_endpoints = 2
     else:
         axis_aligned_occluded_points = (U.T @ (occluded_points - mean.flatten()).T).T
-        pt0_axis_aligned = np.array([np.min(axis_aligned_points[:, 0]), 0.0, 0.0])
-        pt1_axis_aligned = np.array([np.max(axis_aligned_points[:, 0]), 0.0, 0.0])
         dist_to_occluded_pt0 = np.linalg.norm(
             axis_aligned_occluded_points - pt0_axis_aligned, axis=1
         )
@@ -92,34 +95,18 @@ def get_line(segment: Segment, occluded_points: np.ndarray):
         )
 
         end_pts = []
-        end_pts_dist_from_center = []
 
         if np.min(dist_to_occluded_pt0) > 1.0:
             end_pts.append(U @ pt0_axis_aligned.reshape((3, 1)) + mean)
-            end_pts_dist_from_center.append(pt0_axis_aligned[0])
             num_endpoints += 1
         else:
             end_pts.append(None)
-            end_pts_dist_from_center.append(-default_dist)
 
         if np.min(dist_to_occluded_pt1) > 1.0:
             end_pts.append(U @ pt1_axis_aligned.reshape((3, 1)) + mean)
-            end_pts_dist_from_center.append(pt1_axis_aligned[0])
             num_endpoints += 1
         else:
             end_pts.append(None)
-            end_pts_dist_from_center.append(default_dist)
-
-    # length = np.max(axis_aligned_points[:, 0]) - np.min(axis_aligned_points[:, 0])
-    # pt0_centered_unrotated = np.array([[-length / 2], [0], [0]])
-    # pt1_centered_unrotated = np.array([[length / 2], [0], [0]])
-    pts_center_unrotated = [
-        np.array([[i], [0], [0]])
-        for i in np.arange(
-            end_pts_dist_from_center[0], end_pts_dist_from_center[1], 0.1
-        )
-    ]
-    line_pts = [U @ pt.reshape((3, 1)) + mean for pt in pts_center_unrotated]
 
     vector = U[:, 0]
     # if there is only one endpoint, need to make sure the vector points the right directions
@@ -131,20 +118,21 @@ def get_line(segment: Segment, occluded_points: np.ndarray):
     else:
         offset = mean.flatten()
 
-    return end_pts, offset, vector, line_pts
+    return end_pts, offset, vector
 
 
 def get_line_general_segments(
     segment: Segment, occluded_points: np.ndarray
 ) -> SegmentList:
     general_segments = SegmentList()
-    end_pts, offset, vector, line_pts = get_line(segment, occluded_points)
+    end_pts, offset, vector = get_line(segment, occluded_points)
     if end_pts[0] is not None:
         general_segments.append(
             SegmentPoint(
                 id=-1,
                 point=end_pts[0].flatten(),
                 cos_feature=segment.semantic_descriptor,
+                history=getattr(segment, "history", []),
             )
         )
     if end_pts[1] is not None:
@@ -153,6 +141,7 @@ def get_line_general_segments(
                 id=-1,
                 point=end_pts[1].flatten(),
                 cos_feature=segment.semantic_descriptor,
+                history=getattr(segment, "history", []),
             )
         )
     general_segments.append(
@@ -162,6 +151,7 @@ def get_line_general_segments(
             direction=vector.flatten(),
             endpoints=[pt.flatten() if pt is not None else None for pt in end_pts],
             cos_feature=segment.semantic_descriptor,
+            history=getattr(segment, "history", []),
         )
     )
     return general_segments

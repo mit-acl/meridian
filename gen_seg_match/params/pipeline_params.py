@@ -19,6 +19,7 @@ class RGBDPoseEstimationParams(ParamsBase):
     viz_img_matches: bool = True
     viz_img_pixel_sep: int = 10
     viz_write_ids: bool = False
+    viz_observations_3d: bool = False
 
 
 @dataclass

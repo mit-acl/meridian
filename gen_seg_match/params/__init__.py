@@ -11,3 +11,4 @@ from gen_seg_match.params.pipeline_params import RGBDPoseEstimationParams
 from gen_seg_match.params.pipeline_params import CrossViewLocalizationParams
 from gen_seg_match.params.data_params import RGBDPoseEstimationDataParams
 from gen_seg_match.params.data_params import CrossViewLocalizationDataParams
+from gen_seg_match.params.segmenter_params import SegmenterParams
