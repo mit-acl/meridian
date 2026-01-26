@@ -30,7 +30,11 @@ from gen_seg_match.params import (
 )
 from gen_seg_match.viz.utils import color_from_seed
 from gen_seg_match.viz.img_sparse_viz import img_sparse_viz
-from gen_seg_match.viz.viz_segments import viz_masks_on_img, viz_segments, render3d_on_img
+from gen_seg_match.viz.viz_segments import (
+    viz_masks_on_img,
+    viz_segments,
+    render3d_on_img,
+)
 from gen_seg_match.pipeline.data import RGBDPoseEstimationData
 from gen_seg_match.pipeline.result import (
     PoseEstimationResult,
@@ -194,9 +198,11 @@ class RGBDPoseEstimation:
 
                 if self.pipeline_params.viz_img_matches:
                     output_file_prefix = f"{self.match_directory}/{i}_{j}"
-                    matches1 = (in1.segments.sublist_from_ids(result.associations[:, 0])
+                    matches1 = (
+                        in1.segments.sublist_from_ids(result.associations[:, 0])
                         if result.num_associations > 0
-                        else [])
+                        else []
+                    )
                     matches2 = (
                         in2.segments.sublist_from_ids(result.associations[:, 1])
                         if result.num_associations > 0
@@ -303,7 +309,7 @@ class RGBDPoseEstimation:
             cv.imwrite(output_file, output)
 
         return output
-    
+
     def draw_registration(
         self,
         input1: RGBDInput,
@@ -316,17 +322,22 @@ class RGBDPoseEstimation:
         segments2_registered = segments2_matches.copy()
         segments2_registered.transform(transform)
 
-        colors = [(1., 0., 0.) for _ in range(len(segments1_matches))] + \
-            [(0., 0., 1.) for _ in range(len(segments2_matches))]
-    
-        o3d_segments, _ = viz_segments(segments1_matches + segments2_registered, offscreen=True, show_dense=False, colors=colors)
+        colors = [(1.0, 0.0, 0.0) for _ in range(len(segments1_matches))] + [
+            (0.0, 0.0, 1.0) for _ in range(len(segments2_matches))
+        ]
+
+        o3d_segments, _ = viz_segments(
+            segments1_matches + segments2_registered,
+            offscreen=True,
+            show_dense=False,
+            colors=colors,
+        )
         output = render3d_on_img(o3d_segments, camera_params=input1.camera_params)
 
         if output_file is not None:
             cv.imwrite(output_file, output)
 
         return output
-
 
     def draw_segments(
         self,
@@ -363,7 +374,9 @@ class RGBDPoseEstimation:
         colors = [color_from_seed(seg.history[0]) for seg in segments]
         output[
             :,
-            rgbd_input.shape[1] + self.pipeline_params.viz_img_pixel_sep : rgbd_input.shape[1] * 2 + self.pipeline_params.viz_img_pixel_sep,
+            rgbd_input.shape[1]
+            + self.pipeline_params.viz_img_pixel_sep : rgbd_input.shape[1] * 2
+            + self.pipeline_params.viz_img_pixel_sep,
         ] = img_sparse_viz(
             rgbd_input.bgr,
             segments,
@@ -373,10 +386,12 @@ class RGBDPoseEstimation:
         )
 
         if self.pipeline_params.viz_observations_3d:
-            o3d_segments, _ = viz_segments(observations, offscreen=True, show_sparse=False)
+            o3d_segments, _ = viz_segments(
+                observations, offscreen=True, show_sparse=False
+            )
             output[
                 :,
-                rgbd_input.shape[1] * 2 + self.pipeline_params.viz_img_pixel_sep * 2 :
+                rgbd_input.shape[1] * 2 + self.pipeline_params.viz_img_pixel_sep * 2 :,
             ] = render3d_on_img(o3d_segments, camera_params=rgbd_input.camera_params)
 
         if output_file is not None:

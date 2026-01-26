@@ -271,11 +271,15 @@ class Segmenter:
                 pcd.remove_non_finite_points()
                 pcd_sampled = pcd.voxel_down_sample(voxel_size=self.params.voxel_size)
                 original_points = np.asarray(pcd_sampled.points)
-                points_in_depth_range = original_points[original_points[:,2] < self.params.max_depth]
+                points_in_depth_range = original_points[
+                    original_points[:, 2] < self.params.max_depth
+                ]
 
                 pcd_in_depth_range = o3d.geometry.PointCloud()
-                pcd_in_depth_range.points = o3d.utility.Vector3dVector(points_in_depth_range)
-                
+                pcd_in_depth_range.points = o3d.utility.Vector3dVector(
+                    points_in_depth_range
+                )
+
                 if not pcd_in_depth_range.is_empty():
                     points = self._remove_point_cloud_outliers(pcd_in_depth_range)
                 if points is None or points.size == 0:
@@ -322,16 +326,18 @@ class Segmenter:
 
             new_observation = Observation(
                 id=len(self.observations),
-                time=t, 
-                pose=pose, 
-                mask=mask, 
-                mask_downsampled=mask_downsampled, 
-                semantic_descriptor=semantic_descriptor
+                time=t,
+                pose=pose,
+                mask=mask,
+                mask_downsampled=mask_downsampled,
+                semantic_descriptor=semantic_descriptor,
             )
 
             if depth_obj is not None:
                 new_observation.point_cloud = points
-                new_observation.points_beyond_max_depth = original_points[original_points[:,2] > self.params.max_depth]
+                new_observation.points_beyond_max_depth = original_points[
+                    original_points[:, 2] > self.params.max_depth
+                ]
                 new_observation.occluded_points = self._compute_occlusion_points(
                     points=original_points,
                     mask=mask,
@@ -635,18 +641,30 @@ class Segmenter:
         occlusion_edge_mask = np.zeros_like(depth_img, dtype=bool)
 
         xmin_non_nan = np.argmax(depth_img > 0, axis=1)
-        xmax_non_nan = depth_img.shape[1] - np.argmax(depth_img[:, ::-1] > 0, axis=1) - 1
+        xmax_non_nan = (
+            depth_img.shape[1] - np.argmax(depth_img[:, ::-1] > 0, axis=1) - 1
+        )
 
         for i in range(depth_img.shape[0]):
-            occlusion_edge_mask[i, :xmin_non_nan[i] + self.params.occlusion_edge_pixels] = True
-            occlusion_edge_mask[i, xmax_non_nan[i] - self.params.occlusion_edge_pixels:] = True
+            occlusion_edge_mask[
+                i, : xmin_non_nan[i] + self.params.occlusion_edge_pixels
+            ] = True
+            occlusion_edge_mask[
+                i, xmax_non_nan[i] - self.params.occlusion_edge_pixels :
+            ] = True
 
         ymin_non_nan = np.argmax(depth_img > 0, axis=0)
-        ymax_non_nan = depth_img.shape[0] - np.argmax(depth_img[::-1, :] > 0, axis=0) - 1
+        ymax_non_nan = (
+            depth_img.shape[0] - np.argmax(depth_img[::-1, :] > 0, axis=0) - 1
+        )
 
         for j in range(depth_img.shape[1]):
-            occlusion_edge_mask[:ymin_non_nan[j] + self.params.occlusion_edge_pixels, j] = True
-            occlusion_edge_mask[ymax_non_nan[j] - self.params.occlusion_edge_pixels:, j] = True
+            occlusion_edge_mask[
+                : ymin_non_nan[j] + self.params.occlusion_edge_pixels, j
+            ] = True
+            occlusion_edge_mask[
+                ymax_non_nan[j] - self.params.occlusion_edge_pixels :, j
+            ] = True
 
         return occlusion_edge_mask
 
@@ -656,7 +674,7 @@ class Segmenter:
         if occlusion_edge_mask is None:
             occlusion_edge_mask = self._get_occlusion_edge_mask(depth_img)
 
-        occluded_points = points[points[:,2] > self.params.max_depth]
+        occluded_points = points[points[:, 2] > self.params.max_depth]
 
         # TODO: support occlusion points for point cloud case
 
@@ -664,7 +682,8 @@ class Segmenter:
             np.where(np.bitwise_and(mask.astype(bool), occlusion_edge_mask))
         ).T  # (y, x)
         occluded_pixels_depths = (
-            depth_img[occluded_pixels[:, 0], occluded_pixels[:, 1]] / self.params.depth_scale
+            depth_img[occluded_pixels[:, 0], occluded_pixels[:, 1]]
+            / self.params.depth_scale
         )
         occluded_pixels_3d_cam = pixel_depth_2_xyz(
             occluded_pixels[:, 1],

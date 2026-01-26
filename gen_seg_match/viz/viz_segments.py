@@ -8,13 +8,19 @@ import robotdatapy as rdp
 import cv2 as cv
 
 from gen_seg_match.map3d.observation import Observation
-from gen_seg_match.segment.segment_types import SegmentList, SegmentPoint, SegmentLine, GeneralSegment
+from gen_seg_match.segment.segment_types import (
+    SegmentList,
+    SegmentPoint,
+    SegmentLine,
+    GeneralSegment,
+)
 from gen_seg_match.viz.utils import color_from_seed
 
 INFINITE_LINE_VIZ_LEN = 20.0
 
+
 def viz_segments(
-    segments: Union[SegmentList|List[Observation]],
+    segments: Union[SegmentList | List[Observation]],
     id_range=None,
     time_range=None,
     time_range_relative=True,
@@ -22,7 +28,7 @@ def viz_segments(
     show_labels=False,
     show_dense=True,
     show_sparse=True,
-    colors=None
+    colors=None,
 ):
     geometry_list = []
     label_list = []
@@ -48,7 +54,6 @@ def viz_segments(
             points = seg.point_cloud
 
         if show_dense and points is not None:
-            
             num_pts = points.shape[0]
             pcd = o3d.geometry.PointCloud()
             pcd.points = o3d.utility.Vector3dVector(points)
@@ -59,7 +64,9 @@ def viz_segments(
                     axis=0,
                 )
             else:
-                color_repeated = np.repeat(np.array(color).reshape((1, 3)), num_pts, axis=0)
+                color_repeated = np.repeat(
+                    np.array(color).reshape((1, 3)), num_pts, axis=0
+                )
             pcd.colors = o3d.utility.Vector3dVector(color_repeated)
             geometry_list.append(pcd)
 
@@ -67,7 +74,11 @@ def viz_segments(
             if color is None:
                 color = seg.color_from_id(num_type=float)
             if type(seg) is SegmentLine:
-                length = seg.get_length() if seg.num_endpoints == 2 else INFINITE_LINE_VIZ_LEN
+                length = (
+                    seg.get_length()
+                    if seg.num_endpoints == 2
+                    else INFINITE_LINE_VIZ_LEN
+                )
                 cyl = o3d.geometry.TriangleMesh.create_cylinder(0.05, length)
                 cyl.compute_vertex_normals()
 
@@ -82,7 +93,9 @@ def viz_segments(
                 if seg.num_endpoints == 2:
                     cyl.translate((seg.endpoints[0] + seg.endpoints[1]) / 2)
                 else:
-                    cyl.translate(seg.get_point() + seg.get_direction() * INFINITE_LINE_VIZ_LEN)
+                    cyl.translate(
+                        seg.get_point() + seg.get_direction() * INFINITE_LINE_VIZ_LEN
+                    )
                 cyl.paint_uniform_color(color)
                 geometry_list.append(cyl)
             elif type(seg) is SegmentPoint:
@@ -92,7 +105,7 @@ def viz_segments(
                 sphere.paint_uniform_color(color)
                 geometry_list.append(sphere)
 
-            #TODO:
+            # TODO:
             # draw planes
 
         # if show_labels:
@@ -106,27 +119,46 @@ def viz_segments(
         render3d_onscreen(geometry_list, label_list, segments.get_mean_point())
     else:
         return geometry_list, label_list
-    
+
+
 def render3d_on_img(
     objs_list: List[o3d.geometry.PointCloud],
     camera_params: camera.CameraParams,
     camera_pose: np.ndarray = None,
 ):
-    
     if camera_pose is None:
-        camera_pose = rdp.transform.xyz_rpy_to_transform([1., -2., -2.,], [-10., -10., 0.,], degrees=True)
+        camera_pose = rdp.transform.xyz_rpy_to_transform(
+            [
+                1.0,
+                -2.0,
+                -2.0,
+            ],
+            [
+                -10.0,
+                -10.0,
+                0.0,
+            ],
+            degrees=True,
+        )
 
-    renderer = o3d.visualization.rendering.OffscreenRenderer(camera_params.width, camera_params.height)
+    renderer = o3d.visualization.rendering.OffscreenRenderer(
+        camera_params.width, camera_params.height
+    )
     scene = renderer.scene
 
-    renderer.setup_camera(camera_params.K, np.linalg.inv(camera_pose), camera_params.width, camera_params.height)
+    renderer.setup_camera(
+        camera_params.K,
+        np.linalg.inv(camera_pose),
+        camera_params.width,
+        camera_params.height,
+    )
     # Manually widen clipping range
     scene.camera.set_projection(
         camera_params.K,
-        0.01,     # near
-        100.0,    # far
+        0.01,  # near
+        100.0,  # far
         camera_params.width,
-        camera_params.height
+        camera_params.height,
     )
 
     for i, obj in enumerate(objs_list):
@@ -139,7 +171,6 @@ def render3d_on_img(
     o3d_img = cv.cvtColor(np.asarray(o3d_img), cv.COLOR_RGB2BGR)
     scene.clear_geometry()
     return o3d_img
-    
 
 
 def render3d_onscreen(geometry_list, label_list, mean_point):
@@ -200,13 +231,12 @@ def viz_masks_on_img(
         if draw_points and obs.point_cloud is not None:
             point_collections_to_draw.append(obs.point_cloud)
             point_collections_color.append([0, 0, 0])
-        
+
         if draw_occluded_points and obs.occluded_points is not None:
             point_collections_to_draw.append(obs.occluded_points)
             point_collections_color.append([0, 0, 150])
 
         for points3d, color in zip(point_collections_to_draw, point_collections_color):
-            
             # Project points to 2D
             points3d_in_front = np.array([p for p in points3d if p[2] > 0])
             points_in_2d = camera.xyz_2_pixel(points3d_in_front, cam_params.K, axis=0)

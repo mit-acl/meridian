@@ -304,35 +304,55 @@ class GeneralSegmentConverter:
 
         general_segments.reindex()
         return general_segments
-    
+
     def get_plane_with_occlusion(
-        self, segment: RomanSegment, occluded_points: np.ndarray, mean: np.ndarray, U: np.ndarray
+        self,
+        segment: RomanSegment,
+        occluded_points: np.ndarray,
+        mean: np.ndarray,
+        U: np.ndarray,
     ) -> SegmentList:
         normal = U[:, 2]
         dense_points = segment.points if self.params.copy_dense_points else None
 
         sparse_segments = SegmentList()
 
-        sparse_segments.append(SegmentPlane(
-            id=segment.id,
-            point=mean,  # avoid using roman_segment.center in case _center_ref == 'bottom-middle'
-            normal=normal,
-            ratio_feature=self.get_roman_ratio_feature(segment),
-            cos_feature=segment.semantic_descriptor,
-            first_seen=segment.first_seen,
-            last_seen=segment.last_seen,
-            dense_points=dense_points,
-            history=getattr(segment, "history", []),
-        ))
-        
+        sparse_segments.append(
+            SegmentPlane(
+                id=segment.id,
+                point=mean,  # avoid using roman_segment.center in case _center_ref == 'bottom-middle'
+                normal=normal,
+                ratio_feature=self.get_roman_ratio_feature(segment),
+                cos_feature=segment.semantic_descriptor,
+                first_seen=segment.first_seen,
+                last_seen=segment.last_seen,
+                dense_points=dense_points,
+                history=getattr(segment, "history", []),
+            )
+        )
+
         # project points and occluded points to 2D plane
         plane_basis_vectors = U[:, :2]  # first two principal components
-        points_2d = self.get_points_on_2d_plane(segment.points, normal, mean, plane_basis_vectors)
-        occluded_points_2d = self.get_points_on_2d_plane(occluded_points, normal, mean, plane_basis_vectors)
-        line_borders = self.get_line_borders_from_2d_points(points_2d, occluded_points_2d)
+        points_2d = self.get_points_on_2d_plane(
+            segment.points, normal, mean, plane_basis_vectors
+        )
+        occluded_points_2d = self.get_points_on_2d_plane(
+            occluded_points, normal, mean, plane_basis_vectors
+        )
+        line_borders = self.get_line_borders_from_2d_points(
+            points_2d, occluded_points_2d
+        )
         for pt1, pt2 in line_borders:
-            pt1_3d = mean + pt1[0] * plane_basis_vectors[:, 0] + pt1[1] * plane_basis_vectors[:, 1]
-            pt2_3d = mean + pt2[0] * plane_basis_vectors[:, 0] + pt2[1] * plane_basis_vectors[:, 1]
+            pt1_3d = (
+                mean
+                + pt1[0] * plane_basis_vectors[:, 0]
+                + pt1[1] * plane_basis_vectors[:, 1]
+            )
+            pt2_3d = (
+                mean
+                + pt2[0] * plane_basis_vectors[:, 0]
+                + pt2[1] * plane_basis_vectors[:, 1]
+            )
 
             if occluded_points.size > 0:
                 t = (np.ones((3, 10)) * np.linspace(0, 1, 10)).T
@@ -343,26 +363,37 @@ class GeneralSegmentConverter:
                     occluded_points_dists_mins.append(np.min(occluded_points_dists))
                 if np.max(occluded_points_dists_mins) < 1.0:
                     continue
-            
-            if pt1_3d[2] > self.params.plane_border_max_depth and pt2_3d[2] > self.params.plane_border_max_depth:
+
+            if (
+                pt1_3d[2] > self.params.plane_border_max_depth
+                and pt2_3d[2] > self.params.plane_border_max_depth
+            ):
                 continue
             # if pt1_3d[2] < 1.0 or pt2_3d[2] < 1.0:
             #     continue
-            sparse_segments.append(SegmentLine.from_endpoints(
-                id=segment.id,
-                pt1=pt1_3d,
-                pt2=pt2_3d,
-                ratio_feature=self.get_roman_ratio_feature(segment),
-                cos_feature=segment.semantic_descriptor,
-                first_seen=segment.first_seen,
-                last_seen=segment.last_seen,
-                dense_points=None,
-                history=getattr(segment, "history", []),
-            ))
-            
+            sparse_segments.append(
+                SegmentLine.from_endpoints(
+                    id=segment.id,
+                    pt1=pt1_3d,
+                    pt2=pt2_3d,
+                    ratio_feature=self.get_roman_ratio_feature(segment),
+                    cos_feature=segment.semantic_descriptor,
+                    first_seen=segment.first_seen,
+                    last_seen=segment.last_seen,
+                    dense_points=None,
+                    history=getattr(segment, "history", []),
+                )
+            )
+
         return sparse_segments
-        
-    def get_points_on_2d_plane(self, points: np.ndarray, plane_normal: np.ndarray, plane_offset: np.ndarray, plane_basis_vectors: np.ndarray) -> np.ndarray:
+
+    def get_points_on_2d_plane(
+        self,
+        points: np.ndarray,
+        plane_normal: np.ndarray,
+        plane_offset: np.ndarray,
+        plane_basis_vectors: np.ndarray,
+    ) -> np.ndarray:
         """
         Projects 3D points onto a 2D plane defined by its normal, offset, and basis vectors.
 
@@ -375,16 +406,20 @@ class GeneralSegmentConverter:
         Returns:
             np.ndarray: Nx2 array of 2D projected points.
         """
-        
+
         # Project points onto plane
         plane_normal = plane_normal / np.linalg.norm(plane_normal)
         e1 = plane_basis_vectors[:, 0] / np.linalg.norm(plane_basis_vectors[:, 0])
         e2 = plane_basis_vectors[:, 1] / np.linalg.norm(plane_basis_vectors[:, 1])
         centered_points = points - plane_offset
-        points_on_2d = np.stack([np.dot(e1, centered_points.T), np.dot(e2, centered_points.T)], axis=-1)
+        points_on_2d = np.stack(
+            [np.dot(e1, centered_points.T), np.dot(e2, centered_points.T)], axis=-1
+        )
         return points_on_2d
-    
-    def get_line_borders_from_2d_points(self, points_2d: np.ndarray, occluded_points_2d: np.ndarray) -> List[Tuple[np.ndarray, np.ndarray]]:
+
+    def get_line_borders_from_2d_points(
+        self, points_2d: np.ndarray, occluded_points_2d: np.ndarray
+    ) -> List[Tuple[np.ndarray, np.ndarray]]:
         """
         Computes the line borders of a 2D point cloud. If line borders are all close to occluded points,
             or if lines are short, they are not included.
@@ -399,10 +434,10 @@ class GeneralSegmentConverter:
         lines = []
         if len(points_2d) == 0:
             return lines
-        
+
         convex_hull_shapely = shapely.convex_hull(shapely.MultiPoint(points_2d))
         convex_hull = np.array(convex_hull_shapely.exterior.coords)
-        
+
         # if edge angles are small, combine them
         smoothed_convex_hull = [convex_hull[0]]
         for i in range(1, len(convex_hull) - 1):
@@ -415,13 +450,13 @@ class GeneralSegmentConverter:
             v2 = v2 / np.linalg.norm(v2)
             angle = np.arccos(np.clip(np.dot(v1, v2), -1.0, 1.0))
             # if angle < np.deg2rad(self.params.plane_border_smoothing_angle_deg):
-            if angle < np.deg2rad(10.0): # TODO: magic number
+            if angle < np.deg2rad(10.0):  # TODO: magic number
                 # skip current point
                 continue
             else:
                 smoothed_convex_hull.append(pt_curr)
         convex_hull = smoothed_convex_hull
-        
+
         for i, pt0 in enumerate(np.array(convex_hull)):
             pt1 = np.array(convex_hull)[i + 1 if i + 1 < len(convex_hull) else 0]
             # first check if the line is long enough
@@ -430,7 +465,7 @@ class GeneralSegmentConverter:
                 if occluded_points_2d.size == 0:
                     lines.append((pt0, pt1))
                     continue
-                
+
                 # check if the line is far enough from occluded points
                 occluded = False
                 # for frac in np.linspace(0, 1, num=10):
@@ -442,6 +477,5 @@ class GeneralSegmentConverter:
                 #         break
                 if not occluded:
                     lines.append((pt0, pt1))
-                    
+
         return lines
-    

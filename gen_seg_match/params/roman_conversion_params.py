@@ -21,7 +21,7 @@ class RomanConversionParams(ParamsBase):
         0.5  # Minimum RMS distance from plane to still be considered a plane
     )
     # do not create a line border if both points' depths are > plane_border_max_depth
-    plane_border_max_depth: float = 6.0 
+    plane_border_max_depth: float = 6.0
 
     # parameters for line ——————————————
 
