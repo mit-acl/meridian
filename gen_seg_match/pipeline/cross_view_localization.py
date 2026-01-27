@@ -222,6 +222,14 @@ class CrossViewLocalization:
             segment_output_dir.mkdir(parents=True, exist_ok=True)
 
         pose_flu = np.eye(4)
+        pose_flu[:3, :3] = np.array(
+            [
+                [1, 0, 0],
+                [0, -1, 0],
+                [0, 0, -1],
+            ],
+            dtype=float,
+        )
         if img_origin is not None:
             pose_flu[0, 3] = img_origin[0]
             pose_flu[1, 3] = img_origin[1]
@@ -269,7 +277,7 @@ class CrossViewLocalization:
                     segment_frame="odometry-2d",
                     metadata={
                         "crop_center_m": np.array(
-                            [(i + 0.5) * patch_size_m, (j + 0.5) * patch_size_m]
+                            [(i + 0.5) * patch_size_m, -(j + 0.5) * patch_size_m]
                         )
                     },
                 )
@@ -469,9 +477,7 @@ class CrossViewLocalization:
             for aerial_key, aerial_sm_j in aerial_submaps_2d.items():
                 # check if the aerial crop is within range of the ground submap
                 if ground_pose_gt is not None:
-                    aerial_crop_position = aerial_sm_j.pose_flu[:2, 3].copy()
-                    aerial_crop_position[0] += aerial_sm_j.metadata["crop_center_m"][0]
-                    aerial_crop_position[1] -= aerial_sm_j.metadata["crop_center_m"][1]
+                    aerial_crop_position = aerial_sm_j.pose_flu[:2, 3].copy() + aerial_sm_j.metadata["crop_center_m"]
                     if (
                         np.linalg.norm(
                             aerial_crop_position.flatten()[:2] - ground_pose_gt[:2, 3]
@@ -479,14 +485,6 @@ class CrossViewLocalization:
                         > self.pipeline_params.ground_dist_from_aerial_patch_center_m
                     ):
                         continue
-                    aerial_sm_j.pose_flu[:3, :3] = np.array(
-                        [
-                            [1, 0, 0],
-                            [0, -1, 0],
-                            [0, 0, -1],
-                        ],
-                        dtype=float,
-                    )
                     T_aerial_ground = (
                         np.linalg.inv(aerial_sm_j.pose_flu) @ ground_pose_gt
                     )
