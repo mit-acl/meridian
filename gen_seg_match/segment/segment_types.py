@@ -757,7 +757,7 @@ class PointList(SegmentList[SegmentPoint]):
     def points(self) -> np.ndarray:
         if len(self) == 0:
             return np.zeros((0, 3))
-        return np.array([seg.point for seg in self]).reshape(len(self), -1)
+        return np.array([seg.point for seg in self]).reshape(len(self), 3)
 
 
 class LineList(SegmentList[SegmentLine]):
@@ -769,14 +769,14 @@ class LineList(SegmentList[SegmentLine]):
     def directions(self) -> np.ndarray:
         if len(self) == 0:
             return np.zeros((0, 3))
-        return np.array([seg.direction for seg in self]).reshape(len(self), -1)
+        return np.array([seg.direction for seg in self]).reshape(len(self), 3)
 
     @property
     def moments(self) -> np.ndarray:
         if len(self) == 0:
             return np.zeros((0, 3))
         return np.array([np.cross(seg.point, seg.direction) for seg in self]).reshape(
-            len(self), -1
+            len(self), 3
         )
 
 
@@ -786,3 +786,17 @@ class PlaneList(SegmentList[SegmentPlane]):
             assert type(seg) == SegmentPlane, (
                 "All segments must be of type SegmentPlane"
             )
+
+    @property
+    def normals(self) -> np.ndarray:
+        if len(self) == 0:
+            return np.zeros((0, 3))
+        return np.array([seg.normal for seg in self]).reshape(len(self), 3)
+
+    @property
+    def offsets(self) -> np.ndarray:
+        if len(self) == 0:
+            return np.zeros((0, 1))
+        return np.array([np.dot(seg.normal, seg.point) for seg in self]).reshape(
+            len(self), 1
+        )

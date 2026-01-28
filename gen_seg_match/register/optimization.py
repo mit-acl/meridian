@@ -135,147 +135,147 @@ from gen_seg_match.segment.segment_types import SegmentList
 #     return R_final, t_final, losses
 
 
-class PointLineLoss(torch.nn.Module):
-    def __init__(self, W_P=1.0, W_L_D=1.0, W_L_M=1.0, bidirectional: bool = False):
-        super().__init__()
-        self.W_P = W_P
-        self.W_L_D = W_L_D
-        self.W_L_M = W_L_M
-        self.bidirectional = bidirectional
+# class PointLineLoss(torch.nn.Module):
+#     def __init__(self, W_P=1.0, W_L_D=1.0, W_L_M=1.0, bidirectional: bool = False):
+#         super().__init__()
+#         self.W_P = W_P
+#         self.W_L_D = W_L_D
+#         self.W_L_M = W_L_M
+#         self.bidirectional = bidirectional
 
-    def forward(
-        self,
-        R: torch.Tensor,
-        t: torch.Tensor,
-        source_points: torch.Tensor,
-        target_points: torch.Tensor,
-        source_lines: torch.Tensor,
-        target_lines: torch.Tensor,
-    ):
-        """
-        Compute the combined point-line loss for given transformation.
+#     def forward(
+#         self,
+#         R: torch.Tensor,
+#         t: torch.Tensor,
+#         source_points: torch.Tensor,
+#         target_points: torch.Tensor,
+#         source_lines: torch.Tensor,
+#         target_lines: torch.Tensor,
+#     ):
+#         """
+#         Compute the combined point-line loss for given transformation.
 
-        Parameters:
-        R : torch.Tensor
-            A 3x3 rotation matrix.
-        t : torch.Tensor
-            A 3x1 translation vector.
-        source_points : torch.Tensor
-            An Nx3 array of source 3D points.
-        target_points : torch.Tensor
-            An Nx3 array of target 3D points.
-        source_lines : torch.Tensor
-            An Mx6 array of (d, m) source Plücker line coordinates.
-        target_lines : torch.Tensor
-            An Mx6 array of (d, m) target Plücker line coordinates.
-        """
+#         Parameters:
+#         R : torch.Tensor
+#             A 3x3 rotation matrix.
+#         t : torch.Tensor
+#             A 3x1 translation vector.
+#         source_points : torch.Tensor
+#             An Nx3 array of source 3D points.
+#         target_points : torch.Tensor
+#             An Nx3 array of target 3D points.
+#         source_lines : torch.Tensor
+#             An Mx6 array of (d, m) source Plücker line coordinates.
+#         target_lines : torch.Tensor
+#             An Mx6 array of (d, m) target Plücker line coordinates.
+#         """
 
-        N, M = len(source_points), len(source_lines)
-        assert N == len(target_points) and M == len(target_lines), (
-            "Source and target must have the same number of points and lines."
-        )
+#         N, M = len(source_points), len(source_lines)
+#         assert N == len(target_points) and M == len(target_lines), (
+#             "Source and target must have the same number of points and lines."
+#         )
 
-        loss = 0.0
+#         loss = 0.0
 
-        # -----------------------
-        # Point correspondences
-        # -----------------------
-        if N > 0:
-            # Point L2 loss
-            transformed_points = (R @ source_points.T).T + t
-            point_diff = transformed_points - target_points
-            loss += 0.5 * self.W_P * torch.sum(point_diff**2)
+#         # -----------------------
+#         # Point correspondences
+#         # -----------------------
+#         if N > 0:
+#             # Point L2 loss
+#             transformed_points = (R @ source_points.T).T + t
+#             point_diff = transformed_points - target_points
+#             loss += 0.5 * self.W_P * torch.sum(point_diff**2)
 
-        # -----------------------
-        # Line correspondences (Plücker)
-        # -----------------------
-        if M > 0:
-            transformed_lines = transform_plucker_torch(R, t, source_lines)
-            target_directions, target_moments = target_lines[:, :3], target_lines[:, 3:]
-            transformed_directions, transformed_moments = (
-                transformed_lines[:, :3],
-                transformed_lines[:, 3:],
-            )
+#         # -----------------------
+#         # Line correspondences (Plücker)
+#         # -----------------------
+#         if M > 0:
+#             transformed_lines = transform_plucker_torch(R, t, source_lines)
+#             target_directions, target_moments = target_lines[:, :3], target_lines[:, 3:]
+#             transformed_directions, transformed_moments = (
+#                 transformed_lines[:, :3],
+#                 transformed_lines[:, 3:],
+#             )
 
-            # Directional alignment loss
-            dir_cosine_sim = torch.sum(
-                target_directions * transformed_directions, dim=1
-            )
-            if self.bidirectional:
-                dir_cosine_sim = torch.abs(dir_cosine_sim)
-            loss += self.W_L_D * torch.sum(1 - dir_cosine_sim)
+#             # Directional alignment loss
+#             dir_cosine_sim = torch.sum(
+#                 target_directions * transformed_directions, dim=1
+#             )
+#             if self.bidirectional:
+#                 dir_cosine_sim = torch.abs(dir_cosine_sim)
+#             loss += self.W_L_D * torch.sum(1 - dir_cosine_sim)
 
-            # Moment directional L2 loss
-            sq_moment_diff = torch.sum(
-                (transformed_moments - target_moments) ** 2, dim=1
-            )
-            if self.bidirectional:
-                sq_moment_diff = torch.minimum(
-                    sq_moment_diff,
-                    torch.sum((transformed_moments + target_moments) ** 2, dim=1),
-                )
-            loss += 0.5 * self.W_L_M * torch.sum(sq_moment_diff)
+#             # Moment directional L2 loss
+#             sq_moment_diff = torch.sum(
+#                 (transformed_moments - target_moments) ** 2, dim=1
+#             )
+#             if self.bidirectional:
+#                 sq_moment_diff = torch.minimum(
+#                     sq_moment_diff,
+#                     torch.sum((transformed_moments + target_moments) ** 2, dim=1),
+#                 )
+#             loss += 0.5 * self.W_L_M * torch.sum(sq_moment_diff)
 
-        return loss
+#         return loss
 
 
-def PointLineLoss_numpy(
-    PLS: PointLineLoss,
-    R: np.ndarray,
-    t: np.ndarray,
-    source: SegmentList,
-    target: SegmentList,
-    device: torch.device = "cpu",
-) -> float:
-    """
-    Run PointLineLoss with numpy inputs.
+# def PointLineLoss_numpy(
+#     PLS: PointLineLoss,
+#     R: np.ndarray,
+#     t: np.ndarray,
+#     source: SegmentList,
+#     target: SegmentList,
+#     device: torch.device = "cpu",
+# ) -> float:
+#     """
+#     Run PointLineLoss with numpy inputs.
 
-    Parameters:
-    PLS : PointLineLoss
-        An instance of the PointLineLoss class.
-    R : np.ndarray
-        Candidate 3x3 rotation matrix.
-    t : np.ndarray
-        Candidate 3x1 translation vector.
-    source : SegmentList
-        Source point-line cloud with points (Nx3) and lines (Mx6 (d, m) Plücker coordinates).
-    target : SegmentList
-        Target point-line cloud with points (Nx3) and lines (Mx6 (d, m) Plücker coordinates).
-    device : torch.device
-        Device to run the computation on.
+#     Parameters:
+#     PLS : PointLineLoss
+#         An instance of the PointLineLoss class.
+#     R : np.ndarray
+#         Candidate 3x3 rotation matrix.
+#     t : np.ndarray
+#         Candidate 3x1 translation vector.
+#     source : SegmentList
+#         Source point-line cloud with points (Nx3) and lines (Mx6 (d, m) Plücker coordinates).
+#     target : SegmentList
+#         Target point-line cloud with points (Nx3) and lines (Mx6 (d, m) Plücker coordinates).
+#     device : torch.device
+#         Device to run the computation on.
 
-    Returns:
-    loss : float
-        Computed loss value.
-    """
+#     Returns:
+#     loss : float
+#         Computed loss value.
+#     """
 
-    R_torch = torch.tensor(R, dtype=float, device=device)
-    t_torch = torch.tensor(t, dtype=float, device=device)
-    source_points_torch = torch.tensor(
-        source.get_points().points, dtype=float, device=device
-    )
-    target_points_torch = torch.tensor(
-        target.get_points().points, dtype=float, device=device
-    )
-    source_lines_torch = torch.tensor(
-        np.hstack((source.get_lines().directions, source.get_lines().moments)),
-        dtype=float,
-        device=device,
-    )
-    target_lines_torch = torch.tensor(
-        np.hstack((target.get_lines().directions, target.get_lines().moments)),
-        dtype=float,
-        device=device,
-    )
+#     R_torch = torch.tensor(R, dtype=float, device=device)
+#     t_torch = torch.tensor(t, dtype=float, device=device)
+#     source_points_torch = torch.tensor(
+#         source.get_points().points, dtype=float, device=device
+#     )
+#     target_points_torch = torch.tensor(
+#         target.get_points().points, dtype=float, device=device
+#     )
+#     source_lines_torch = torch.tensor(
+#         np.hstack((source.get_lines().directions, source.get_lines().moments)),
+#         dtype=float,
+#         device=device,
+#     )
+#     target_lines_torch = torch.tensor(
+#         np.hstack((target.get_lines().directions, target.get_lines().moments)),
+#         dtype=float,
+#         device=device,
+#     )
 
-    with torch.no_grad():
-        loss = PLS(
-            R_torch,
-            t_torch,
-            source_points_torch,
-            target_points_torch,
-            source_lines_torch,
-            target_lines_torch,
-        )
+#     with torch.no_grad():
+#         loss = PLS(
+#             R_torch,
+#             t_torch,
+#             source_points_torch,
+#             target_points_torch,
+#             source_lines_torch,
+#             target_lines_torch,
+#         )
 
-    return loss.item()
+#     return loss.item()
