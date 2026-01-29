@@ -11,7 +11,7 @@ dependencies = [
     "trimesh",
     "manifold3d",
     "rasterio<1.5"
-    #"git+https://github.com/facebookresearch/segment-anything.git"
+    "segment-anything @ git+https://github.com/facebookresearch/segment-anything.git"
 ]
 requires-python = ">=3.8"
 authors = [
