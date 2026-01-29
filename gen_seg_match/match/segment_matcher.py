@@ -38,9 +38,8 @@ class SegmentMatcher:
     ):
         map1 = SegmentList(deepcopy(map1))
         map2 = SegmentList(deepcopy(map2))
-        # TODO: incorporate planes
-        map1 = map1.get_points() + map1.get_lines()
-        map2 = map2.get_points() + map2.get_lines()
+        map1 = map1.get_points() + map1.get_lines() + map1.get_planes()
+        map2 = map2.get_points() + map2.get_lines() + map2.get_planes()
 
         # return empty associations if map is empty
         if len(map1) == 0 or len(map2) == 0:
