@@ -106,6 +106,10 @@ class Registerer:
             and gravity_dir2 is not None
         )
 
+        if use_gravity:
+            gravity_dir1 = gravity_dir1.reshape(1, 3)
+            gravity_dir2 = gravity_dir2.reshape(1, 3)
+
         num_points = len(source.get_points())
         num_lines = len(source.get_lines())
         num_planes = len(source.get_planes())
@@ -122,8 +126,8 @@ class Registerer:
         H = cross_covariance(
             p,
             q,
-            [gravity_dir1] if use_gravity else [],
-            [gravity_dir2] if use_gravity else [],
+            gravity_dir1 if use_gravity else [],
+            gravity_dir2 if use_gravity else [],
             W_P=self.params.point_weight,
             W_D=self.params.gravity_weight if use_gravity else 1.0,
         )
@@ -164,10 +168,12 @@ class Registerer:
                     dir_idxs = idx_comb
                     break
 
-        assert len(dir_idxs) == dirs_needed, (
-            "Could not find a sufficient set of non-degenerate line correspondences to solve for rotation."
-        )
-
+        # TODO: more specific error
+        if len(dir_idxs) < dirs_needed:
+            raise InsufficientAssociationsException(
+                len(source), len(target), num_lines + num_planes + int(use_gravity)
+            )
+       
         if dirs_needed > 0:
             PLPLoss = PointLinePlaneLoss(
                 params=self.params,

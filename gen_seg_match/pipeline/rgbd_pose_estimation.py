@@ -329,7 +329,7 @@ class RGBDPoseEstimation:
         o3d_segments, _ = viz_segments(
             segments1_matches + segments2_registered,
             offscreen=True,
-            show_dense=False,
+            show_dense=True,
             colors=colors,
         )
         output = render3d_on_img(o3d_segments, camera_params=input1.camera_params)

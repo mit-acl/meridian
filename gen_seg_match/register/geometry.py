@@ -252,7 +252,7 @@ class PointLinePlaneLoss:
         # -----------------------
         if use_gravity:
             loss += self.params.gravity_weight * (
-                -np.dot(R @ gravity_dir1, gravity_dir2)
+                -np.dot(R @ gravity_dir1.reshape(-1), gravity_dir2.reshape(-1))
             )
 
         return loss
