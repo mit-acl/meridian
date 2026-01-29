@@ -180,9 +180,9 @@ class SegmentLine(GeneralSegment):
             raise ValueError("Missing required field 'direction' for SegmentLine")
         if self.cos_feature is not None:
             self.cos_feature /= np.linalg.norm(self.cos_feature)
-        self._normalize_direction()
         self.point = self._reshape_vector(self.point)
         self.direction = self._reshape_vector(self.direction)
+        self._normalize_direction()
         self.endpoints = (
             self._reshape_vector(self.endpoints[0]),
             self._reshape_vector(self.endpoints[1]),
@@ -504,6 +504,7 @@ class SegmentPlane(GeneralSegment):
             self.cos_feature /= np.linalg.norm(self.cos_feature)
         self.point = self._reshape_vector(self.point)
         self.normal = self._reshape_vector(self.normal)
+        self._normalize_normal()
         super().__post_init__()
 
     def to_array(self, include_ratio=True, include_cos=True) -> np.ndarray:
@@ -538,7 +539,14 @@ class SegmentPlane(GeneralSegment):
         )
 
     def get_normal(self) -> np.ndarray:
-        return self.normal.flatten()
+        return self._normalize_normal()
+    
+    def _normalize_normal(self):
+        normalized_normal = self.normal / np.linalg.norm(self.normal)
+        if np.dot(self.normal, normalized_normal) < 0:
+            normalized_normal = -normalized_normal
+        self.normal = normalized_normal
+        return self.normal
 
 
 class ParallelLinesException(Exception):

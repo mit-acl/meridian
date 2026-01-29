@@ -150,8 +150,6 @@ class PointLinePlaneLoss:
         loss : float
             The computed loss value.
         """
-        loss = 0.0
-
         source = SegmentList(source)
         target = SegmentList(target)
 
@@ -178,6 +176,8 @@ class PointLinePlaneLoss:
             source.get_planes().offsets,
         )  # (O, 3), (O, 1)
         t_norm, t_off = target.get_planes().normals, target.get_planes().offsets
+
+        loss = 0.0
 
         # -----------------------
         # Point correspondences
@@ -252,7 +252,7 @@ class PointLinePlaneLoss:
         # -----------------------
         if use_gravity:
             loss += self.params.gravity_weight * (
-                -np.dot(R @ gravity_dir1.reshape(-1), gravity_dir2.reshape(-1))
+                -np.dot(R @ gravity_dir1.ravel(), gravity_dir2.ravel())
             )
 
         return loss

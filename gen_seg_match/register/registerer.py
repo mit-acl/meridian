@@ -133,7 +133,7 @@ class Registerer:
         )
 
         H_init_rank = rank(H, tol=self.params.lin_eps)
-        dirs_needed = max(2 - H_init_rank, 0) if num_points > 0 else 3
+        dirs_needed = max(2 - H_init_rank, 0) if num_points > 0 else 3 - int(use_gravity)
 
         if num_lines + num_planes + int(use_gravity) < dirs_needed:
             raise InsufficientAssociationsException(
@@ -317,7 +317,7 @@ class Registerer:
                 # Flip normal
                 t_planes[i].normal = -t_planes[i].normal
 
-        return SegmentList(target.get_points() + t_lines + t_planes)
+        return SegmentList(target.get_points().copy() + t_lines + t_planes)
 
     def aruns_extended(
         self,
