@@ -50,12 +50,18 @@ class EvalInput:
     map_directory: str = None
     params_directory: str = None
 
+    def should_use_match_directory(self):
+        if os.path.isdir(f"{self.directory}/match"):
+            return True
+
     def get_directory(self):
         assert os.path.isdir(self.directory), (
             f"Directory {self.directory} does not exist."
         )
         if os.path.isdir(f"{self.directory}/align"):
             return f"{self.directory}/align"
+        if os.path.isdir(f"{self.directory}/match"):
+            return f"{self.directory}/match"
         return self.directory
 
     def get_name(self):
@@ -137,6 +143,9 @@ class SubmapAlignEvaluator:
         return timing_results
 
     def _get_results_paths(self, eval_input: EvalInput) -> List[str]:
+        if eval_input.should_use_match_directory():
+            return [os.path.join(eval_input.get_directory(), "results.npz")]
+            
         dir_path = eval_input.get_directory()
         result_files = []
         for robot_pair in self.params.robot_pairs_as_strings:

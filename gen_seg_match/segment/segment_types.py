@@ -5,6 +5,7 @@ from robotdatapy import transform as transform
 from typing import Tuple, List
 import pickle
 import open3d as o3d
+from copy import deepcopy
 
 from gen_seg_match.viz.utils import color_from_seed
 
@@ -156,6 +157,7 @@ class SegmentPoint(GeneralSegment):
             first_seen=self.first_seen,
             last_seen=self.last_seen,
             dense_points=self._copy_optional_array(self.dense_points),
+            history=deepcopy(self.history),
         )
 
 
@@ -316,6 +318,7 @@ class SegmentLine(GeneralSegment):
             first_seen=self.first_seen,
             last_seen=self.last_seen,
             dense_points=self._copy_optional_array(self.dense_points),
+            history=deepcopy(self.history),
         )
 
     def get_length(self):
@@ -536,6 +539,7 @@ class SegmentPlane(GeneralSegment):
             first_seen=self.first_seen,
             last_seen=self.last_seen,
             dense_points=self._copy_optional_array(self.dense_points),
+            history=deepcopy(self.history),
         )
 
     def get_normal(self) -> np.ndarray:
@@ -671,6 +675,7 @@ class DenseSegment(GeneralSegment):
             first_seen=self.first_seen,
             last_seen=self.last_seen,
             occluded_points=self._copy_optional_array(self.occluded_points),
+            history=deepcopy(self.history),
         )
 
 

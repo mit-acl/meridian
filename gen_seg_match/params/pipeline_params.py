@@ -15,6 +15,7 @@ class RGBDPoseEstimationParams(ParamsBase):
     min_fov_iou: float = 0.1
     max_fov_depth: float = 8.0
     output_directory: str = None
+    use_additional_adjacent_imgs: int = 0  # 1 = use 1 before and 1 after, etc.
 
     viz_img_matches: bool = True
     viz_img_pixel_sep: int = 10

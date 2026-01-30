@@ -17,6 +17,7 @@ class RGBDPoseEstimationDataParams(ParamsBase):
     camera_est_pose_data: dict = None
     camera_gt_pose_data: dict = None
     gravity_direction: np.ndarray = (0.0, 0.0, -1.0)
+    depth_scale: float = 1e-3  # Multiplier to convert depth image values to meters
 
     def __post_init__(self):
         if self.img_data is None:

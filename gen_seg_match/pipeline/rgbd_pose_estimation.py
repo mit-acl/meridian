@@ -57,6 +57,8 @@ class RGBDInput:
     gravity_direction: np.ndarray = None
     segments: SegmentList = None
     pose_gt: np.ndarray = None  # optional ground truth pose
+    pose_est: np.ndarray = None  # optional estimated pose (e.g., from VIO)
+    depth_scale: float = 1e-3  # Multiplier to convert depth image values to meters
 
     @property
     def bgr(self) -> np.ndarray:
@@ -65,6 +67,11 @@ class RGBDInput:
     @property
     def shape(self) -> np.ndarray:
         return self.rgb.shape
+
+    @property
+    def depth_m(self) -> np.ndarray:
+        """Depth image in meters."""
+        return self.depth * self.depth_scale
 
 
 @dataclass
@@ -130,10 +137,13 @@ class RGBDPoseEstimation:
     def batch_extract_segments(
         self, inputs: List[RGBDInput], segmenter: Segmenter, output_dir: str = None
     ) -> List[RGBDInput]:
+        # First pass: extract segments from each image
+        raw_observations_list = []
         for i, rgbd_input in enumerate(inputs):
             raw_observations, _ = segmenter.segment(
                 rgbd_input.bgr, rgbd_input.time, np.eye(4), rgbd_input.depth
             )
+            raw_observations_list.append(raw_observations)
             dense_segments = [
                 DenseSegment.from_observation(obs) for obs in raw_observations
             ]
@@ -144,15 +154,46 @@ class RGBDPoseEstimation:
             )
             general_segments = SegmentList(general_segments)
             rgbd_input.segments = general_segments
-            if output_dir is not None:
+
+        # Second pass: add adjacent segments if enabled
+        n_adjacent = self.pipeline_params.use_additional_adjacent_imgs
+        if n_adjacent > 0:
+            # Store original segments to avoid duplicating already-merged segments
+            original_segments = [inp.segments.copy() for inp in inputs]
+
+            for i, rgbd_input in enumerate(inputs):
+                if rgbd_input.pose_est is None:
+                    continue
+
+                T_world_center = rgbd_input.pose_est
+                for offset in range(-n_adjacent, n_adjacent + 1):
+                    if offset == 0:
+                        continue
+                    adj_idx = i + offset
+                    if adj_idx < 0 or adj_idx >= len(inputs):
+                        continue
+                    adj_input = inputs[adj_idx]
+                    if adj_input.pose_est is None or original_segments[adj_idx] is None:
+                        continue
+
+                    # Transform from adjacent frame to center frame
+                    T_world_adjacent = adj_input.pose_est
+                    T_center_adjacent = np.linalg.inv(T_world_center) @ T_world_adjacent
+
+                    # Copy and transform adjacent segments (from original, not modified)
+                    adj_segments = original_segments[adj_idx].copy()
+                    adj_segments.transform(T_center_adjacent)
+                    rgbd_input.segments = (rgbd_input.segments + adj_segments).reindex()
+
+        # Visualization
+        if output_dir is not None:
+            for i, rgbd_input in enumerate(inputs):
                 self.draw_segments(
                     rgbd_input,
-                    raw_observations,
-                    general_segments,
+                    raw_observations_list[i],
+                    rgbd_input.segments,
                     output_file=f"{output_dir}/{i}.png",
                 )
-
-        if output_dir is not None:
             with open(f"{output_dir}/segments.pkl", "wb") as f:
                 pickle.dump(inputs, f)
 
@@ -451,6 +492,11 @@ class RGBDPoseEstimation:
                 if data.camera_gt_pose_data is not None
                 else None
             )
+            pose_est = (
+                data.camera_est_pose_data.pose(t)
+                if data.camera_est_pose_data is not None
+                else None
+            )
             rgbd_inputs.append(
                 RGBDInput(
                     time=t,
@@ -459,6 +505,8 @@ class RGBDPoseEstimation:
                     camera_params=data.img_data.camera_params,
                     gravity_direction=gravity_direction,
                     pose_gt=pose_gt,
+                    pose_est=pose_est,
+                    depth_scale=data.depth_scale,
                 )
             )
         return rgbd_inputs
