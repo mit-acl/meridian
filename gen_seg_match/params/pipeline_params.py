@@ -44,6 +44,7 @@ class CrossViewLocalizationParams(ParamsBase):
     match_min_len_m: float = 5.0
 
     aerial_viz_downsample: int = 5
+    ground_dist_from_aerial_patch_center_m: float = 75.0
 
     @property
     def line_merge_ang_thresh_rad(self):

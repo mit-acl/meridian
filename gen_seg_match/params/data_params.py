@@ -63,5 +63,6 @@ class CrossViewLocalizationDataParams(ParamsBase):
 
     aerial_img_path: str
     ground_map_path: str
+    gt_pose_data: dict = None
 
     aerial_img_scale: float = 0.01
