@@ -160,21 +160,21 @@ class CrossViewLocalization:
         )
         return submaps
 
-    def load_segments_from_dir(
+    def load_submaps_from_dir(
         self,
-        segment_dir: Union[str, pathlib.Path],
+        submap_dir: Union[str, pathlib.Path],
     ) -> Dict[str, Submap]:
         """
         Loads segments from a directory.
 
         Args:
-            segment_dir (Union[str, pathlib.Path]): Directory containing segment files.
+            submap_dir (Union[str, pathlib.Path]): Directory containing segment files.
 
         Returns:
             Dict[str, Submap]: List of extracted segments for each submap
         """
-        segment_dir = pathlib.Path(segment_dir)
-        segment_files = list(segment_dir.glob("*.pkl"))
+        submap_dir = pathlib.Path(submap_dir)
+        segment_files = list(submap_dir.glob("*.pkl"))
         segment_files.sort()
         results = {}
         for segment_file in segment_files:
@@ -274,7 +274,7 @@ class CrossViewLocalization:
                     time=0.0,
                     segments=sparse_general_segments,
                     pose_flu=pose_flu,
-                    segment_frame="odometry-2d",
+                    segment_frame="utm",
                     metadata={
                         "crop_center_m": np.array(
                             [(i + 0.5) * patch_size_m, -(j + 0.5) * patch_size_m]
@@ -313,7 +313,7 @@ class CrossViewLocalization:
 
         return results
 
-    def batch_ground_submaps_to_segments(
+    def batch_ground_to_sparse_2d_submaps(
         self, submaps: List[Submap], output_dir: Union[str, pathlib.Path] = None
     ) -> List[Submap]:
         """
@@ -493,11 +493,11 @@ class CrossViewLocalization:
 
                 # split long lines before matching
                 ground_segs_i = ground_sm_i.segments.get_points() + split_long_lines(
-                    ground_sm_i.segments.get_lines(), max_length=15.0
+                    ground_sm_i.segments.get_lines(), max_length=self.pipeline_params.line_split_length_m
                 )
                 ground_segs_i.reindex()
                 aerial_segs_j = aerial_sm_j.segments.get_points() + split_long_lines(
-                    aerial_sm_j.segments.get_lines(), max_length=15.0
+                    aerial_sm_j.segments.get_lines(), max_length=self.pipeline_params.line_split_length_m
                 )
                 aerial_segs_j.reindex()
 
@@ -745,7 +745,7 @@ def cross_view_localization(
     if not skip_ground:
         ground_map = data.ground_map
         ground_submaps = runner.ground_map_to_submaps(ground_map)
-        initial_ground_submaps = runner.batch_ground_submaps_to_segments(
+        initial_ground_submaps = runner.batch_ground_to_sparse_2d_submaps(
             ground_submaps, ground_output_dir
         )
         initial_ground_submaps = {
@@ -754,11 +754,11 @@ def cross_view_localization(
 
     if not skip_match:
         if initial_aerial_segments is None:
-            initial_aerial_segments = runner.load_segments_from_dir(
+            initial_aerial_segments = runner.load_submaps_from_dir(
                 os.path.join(aerial_output_dir, "segments")
             )
         if initial_ground_segments is None:
-            initial_ground_segments = runner.load_segments_from_dir(
+            initial_ground_segments = runner.load_submaps_from_dir(
                 os.path.join(ground_output_dir, "segments")
             )
         runner.batch_cross_view_match(
