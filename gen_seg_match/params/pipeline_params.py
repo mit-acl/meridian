@@ -36,6 +36,7 @@ class CrossViewLocalizationParams(ParamsBase):
     line_merge_dist_thresh_m = 1.0
     line_merge_perp_dist_thresh_m = 0.5
     line_merge_ang_thresh_deg = 10.0
+    line_split_length_m = 15.0
 
     aerial_img_patch_side_len_m: float = 30.0
     aerial_img_patch_overlap: float = 0.5
