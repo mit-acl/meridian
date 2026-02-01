@@ -51,3 +51,17 @@ class CrossViewLocalizationParams(ParamsBase):
     @property
     def line_merge_ang_thresh_rad(self):
         return np.deg2rad(self.line_merge_ang_thresh_deg)
+
+
+@dataclass
+class GroundToBEVParams(ParamsBase):
+    # class attribute
+    params_key: ClassVar[str] = "ground_to_bev"
+
+    sample_distance: float = 0.5  # Distance between sampled images (meters)
+    max_depth: float = 8.0  # Maximum depth to include in point cloud (meters)
+    voxel_size: float = 0.05  # Voxel size for downsampling (meters)
+    depth_scale: float = 1e-3  # Multiplier to convert depth image values to meters
+    start_time: float = 0.0  # Start time relative to bag start (seconds)
+    end_time: float = None  # End time relative to bag start (seconds), None = end of bag
+    bev_resolution: float = 0.02  # Resolution of BEV image (meters per pixel)
