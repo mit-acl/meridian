@@ -136,7 +136,7 @@ class SubmapAlignEvaluator:
         timing_results = {}
         for name, results in self.results.items():
             if results.runtime_s is None:
-                timing_results[name] = float('nan')
+                timing_results[name] = float("nan")
                 continue
             mean_time = np.nanmean(results.runtime_s)
             timing_results[name] = mean_time
@@ -145,7 +145,7 @@ class SubmapAlignEvaluator:
     def _get_results_paths(self, eval_input: EvalInput) -> List[str]:
         if eval_input.should_use_match_directory():
             return [os.path.join(eval_input.get_directory(), "results.npz")]
-            
+
         dir_path = eval_input.get_directory()
         result_files = []
         for robot_pair in self.params.robot_pairs_as_strings:
@@ -243,7 +243,7 @@ def main():
 
     print(f"\n=== Timing Results (ms) ===")
     for name, time in timing_results.items():
-        print(f"{name}: {time*1e3:.1f}")
+        print(f"{name}: {time * 1e3:.1f}")
 
 
 if __name__ == "__main__":

@@ -63,5 +63,11 @@ class GroundToBEVParams(ParamsBase):
     voxel_size: float = 0.05  # Voxel size for downsampling (meters)
     depth_scale: float = 1e-3  # Multiplier to convert depth image values to meters
     start_time: float = 0.0  # Start time relative to bag start (seconds)
-    end_time: float = None  # End time relative to bag start (seconds), None = end of bag
+    end_time: float = (
+        None  # End time relative to bag start (seconds), None = end of bag
+    )
     bev_resolution: float = 0.02  # Resolution of BEV image (meters per pixel)
+    color_aggregation_method: str = "top-1"  # "mean", "top-1", or "top-k"
+    color_aggregation_k: int = 5  # k value for "top-k" aggregation method
+    hole_fill_method: str = None  # None, "inpaint", "nearest", or "dilate"
+    hole_fill_radius: int = 5  # Radius for hole filling (pixels)

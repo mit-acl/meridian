@@ -158,7 +158,7 @@ class PoseEstimationResultMatrix(np.ndarray):
         return np.any(
             np.vectorize(lambda r: not np.isnan(r.descriptor_similarity))(self)
         )
-        
+
     @property
     def runtime_s(self):
         """Return a matrix of runtimes."""

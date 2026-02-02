@@ -132,9 +132,7 @@ class GroundToBEVData:
         img_data = ImgData.from_dict(img_data_dict) if img_data_dict else None
         depth_data = ImgData.from_dict(depth_data_dict) if depth_data_dict else None
         camera_pose_data = (
-            PoseData.from_dict(camera_pose_data_dict)
-            if camera_pose_data_dict
-            else None
+            PoseData.from_dict(camera_pose_data_dict) if camera_pose_data_dict else None
         )
 
         return cls(
@@ -148,6 +146,9 @@ class GroundToBEVData:
         """
         Get the time range of the bag without loading all data.
 
+        Uses the bag's chunk metadata for fast lookup rather than
+        iterating through all messages.
+
         Args:
             params: Path to params file or GroundToBEVDataParams object.
 
@@ -157,11 +158,9 @@ class GroundToBEVData:
         if type(params) is str:
             params = GroundToBEVDataParams.from_yaml(params)
 
-        # Use ImgData.topic_t_range to get time range without loading the bag
+        # Use bag_t_range for fast lookup from chunk metadata
         bag_path = params.img_data.get("path")
-        topic = params.img_data.get("topic")
 
-        if bag_path and topic:
-            return ImgData.topic_t_range(bag_path, topic)
-            # return [ImgData.topic_t0(bag_path, topic), ImgData.topic_tf(bag_path, topic)]
+        if bag_path:
+            return ImgData.bag_t_range(bag_path)
         return None

@@ -57,6 +57,10 @@ def render_bev_image(
     pcd: o3d.geometry.PointCloud,
     resolution: float = 0.02,
     padding: float = 1.0,
+    color_aggregation_method: str = "mean",
+    color_aggregation_k: int = 5,
+    hole_fill_method: str = None,
+    hole_fill_radius: int = 5,
 ) -> np.ndarray:
     """
     Render a bird's eye view image of the point cloud.
@@ -65,6 +69,17 @@ def render_bev_image(
         pcd: Open3D point cloud.
         resolution: Meters per pixel.
         padding: Padding around the point cloud bounds (meters).
+        color_aggregation_method: How to aggregate colors in each cell.
+            - "mean": Average all point colors in the cell.
+            - "top-1": Use the color of the point with the highest z value.
+            - "top-k": Average colors of the k points with highest z values.
+        color_aggregation_k: k value for "top-k" aggregation.
+        hole_fill_method: Method to fill holes (pixels without points).
+            - None: No hole filling.
+            - "inpaint": OpenCV inpainting (Telea algorithm).
+            - "nearest": Copy from nearest valid pixel.
+            - "dilate": Morphological dilation.
+        hole_fill_radius: Radius for hole filling operations (pixels).
 
     Returns:
         BEV image as numpy array (H, W, 3) in uint8.
@@ -83,10 +98,6 @@ def render_bev_image(
     width = int((x_max - x_min) / resolution)
     height = int((y_max - y_min) / resolution)
 
-    # Create empty image
-    bev_img = np.zeros((height, width, 3), dtype=np.float32)
-    count_img = np.zeros((height, width), dtype=np.float32)
-
     # Project points to image
     px = ((points[:, 0] - x_min) / resolution).astype(int)
     py = ((points[:, 1] - y_min) / resolution).astype(int)
@@ -96,21 +107,147 @@ def render_bev_image(
     px = px[valid]
     py = py[valid]
     valid_colors = colors[valid]
+    valid_z = points[valid, 2]
 
-    # Accumulate colors (flip Y for image coordinates)
+    # Flip Y for image coordinates
     py_flipped = height - 1 - py
-    for i in range(len(px)):
-        bev_img[py_flipped[i], px[i]] += valid_colors[i]
-        count_img[py_flipped[i], px[i]] += 1
 
-    # Average colors where we have points
-    mask = count_img > 0
-    bev_img[mask] /= count_img[mask, np.newaxis]
+    if color_aggregation_method == "mean":
+        # Average all point colors in each cell
+        bev_img = np.zeros((height, width, 3), dtype=np.float32)
+        count_img = np.zeros((height, width), dtype=np.float32)
+
+        for i in range(len(px)):
+            bev_img[py_flipped[i], px[i]] += valid_colors[i]
+            count_img[py_flipped[i], px[i]] += 1
+
+        valid_mask = count_img > 0
+        bev_img[valid_mask] /= count_img[valid_mask, np.newaxis]
+
+    elif color_aggregation_method == "top-1":
+        # Use color of the point with highest z value in each cell
+        bev_img = np.zeros((height, width, 3), dtype=np.float32)
+        z_img = np.full((height, width), -np.inf, dtype=np.float32)
+
+        for i in range(len(px)):
+            if valid_z[i] > z_img[py_flipped[i], px[i]]:
+                z_img[py_flipped[i], px[i]] = valid_z[i]
+                bev_img[py_flipped[i], px[i]] = valid_colors[i]
+
+        valid_mask = z_img > -np.inf
+
+    elif color_aggregation_method == "top-k":
+        # Average colors of the k points with highest z values in each cell
+        from collections import defaultdict
+        import heapq
+
+        # Group points by cell, keeping top-k by z value
+        cell_points = defaultdict(list)
+        for i in range(len(px)):
+            cell = (py_flipped[i], px[i])
+            # Use negative z for min-heap (we want max-k)
+            if len(cell_points[cell]) < color_aggregation_k:
+                heapq.heappush(cell_points[cell], (valid_z[i], valid_colors[i]))
+            elif valid_z[i] > cell_points[cell][0][0]:
+                heapq.heapreplace(cell_points[cell], (valid_z[i], valid_colors[i]))
+
+        bev_img = np.zeros((height, width, 3), dtype=np.float32)
+        valid_mask = np.zeros((height, width), dtype=bool)
+
+        for (row, col), points_list in cell_points.items():
+            if points_list:
+                colors_arr = np.array([c for _, c in points_list])
+                bev_img[row, col] = colors_arr.mean(axis=0)
+                valid_mask[row, col] = True
+
+    else:
+        raise ValueError(
+            f"Unknown color_aggregation_method: {color_aggregation_method}. "
+            "Choose from 'mean', 'top-1', or 'top-k'."
+        )
 
     # Convert to uint8
     bev_img = (bev_img * 255).astype(np.uint8)
 
+    # Hole filling
+    if hole_fill_method is not None:
+        bev_img = fill_holes(
+            bev_img, ~valid_mask, method=hole_fill_method, radius=hole_fill_radius
+        )
+
     return bev_img
+
+
+def fill_holes(
+    img: np.ndarray,
+    hole_mask: np.ndarray,
+    method: str = "inpaint",
+    radius: int = 5,
+) -> np.ndarray:
+    """
+    Fill holes in an image.
+
+    Args:
+        img: Input image (H, W, 3) in uint8.
+        hole_mask: Boolean mask where True indicates holes to fill.
+        method: Hole filling method.
+            - "inpaint": OpenCV inpainting (Telea algorithm).
+            - "nearest": Copy from nearest valid pixel using distance transform.
+            - "dilate": Iterative morphological dilation.
+        radius: Radius for hole filling operations.
+
+    Returns:
+        Image with holes filled.
+    """
+    if not hole_mask.any():
+        return img
+
+    if method == "inpaint":
+        # OpenCV inpainting - designed for filling holes naturally
+        mask_uint8 = hole_mask.astype(np.uint8) * 255
+        result = cv.inpaint(img, mask_uint8, radius, cv.INPAINT_TELEA)
+
+    elif method == "nearest":
+        # Use distance transform to find nearest valid pixel
+        from scipy import ndimage
+
+        result = img.copy()
+        # For each channel, fill holes with nearest valid pixel
+        for c in range(3):
+            channel = img[:, :, c].astype(np.float32)
+            # Distance transform gives distance to nearest non-hole pixel
+            # and indices gives the coordinates of that pixel
+            _, indices = ndimage.distance_transform_edt(
+                hole_mask, return_distances=True, return_indices=True
+            )
+            result[:, :, c] = channel[indices[0], indices[1]]
+
+    elif method == "dilate":
+        # Iterative dilation to fill holes
+        result = img.copy()
+        kernel = cv.getStructuringElement(cv.MORPH_ELLIPSE, (3, 3))
+        remaining_holes = hole_mask.copy()
+
+        for _ in range(radius * 2):  # Multiple iterations to fill larger holes
+            if not remaining_holes.any():
+                break
+
+            # Dilate valid regions into holes
+            for c in range(3):
+                dilated = cv.dilate(result[:, :, c], kernel)
+                result[:, :, c] = np.where(remaining_holes, dilated, result[:, :, c])
+
+            # Update remaining holes (pixels that were holes and still are black)
+            still_black = result.sum(axis=2) == 0
+            remaining_holes = remaining_holes & still_black
+
+    else:
+        raise ValueError(
+            f"Unknown hole_fill_method: {method}. "
+            "Choose from 'inpaint', 'nearest', or 'dilate'."
+        )
+
+    return result
 
 
 @dataclass
@@ -140,9 +277,11 @@ class GroundToBEV:
         while img_idx < img_idx_tf:
             t = data.img_data.times[img_idx]
             curr_position = data.camera_pose_data.position(t)
-            if last_position is None or np.linalg.norm(
-                curr_position - last_position
-            ) > self.params.sample_distance:
+            if (
+                last_position is None
+                or np.linalg.norm(curr_position - last_position)
+                > self.params.sample_distance
+            ):
                 last_position = curr_position
                 times.append(t)
             img_idx += 1
@@ -150,7 +289,9 @@ class GroundToBEV:
         print(f"Processing {len(times)} images from t={t0:.2f} to t={tf:.2f}")
 
         if len(times) == 0:
-            print("[WARNING] No images to process! Check time range and sample_distance.")
+            print(
+                "[WARNING] No images to process! Check time range and sample_distance."
+            )
             return o3d.geometry.PointCloud()
 
         # Create camera intrinsics for Open3D
@@ -221,7 +362,14 @@ class GroundToBEV:
         print(f"Saved point cloud to {pcd_path}")
 
         # Render and save BEV image
-        bev_img = render_bev_image(pcd, resolution=self.params.bev_resolution)
+        bev_img = render_bev_image(
+            pcd,
+            resolution=self.params.bev_resolution,
+            color_aggregation_method=self.params.color_aggregation_method,
+            color_aggregation_k=self.params.color_aggregation_k,
+            hole_fill_method=self.params.hole_fill_method,
+            hole_fill_radius=self.params.hole_fill_radius,
+        )
         bev_path = os.path.join(output_dir, "bev.png")
         cv.imwrite(bev_path, cv.cvtColor(bev_img, cv.COLOR_RGB2BGR))
         print(f"Saved BEV image to {bev_path}")
@@ -261,7 +409,9 @@ def ground_to_bev(params_path: str, output_dir: str):
 
     # Copy params to output dir
     if os.path.isfile(params_path):
-        shutil.copy2(params_path, os.path.join(output_dir, os.path.basename(params_path)))
+        shutil.copy2(
+            params_path, os.path.join(output_dir, os.path.basename(params_path))
+        )
     else:
         shutil.copytree(params_path, output_dir, dirs_exist_ok=True)
 
