@@ -8,8 +8,8 @@ import pickle
 
 from gen_seg_match.segment.segment_types import SegmentList
 from gen_seg_match.params.submap_params import SubmapParams
-from gen_seg_match.params.roman_conversion_params import RomanConversionParams
-from gen_seg_match.map3d.segments_from_roman import GeneralSegmentConverter
+from gen_seg_match.params import DenseToSparseParams
+from gen_seg_match.map3d.dense_to_sparse_converter import DenseToSparseConverter
 from gen_seg_match.utils import sort_time_intervals
 from roman.map.map import ROMANMap
 
@@ -62,7 +62,7 @@ class Submap:
 def submaps_from_roman_map(
     roman_map: ROMANMap,
     submap_params: SubmapParams,
-    roman_conversion_params: RomanConversionParams,
+    dense_to_sparse_params: DenseToSparseParams,
 ) -> List[Submap]:
     """
     Create submaps from a ROMAN Map
@@ -74,10 +74,10 @@ def submaps_from_roman_map(
     Returns:
         List[Submap]: List of created submaps.
     """
-    gen_seg_converter = GeneralSegmentConverter(roman_conversion_params)
+    gen_seg_converter = DenseToSparseConverter(dense_to_sparse_params)
 
     submaps = []
-    general_segments = gen_seg_converter.roman_to_general_segments(roman_map.segments)
+    general_segments = gen_seg_converter.convert(roman_map.segments)
 
     # force fill submaps to a set size, with set overlap -----------
     if submap_params.creation_method == "force_fill":
@@ -313,11 +313,11 @@ if __name__ == "__main__":
         roman_map_conversion_file = args.submap_params  # assuming same file for now
         roman_map = ROMANMap.from_pickle(args.roman_map)
         submap_params = SubmapParams.from_yaml(submap_params_file)
-        roman_conversion_params = RomanConversionParams.from_yaml(
+        dense_to_sparse_params = DenseToSparseParams.from_yaml(
             roman_map_conversion_file
         )
         submaps = submaps_from_roman_map(
-            roman_map, submap_params, roman_conversion_params
+            roman_map, submap_params, dense_to_sparse_params
         )
     else:
         with open(args.input_submaps, "rb") as f:

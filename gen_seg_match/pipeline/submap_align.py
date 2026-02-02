@@ -25,11 +25,12 @@ from gen_seg_match.match.segment_matcher import (
 )
 from gen_seg_match.params import (
     SubmapParams,
-    RomanConversionParams,
+    DenseToSparseParams,
     SegmentMatchParams,
     RegisterParams,
 )
-from gen_seg_match.map3d.submap import submaps_from_roman_map, GeneralSegmentConverter
+from gen_seg_match.map3d.submap import submaps_from_roman_map
+from gen_seg_match.map3d.dense_to_sparse_converter import DenseToSparseConverter
 from gen_seg_match.utils import expandvars_recursive
 from gen_seg_match.segment.segment_types import SegmentList, SegmentLine, SegmentPoint
 from gen_seg_match.register.registerer import (
@@ -263,19 +264,19 @@ if __name__ == "__main__":
         ]
 
     # Load submaps
-    roman_conversion_params = RomanConversionParams.from_yaml(args.params)
+    conversion_params = DenseToSparseParams.from_yaml(args.params)
     submap_lists = []
     for name, roman_map in zip(run_names, roman_maps):
         if args.save_general_segments:
-            general_segments = GeneralSegmentConverter(
-                roman_conversion_params
-            ).roman_to_general_segments(roman_map.segments)
+            general_segments = DenseToSparseConverter(conversion_params).convert(
+                roman_map.segments
+            )
             (output_dir / "gsm_maps").mkdir(parents=True, exist_ok=True)
             with (output_dir / "gsm_maps" / f"{name}.pkl").open("wb") as f:
                 pickle.dump(general_segments, f, -1)
         submap_params.submap_times = submap_times[name]
         new_sm_list = submaps_from_roman_map(
-            roman_map, submap_params, roman_conversion_params
+            roman_map, submap_params, conversion_params
         )
         submap_lists.append(new_sm_list)
 

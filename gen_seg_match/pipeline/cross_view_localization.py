@@ -30,6 +30,7 @@ from gen_seg_match.params import (
     SubmapParams,
     GroundSegmenterParams,
     RegisterParams,
+    DenseToSparseParams,
 )
 from gen_seg_match.viz.utils import color_from_seed
 from gen_seg_match.viz.img_sparse_viz import img_sparse_viz
@@ -47,7 +48,6 @@ from gen_seg_match.segment.segment_types import SegmentPoint, SegmentLine
 from gen_seg_match.map3d.submap import (
     Submap,
     submaps_from_roman_map,
-    RomanConversionParams,
 )
 from gen_seg_match.viz.cross_view_viz import viz_cross_view_matches
 
@@ -152,7 +152,7 @@ class CrossViewLocalization:
         return result
 
     def ground_map_to_submaps(self, ground_map: ROMANMap) -> List[Submap]:
-        conversion_params = RomanConversionParams(
+        conversion_params = DenseToSparseParams(
             copy_dense_points=True, force_points_only=True
         )
         submaps = submaps_from_roman_map(
@@ -477,7 +477,10 @@ class CrossViewLocalization:
             for aerial_key, aerial_sm_j in aerial_submaps_2d.items():
                 # check if the aerial crop is within range of the ground submap
                 if ground_pose_gt is not None:
-                    aerial_crop_position = aerial_sm_j.pose_flu[:2, 3].copy() + aerial_sm_j.metadata["crop_center_m"]
+                    aerial_crop_position = (
+                        aerial_sm_j.pose_flu[:2, 3].copy()
+                        + aerial_sm_j.metadata["crop_center_m"]
+                    )
                     if (
                         np.linalg.norm(
                             aerial_crop_position.flatten()[:2] - ground_pose_gt[:2, 3]

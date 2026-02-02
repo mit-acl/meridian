@@ -15,15 +15,11 @@ import shutil
 
 from gen_seg_match.segment.segment_types import SegmentList, DenseSegment
 from gen_seg_match.match.segment_matcher import SegmentMatcher
-from gen_seg_match.map3d.segments_from_img import (
-    get_segments_with_occlusion,
-    roman_segments_to_general_segments,
-)
 from gen_seg_match.map3d.segmenter import Segmenter
 from gen_seg_match.params import (
     SegmentMatchParams,
     RGBDPoseEstimationParams,
-    RomanConversionParams,
+    DenseToSparseParams,
     RGBDPoseEstimationDataParams,
     SegmenterParams,
     RegisterParams,
@@ -41,7 +37,7 @@ from gen_seg_match.pipeline.result import (
     PoseEstimationResultMatrix,
 )
 from gen_seg_match.utils import expandvars_recursive
-from gen_seg_match.map3d.segments_from_roman import GeneralSegmentConverter
+from gen_seg_match.map3d.dense_to_sparse_converter import DenseToSparseConverter
 from gen_seg_match.register.registerer import (
     Registerer,
     InsufficientAssociationsException,
@@ -79,11 +75,11 @@ class RGBDPoseEstimation:
     pipeline_params: RGBDPoseEstimationParams
     matcher: SegmentMatcher
     registerer: Registerer
-    roman_conversion_params: RomanConversionParams = None
+    dense_to_sparse_params: DenseToSparseParams = None
 
     def __post_init__(self):
-        self.segment_converter = GeneralSegmentConverter(
-            params=self.roman_conversion_params
+        self.segment_converter = DenseToSparseConverter(
+            params=self.dense_to_sparse_params
         )
         for dir_path in [
             self.pipeline_params.output_directory,
@@ -147,11 +143,7 @@ class RGBDPoseEstimation:
             dense_segments = [
                 DenseSegment.from_observation(obs) for obs in raw_observations
             ]
-            general_segments = (
-                self.segment_converter.segment_with_occlusion_to_general_segments(
-                    dense_segments
-                )
-            )
+            general_segments = self.segment_converter.convert(dense_segments)
             general_segments = SegmentList(general_segments)
             rgbd_input.segments = general_segments
 
@@ -594,7 +586,7 @@ def rgbd_pose_estimation(
         pipeline_params=pipeline_params,
         matcher=SegmentMatcher(SegmentMatchParams.load(params)),
         registerer=Registerer(RegisterParams.load(params)),
-        roman_conversion_params=RomanConversionParams.load(params),
+        dense_to_sparse_params=DenseToSparseParams.load(params),
     )
 
     # copy params to output dir
