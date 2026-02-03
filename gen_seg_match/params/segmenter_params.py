@@ -43,7 +43,7 @@ class SegmenterParams(ParamsBase):
     triangle_ignore_masks: List[
         Tuple[Tuple[int, int], Tuple[int, int], Tuple[int, int]]
     ] = None
-    occlusion_edge_pixels: int = 10
+    occlusion_edge_img_frac: float = 0.02
     occlusion_max_depth: float = 7.0
     outlier_removal_std: float = None
     outlier_removal_dbscan_eps: float = 0.25

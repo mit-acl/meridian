@@ -496,11 +496,13 @@ class CrossViewLocalization:
 
                 # split long lines before matching
                 ground_segs_i = ground_sm_i.segments.get_points() + split_long_lines(
-                    ground_sm_i.segments.get_lines(), max_length=self.pipeline_params.line_split_length_m
+                    ground_sm_i.segments.get_lines(),
+                    max_length=self.pipeline_params.line_split_length_m,
                 )
                 ground_segs_i.reindex()
                 aerial_segs_j = aerial_sm_j.segments.get_points() + split_long_lines(
-                    aerial_sm_j.segments.get_lines(), max_length=self.pipeline_params.line_split_length_m
+                    aerial_sm_j.segments.get_lines(),
+                    max_length=self.pipeline_params.line_split_length_m,
                 )
                 aerial_segs_j.reindex()
 

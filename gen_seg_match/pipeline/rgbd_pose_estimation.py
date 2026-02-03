@@ -282,14 +282,18 @@ class RGBDPoseEstimation:
         segments2_matches: SegmentList,
         output_file: str = None,
     ):
-        assert input1.rgb.shape == input2.rgb.shape, (
-            "Only inputs of the same shape are currently supported"
-        )
         assert len(segments1_matches) == len(segments2_matches)
+
+        # Scale input2 to match input1 height
+        scale = input1.shape[0] / input2.shape[0]
+        input2_scaled_width = int(input2.shape[1] * scale)
+
         output = np.zeros(
             (
                 input1.shape[0] * 2 + self.pipeline_params.viz_img_pixel_sep,
-                input1.shape[1] * 2 + self.pipeline_params.viz_img_pixel_sep,
+                input1.shape[1]
+                + self.pipeline_params.viz_img_pixel_sep
+                + input2_scaled_width,
                 3,
             )
         )
@@ -302,15 +306,16 @@ class RGBDPoseEstimation:
             write_ids=self.pipeline_params.viz_write_ids,
         )
 
-        output[
-            : input2.shape[0],
-            input1.shape[1] + self.pipeline_params.viz_img_pixel_sep :,
-        ] = img_sparse_viz(
+        input2_viz = img_sparse_viz(
             input2.bgr,
             segments2,
             input2.camera_params.K,
             write_ids=self.pipeline_params.viz_write_ids,
         )
+        output[
+            : input1.shape[0],
+            input1.shape[1] + self.pipeline_params.viz_img_pixel_sep :,
+        ] = cv.resize(input2_viz, (input2_scaled_width, input1.shape[0]))
 
         colors = [
             color_from_seed(np.random.randint(int(1e9)), order="brg", num_type=int)
@@ -327,16 +332,17 @@ class RGBDPoseEstimation:
             write_ids=self.pipeline_params.viz_write_ids,
         )
 
-        output[
-            input1.shape[0] + self.pipeline_params.viz_img_pixel_sep :,
-            input1.shape[1] + self.pipeline_params.viz_img_pixel_sep :,
-        ] = img_sparse_viz(
+        input2_matches_viz = img_sparse_viz(
             input2.bgr,
             segments2_matches,
             input2.camera_params.K,
             colors=colors,
             write_ids=self.pipeline_params.viz_write_ids,
         )
+        output[
+            input1.shape[0] + self.pipeline_params.viz_img_pixel_sep :,
+            input1.shape[1] + self.pipeline_params.viz_img_pixel_sep :,
+        ] = cv.resize(input2_matches_viz, (input2_scaled_width, input1.shape[0]))
 
         if output_file is not None:
             cv.imwrite(output_file, output)

@@ -640,6 +640,10 @@ class Segmenter:
     def _get_occlusion_edge_mask(self, depth_img):
         occlusion_edge_mask = np.zeros_like(depth_img, dtype=bool)
 
+        # Compute edge pixels from fraction of max image dimension
+        max_dim = max(depth_img.shape[0], depth_img.shape[1])
+        occlusion_edge_pixels = int(self.params.occlusion_edge_img_frac * max_dim)
+
         # Valid depth mask: non-zero and finite (handles both d455 zeros and ZED NaNs)
         valid_depth = (depth_img > 0) & np.isfinite(depth_img)
 
@@ -647,23 +651,15 @@ class Segmenter:
         xmax_valid = depth_img.shape[1] - np.argmax(valid_depth[:, ::-1], axis=1) - 1
 
         for i in range(depth_img.shape[0]):
-            occlusion_edge_mask[
-                i, : xmin_valid[i] + self.params.occlusion_edge_pixels
-            ] = True
-            occlusion_edge_mask[
-                i, xmax_valid[i] - self.params.occlusion_edge_pixels :
-            ] = True
+            occlusion_edge_mask[i, : xmin_valid[i] + occlusion_edge_pixels] = True
+            occlusion_edge_mask[i, xmax_valid[i] - occlusion_edge_pixels :] = True
 
         ymin_valid = np.argmax(valid_depth, axis=0)
         ymax_valid = depth_img.shape[0] - np.argmax(valid_depth[::-1, :], axis=0) - 1
 
         for j in range(depth_img.shape[1]):
-            occlusion_edge_mask[
-                : ymin_valid[j] + self.params.occlusion_edge_pixels, j
-            ] = True
-            occlusion_edge_mask[
-                ymax_valid[j] - self.params.occlusion_edge_pixels :, j
-            ] = True
+            occlusion_edge_mask[: ymin_valid[j] + occlusion_edge_pixels, j] = True
+            occlusion_edge_mask[ymax_valid[j] - occlusion_edge_pixels :, j] = True
 
         return occlusion_edge_mask
 
