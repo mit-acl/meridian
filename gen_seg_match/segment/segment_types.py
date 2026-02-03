@@ -540,7 +540,7 @@ class SegmentPlane(GeneralSegment):
 
     def get_normal(self) -> np.ndarray:
         return self._normalize_normal()
-    
+
     def _normalize_normal(self):
         normalized_normal = self.normal / np.linalg.norm(self.normal)
         if np.dot(self.normal, normalized_normal) < 0:
@@ -753,6 +753,16 @@ class SegmentList(List[GeneralSegment]):
     def to_dim(self, dim: int) -> "SegmentList":
         return SegmentList([seg.to_dim(dim) for seg in self])
 
+    @property
+    def dim(self) -> int:
+        if len(self) == 0:
+            return 0
+        dim = self[0].dim
+        for seg in self:
+            if seg.dim != dim: 
+                return None
+        return dim
+
 
 class PointList(SegmentList[SegmentPoint]):
     def __post_init__(self):
@@ -763,9 +773,7 @@ class PointList(SegmentList[SegmentPoint]):
 
     @property
     def points(self) -> np.ndarray:
-        if len(self) == 0:
-            return np.zeros((0, 3))
-        return np.array([seg.point for seg in self]).reshape(len(self), 3)
+        return np.array([seg.point for seg in self]).reshape(len(self), self.dim)
 
 
 class LineList(SegmentList[SegmentLine]):
@@ -775,16 +783,12 @@ class LineList(SegmentList[SegmentLine]):
 
     @property
     def directions(self) -> np.ndarray:
-        if len(self) == 0:
-            return np.zeros((0, 3))
-        return np.array([seg.direction for seg in self]).reshape(len(self), 3)
+        return np.array([seg.direction for seg in self]).reshape(len(self), self.dim)
 
     @property
     def moments(self) -> np.ndarray:
-        if len(self) == 0:
-            return np.zeros((0, 3))
         return np.array([np.cross(seg.point, seg.direction) for seg in self]).reshape(
-            len(self), 3
+            len(self), self.dim
         )
 
 
@@ -797,14 +801,10 @@ class PlaneList(SegmentList[SegmentPlane]):
 
     @property
     def normals(self) -> np.ndarray:
-        if len(self) == 0:
-            return np.zeros((0, 3))
-        return np.array([seg.normal for seg in self]).reshape(len(self), 3)
+        return np.array([seg.normal for seg in self]).reshape(len(self), self.dim)
 
     @property
     def offsets(self) -> np.ndarray:
-        if len(self) == 0:
-            return np.zeros((0, 1))
         return np.array([np.dot(seg.normal, seg.point) for seg in self]).reshape(
             len(self), 1
         )

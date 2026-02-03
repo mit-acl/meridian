@@ -17,6 +17,7 @@ from gen_seg_match.register.geometry import (
     skew,
     PointLinePlaneLoss,
 )
+from gen_seg_match.utils import vstack_opt
 # from gen_seg_match.register.optimization import PointLineLoss, PointLineLoss_numpy
 
 
@@ -44,8 +45,8 @@ class Registerer:
         self,
         source: List[GeneralSegment],
         target: List[GeneralSegment],
-        gravity_dir1: Optional[np.ndarray] = None,
-        gravity_dir2: Optional[np.ndarray] = None,
+        gravity_src: Optional[np.ndarray] = None,
+        gravity_tgt: Optional[np.ndarray] = None,
         correspondences: np.array = None,
     ):
         """
@@ -54,8 +55,8 @@ class Registerer:
         Args:
             source (List[GeneralSegment]): Segment list in source frame
             target (List[GeneralSegment]): Segment list in target frame
-            gravity_dir1 (Optional[np.ndarray]): Gravity direction in source frame. Defaults to None.
-            gravity_dir2 (Optional[np.ndarray]): Gravity direction in target frame. Defaults to None.
+            gravity_src (Optional[np.ndarray]): Gravity direction in source frame. Defaults to None.
+            gravity_tgt (Optional[np.ndarray]): Gravity direction in target frame. Defaults to None.
             correspondences (np.array, shape=(n,2), optional): If correspondences have already
                 been found, set to None. Otherwise, performs register before aligning. Defaults to None.
 
@@ -102,13 +103,13 @@ class Registerer:
 
         use_gravity = (
             self.params.use_gravity
-            and gravity_dir1 is not None
-            and gravity_dir2 is not None
+            and gravity_src is not None
+            and gravity_tgt is not None
         )
 
         if use_gravity:
-            gravity_dir1 = gravity_dir1.reshape(1, 3)
-            gravity_dir2 = gravity_dir2.reshape(1, 3)
+            gravity_src = gravity_src.reshape(1, 3)
+            gravity_tgt = gravity_tgt.reshape(1, 3)
 
         num_points = len(source.get_points())
         num_lines = len(source.get_lines())
@@ -126,24 +127,26 @@ class Registerer:
         H = cross_covariance(
             p,
             q,
-            gravity_dir1 if use_gravity else [],
-            gravity_dir2 if use_gravity else [],
+            gravity_src if use_gravity else [],
+            gravity_tgt if use_gravity else [],
             W_P=self.params.point_weight,
             W_D=self.params.gravity_weight if use_gravity else 1.0,
         )
 
         H_init_rank = rank(H, tol=self.params.lin_eps)
-        dirs_needed = max(2 - H_init_rank, 0) if num_points > 0 else 3 - int(use_gravity)
+        dirs_needed = (
+            max(2 - H_init_rank, 0) if num_points > 0 else (3 - int(use_gravity))
+        )
 
-        if num_lines + num_planes + int(use_gravity) < dirs_needed:
+        if num_lines + num_planes < dirs_needed:
             raise InsufficientAssociationsException(
-                len(source), len(target), num_lines + num_planes + int(use_gravity)
+                len(source), len(target), num_lines + num_planes
             )
 
         dir_idxs = []
         if dirs_needed > 0:
-            s_comb_dir = np.vstack((s_dir, s_norm))
-            t_comb_dir = np.vstack((t_dir, t_norm))
+            s_comb_dir = vstack_opt((s_dir, s_norm))
+            t_comb_dir = vstack_opt((t_dir, t_norm))
             comb_weights = np.array(
                 [self.params.line_direction_weight] * num_lines
                 + [self.params.plane_normal_weight] * num_planes
@@ -173,7 +176,7 @@ class Registerer:
             raise InsufficientAssociationsException(
                 len(source), len(target), num_lines + num_planes + int(use_gravity)
             )
-       
+
         if dirs_needed > 0:
             PLPLoss = PointLinePlaneLoss(
                 params=self.params,
@@ -195,7 +198,7 @@ class Registerer:
             )
 
             for signs in product([-1, 1], repeat=dirs_needed):
-                j_subset_signed = [
+                target_subset_signed = [
                     target.get_lines()[i].copy() for i in dir_idxs if i < num_lines
                 ] + [
                     target.get_planes()[i - num_lines].copy()
@@ -203,16 +206,20 @@ class Registerer:
                     if i >= num_lines
                 ]
 
-                for idx, segment in enumerate(j_subset_signed):
+                for idx, segment in enumerate(target_subset_signed):
                     if isinstance(segment, SegmentLine):
                         segment.direction *= signs[idx]
                     elif isinstance(segment, SegmentPlane):
                         segment.normal *= signs[idx]
 
-                target_subset_signed = target.get_points() + j_subset_signed
+                target_subset_signed = target.get_points() + target_subset_signed
 
                 R_candidate, t_candidate = self.aruns_extended(
-                    source_subset, target_subset_signed, gravity_dir1, gravity_dir2, rotation_only=False
+                    source_subset,
+                    target_subset_signed,
+                    gravity_src,
+                    gravity_tgt,
+                    rotation_only=False,
                 )
 
                 loss = PLPLoss.compute_loss(
@@ -220,8 +227,8 @@ class Registerer:
                     t=t_candidate,
                     source=source,
                     target=target,
-                    gravity_dir1=gravity_dir1,
-                    gravity_dir2=gravity_dir2,
+                    gravity_src=gravity_src,
+                    gravity_tgt=gravity_tgt,
                 )
 
                 if loss < best_loss:
@@ -231,6 +238,7 @@ class Registerer:
                 elif loss < second_best_loss:
                     second_best_loss = loss
 
+            # print(second_best_loss - best_loss)
             if second_best_loss - best_loss < self.params.dup_eps:
                 raise InsufficientAssociationsException(
                     len(source),
@@ -243,20 +251,30 @@ class Registerer:
 
         else:
             R, _ = self.aruns_extended(
-                source.get_points(), target.get_points(), gravity_dir1, gravity_dir2, rotation_only=True
+                source.get_points(),
+                target.get_points(),
+                gravity_src,
+                gravity_tgt,
+                rotation_only=True,
             )
 
         # Make target directions sign-consistent with source
         target_consistent = self.compute_consistent_directions(R, source, target)
 
-        return self.register_consistent(source, target_consistent, gravity_dir1, gravity_dir2)
+        return self.register_consistent(
+            source, target_consistent, gravity_src, gravity_tgt
+        )
 
     def register_consistent(
-        self, source: SegmentList, target: SegmentList,
-        gravity_dir1: Optional[np.ndarray] = None,
-        gravity_dir2: Optional[np.ndarray] = None,
+        self,
+        source: SegmentList,
+        target: SegmentList,
+        gravity_src: Optional[np.ndarray] = None,
+        gravity_tgt: Optional[np.ndarray] = None,
     ) -> RegistrationResult:
-        R, t = self.aruns_extended(source, target, gravity_dir1, gravity_dir2, rotation_only=False)
+        R, t = self.aruns_extended(
+            source, target, gravity_src, gravity_tgt, rotation_only=False
+        )
 
         if self.params.run_gd:
             assert False, "Refinement not yet supported"
@@ -323,8 +341,8 @@ class Registerer:
         self,
         source: SegmentList,
         target: SegmentList,
-        gravity_dir1: Optional[np.ndarray] = None,
-        gravity_dir2: Optional[np.ndarray] = None,
+        gravity_src: Optional[np.ndarray] = None,
+        gravity_tgt: Optional[np.ndarray] = None,
         rotation_only: Optional[bool] = False,
     ) -> Tuple[np.ndarray, np.ndarray]:
         """
@@ -336,9 +354,9 @@ class Registerer:
             Source segments (points, lines, planes), sign-consistent.
         target : SegmentList
             Target segments (points, lines, planes), sign-consistent.
-        gravity_dir1 : Optional[np.ndarray]
+        gravity_src : Optional[np.ndarray]
             Gravity direction in source frame.
-        gravity_dir2 : Optional[np.ndarray]
+        gravity_tgt : Optional[np.ndarray]
             Gravity direction in target frame.
         rotation_only : Optional[bool]
             If True, only compute rotation and set translation to zero.
@@ -357,8 +375,8 @@ class Registerer:
         )
         use_gravity = (
             self.params.use_gravity
-            and gravity_dir1 is not None
-            and gravity_dir2 is not None
+            and gravity_src is not None
+            and gravity_tgt is not None
         )
         assert (
             num_points == len(target.get_points())
@@ -366,21 +384,22 @@ class Registerer:
             and num_planes == len(target.get_planes())
         ), "Source and target must have the same number of points and lines."
         assert (
-            num_lines + num_planes + int(use_gravity) >= 2 or num_points + num_lines + num_planes + int(use_gravity)>= 3
+            num_lines + num_planes + int(use_gravity) >= 2
+            or num_points + num_lines + num_planes + int(use_gravity) >= 3
         ), "At least two directional or three total correspondences are required."
 
         p, q = source.get_points().points, target.get_points().points
         s_dir, t_dir = (
-            np.vstack((source.get_lines().directions, source.get_planes().normals)),
-            np.vstack((target.get_lines().directions, target.get_planes().normals)),
+            vstack_opt((source.get_lines().directions, source.get_planes().normals)),
+            vstack_opt((target.get_lines().directions, target.get_planes().normals)),
         )
         weights = [self.params.line_direction_weight] * num_lines + [
             self.params.plane_normal_weight
         ] * num_planes
 
         if use_gravity:
-            s_dir = np.vstack((s_dir, gravity_dir1))
-            t_dir = np.vstack((t_dir, gravity_dir2))
+            s_dir = vstack_opt((s_dir, gravity_src))
+            t_dir = vstack_opt((t_dir, gravity_tgt))
             weights.append(self.params.gravity_weight)
 
         H = cross_covariance(

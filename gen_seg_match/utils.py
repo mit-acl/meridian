@@ -114,3 +114,16 @@ def clean_up_points(
         points = points[filtered_indices]
 
     return points
+
+
+def vstack_opt(arrs: List[Union[np.ndarray, None]]) -> Union[np.ndarray, None]:
+    """Vertically stack arrays, handling None and empty arrays."""
+    arrs = [arr for arr in arrs if arr is not None]
+    if not arrs:
+        return None
+
+    nonzero_arrs = [arr for arr in arrs if arr.size > 0]
+    if not nonzero_arrs:
+        return arrs[0]
+
+    return np.vstack(nonzero_arrs)

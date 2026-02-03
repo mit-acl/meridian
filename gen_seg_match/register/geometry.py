@@ -13,8 +13,8 @@ from gen_seg_match.segment.segment_types import (
 
 
 def cross_covariance(
-    p: np.ndarray,
-    q: np.ndarray,
+    s_p: np.ndarray,
+    t_p: np.ndarray,
     s_dir: np.ndarray,
     t_dir: np.ndarray,
     W_P: Optional[float] = 1.0,
@@ -24,9 +24,9 @@ def cross_covariance(
     Compute the cross-covariance matrix between two sets of points and line/plane/gravity directions.
 
     Parameters:
-    p : np.ndarray
+    s_p : np.ndarray
         An Nx3 array of 3D points from the source cloud.
-    q : np.ndarray
+    t_p : np.ndarray
         An Nx3 array of 3D points from the target cloud.
     s_dir : np.ndarray
         An Mx3 array of 3D line/plane/gravity direction vectors from the source cloud.
@@ -41,17 +41,17 @@ def cross_covariance(
     H : np.ndarray
         A 3x3 cross-covariance matrix.
     """
-    assert len(p) == len(q), "Number of source and target points must be the same."
+    assert len(s_p) == len(t_p), "Number of source and target points must be the same."
     assert len(s_dir) == len(t_dir), (
         "Number of source and target direction vectors must be the same."
     )
 
     H = np.zeros((3, 3))
 
-    if len(p) > 0:
-        p_centered = p - p.mean(axis=0)
-        q_centered = q - q.mean(axis=0)
-        H += W_P * (p_centered.T @ q_centered)
+    if len(s_p) > 0:
+        s_p_centr = s_p - s_p.mean(axis=0)
+        t_p_centr = t_p - t_p.mean(axis=0)
+        H += W_P * (s_p_centr.T @ t_p_centr)
 
     if len(s_dir) > 0:
         if isinstance(W_D, (int, float)):
@@ -126,8 +126,8 @@ class PointLinePlaneLoss:
         t: np.ndarray,
         source: List[GeneralSegment],
         target: List[GeneralSegment],
-        gravity_dir1: Optional[np.ndarray] = None,
-        gravity_dir2: Optional[np.ndarray] = None,
+        gravity_src: Optional[np.ndarray] = None,
+        gravity_tgt: Optional[np.ndarray] = None,
     ) -> float:
         """
         Compute the combined point, line, plane, and gravity loss.
@@ -141,9 +141,9 @@ class PointLinePlaneLoss:
             List of source segments (points, lines, planes).
         target : List[GeneralSegment]
             List of target segments (points, lines, planes).
-        gravity_dir1 : Optional[np.ndarray]
+        gravity_src : Optional[np.ndarray]
             Gravity direction in source frame.
-        gravity_dir2 : Optional[np.ndarray]
+        gravity_tgt : Optional[np.ndarray]
             Gravity direction in target frame.
 
         Returns:
@@ -158,8 +158,8 @@ class PointLinePlaneLoss:
         num_planes = len(source.get_planes())
         use_gravity = (
             self.params.use_gravity
-            and gravity_dir1 is not None
-            and gravity_dir2 is not None
+            and gravity_src is not None
+            and gravity_tgt is not None
         )
 
         s_p = source.get_points().points  # (N, 3)
@@ -252,7 +252,7 @@ class PointLinePlaneLoss:
         # -----------------------
         if use_gravity:
             loss += self.params.gravity_weight * (
-                -np.dot(R @ gravity_dir1.ravel(), gravity_dir2.ravel())
+                -np.dot(R @ gravity_src.ravel(), gravity_tgt.ravel())
             )
 
         return loss
