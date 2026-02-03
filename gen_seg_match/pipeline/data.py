@@ -3,6 +3,8 @@ from dataclasses import dataclass
 from typing import Union
 from robotdatapy.data import PoseData, ImgData
 import cv2 as cv
+import rasterio
+from rasterio.transform import xy
 
 from roman.map.map import ROMANMap
 
@@ -59,7 +61,9 @@ class RGBDPoseEstimationData:
 @dataclass
 class CrossViewLocalizationData:
     aerial_img: np.ndarray
+    aerial_img_origin: np.ndarray
     ground_map: ROMANMap
+    gt_pose_data: PoseData = None
 
     aerial_img_scale: float = 0.01
 
@@ -69,8 +73,18 @@ class CrossViewLocalizationData:
             params_file = params
             params = CrossViewLocalizationDataParams.from_yaml(params_file)
 
+        with rasterio.open(params.aerial_img_path) as ds:
+            transform = ds.transform
+            x_utm, y_utm = xy(transform, 0, 0)  # row, col
+
+        gt_pose_data = (
+            PoseData.from_dict(params.gt_pose_data) if params.gt_pose_data else None
+        )
+
         return cls(
             aerial_img=cv.imread(params.aerial_img_path),
+            aerial_img_origin=np.array([x_utm, y_utm]),
             ground_map=ROMANMap.from_pickle(params.ground_map_path),
+            gt_pose_data=gt_pose_data,
             aerial_img_scale=params.aerial_img_scale,
         )

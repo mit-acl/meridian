@@ -4,6 +4,7 @@ from typing import List
 from copy import deepcopy
 from robotdatapy.transform import transform
 from roman.utils import transform_rm_roll_pitch
+import pickle
 
 from gen_seg_match.segment.segment_types import SegmentList
 from gen_seg_match.params.submap_params import SubmapParams
@@ -18,10 +19,10 @@ class Submap:
     id: int
     time: float
     segments: SegmentList
-    segment_ids: List[int]
     pose_flu: np.ndarray
     segment_frame: str = "submap_gravity_aligned"
     descriptor: np.ndarray = None
+    metadata: dict = None
 
     @property
     def pose_gravity_aligned(self):
@@ -41,8 +42,21 @@ class Submap:
             T_odom_center, np.vstack([seg.center.T for seg in self.segments])
         )  # (1, 3) -> (N, 3)
 
+    @property
+    def segment_ids(self):
+        return [seg.id for seg in self.segments]
+
     def __len__(self):
         return len(self.segments)
+
+    def save(self, filepath: str):
+        with open(filepath, "wb") as f:
+            pickle.dump(self, f)
+
+    def load(filepath: str) -> "Submap":
+        with open(filepath, "rb") as f:
+            submap = pickle.load(f)
+        return submap
 
 
 def submaps_from_roman_map(
@@ -96,7 +110,6 @@ def submaps_from_roman_map(
                     id=len(submaps),
                     time=roman_map.times[submap_roman_map_index],
                     segments=[deepcopy(seg) for seg in sm_segments],
-                    segment_ids=[],
                     pose_flu=roman_map.trajectory[submap_roman_map_index],
                 )
             )
@@ -116,7 +129,6 @@ def submaps_from_roman_map(
                         id=len(submaps),
                         time=t,
                         segments=[],
-                        segment_ids=[],
                         pose_flu=pose,
                     )
                 )
@@ -215,7 +227,6 @@ def submaps_from_roman_map(
                     id=len(submaps),
                     time=roman_map.times[submap_roman_map_index],
                     segments=segments,
-                    segment_ids=[],
                     pose_flu=roman_map.trajectory[submap_roman_map_index],
                 )
             )
@@ -240,8 +251,6 @@ def submaps_from_roman_map(
             submap.descriptor = np.mean(
                 [seg.semantic_descriptor for seg in submap.segments], axis=0
             ).flatten()
-
-        submap.segment_ids = [seg.id for seg in submap.segments]
 
     for sm in submaps:
         sm.segments = SegmentList(sm.segments)

@@ -66,8 +66,8 @@ def viz_cross_view_matches(
     ax[1].set_title("Ground Segments")
 
     for i, match in enumerate(matches):
-        seg1 = ground_segments.get_segment_from_id(match[0])
-        seg2 = aerial_segments.get_segment_from_id(match[1])
+        seg2 = aerial_segments.get_segment_from_id(match[0])
+        seg1 = ground_segments.get_segment_from_id(match[1])
         random_color = color_from_seed(i, order="rgb", num_type="float")
         plot_seg(seg1, ax[1], custom_color=random_color)
         plot_seg(seg2, ax[0], custom_color=random_color)

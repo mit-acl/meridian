@@ -36,6 +36,7 @@ class CrossViewLocalizationParams(ParamsBase):
     line_merge_dist_thresh_m = 1.0
     line_merge_perp_dist_thresh_m = 0.5
     line_merge_ang_thresh_deg = 10.0
+    line_split_length_m = 15.0
 
     aerial_img_patch_side_len_m: float = 30.0
     aerial_img_patch_overlap: float = 0.5
@@ -44,6 +45,7 @@ class CrossViewLocalizationParams(ParamsBase):
     match_min_len_m: float = 5.0
 
     aerial_viz_downsample: int = 5
+    ground_dist_from_aerial_patch_center_m: float = 75.0
 
     @property
     def line_merge_ang_thresh_rad(self):
