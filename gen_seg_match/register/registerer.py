@@ -11,8 +11,14 @@ from gen_seg_match.segment.segment_types import (
     SegmentPlane,
 )
 from gen_seg_match.params import RegisterParams
-from gen_seg_match.register.geometry import cross_covariance, rank, skew
-from gen_seg_match.register.optimization import PointLineLoss, PointLineLoss_numpy
+from gen_seg_match.register.geometry import (
+    cross_covariance,
+    rank,
+    skew,
+    PointLinePlaneLoss,
+)
+from gen_seg_match.utils import vstack_opt
+# from gen_seg_match.register.optimization import PointLineLoss, PointLineLoss_numpy
 
 
 class InsufficientAssociationsException(Exception):
@@ -39,23 +45,29 @@ class Registerer:
         self,
         source: List[GeneralSegment],
         target: List[GeneralSegment],
-        gravity_dir1: np.ndarray = None,
-        gravity_dir2: np.ndarray = None,
+        gravity_src: Optional[np.ndarray] = None,
+        gravity_tgt: Optional[np.ndarray] = None,
         correspondences: np.array = None,
     ):
         """
-        Computes the transformation that aligns target to source (T^source_target). Currently only uses SegmentPoint correspondences.
+        Computes the transformation that aligns target to source (T^source_target).
 
         Args:
-            source (List[GeneralSegment]): Segment list in frame 1
-            target (List[GeneralSegment]): Segment list in frame 2
+            source (List[GeneralSegment]): Segment list in source frame
+            target (List[GeneralSegment]): Segment list in target frame
+            gravity_src (Optional[np.ndarray]): Gravity direction in source frame. Defaults to None.
+            gravity_tgt (Optional[np.ndarray]): Gravity direction in target frame. Defaults to None.
             correspondences (np.array, shape=(n,2), optional): If correspondences have already
                 been found, set to None. Otherwise, performs register before aligning. Defaults to None.
 
         Returns:
             np.array: Transformation matrix that aligns target to source (T^source_target).
         """
-        if len(source) == 0 or len(target) == 0 or len(correspondences) == 0:
+        if (
+            len(source) == 0
+            or len(target) == 0
+            or (correspondences is not None and len(correspondences) == 0)
+        ):
             raise InsufficientAssociationsException(len(source), len(target))
 
         if correspondences is None:
@@ -89,6 +101,16 @@ class Registerer:
                 + f"Got match between {type(source[i])} and {type(target[i])}."
             )
 
+        use_gravity = (
+            self.params.use_gravity
+            and gravity_src is not None
+            and gravity_tgt is not None
+        )
+
+        if use_gravity:
+            gravity_src = gravity_src.reshape(1, 3)
+            gravity_tgt = gravity_tgt.reshape(1, 3)
+
         num_points = len(source.get_points())
         num_lines = len(source.get_lines())
         num_planes = len(source.get_planes())
@@ -96,86 +118,117 @@ class Registerer:
         p = source.get_points().points
         q = target.get_points().points
 
-        l_dirs, l_mom = source.get_lines().directions, source.get_lines().moments
-        j_dirs, j_mom = target.get_lines().directions, target.get_lines().moments
+        s_dir, s_mom = source.get_lines().directions, source.get_lines().moments
+        t_dir, t_mom = target.get_lines().directions, target.get_lines().moments
+
+        s_norm, s_off = source.get_planes().normals, source.get_planes().offsets
+        t_norm, t_off = target.get_planes().normals, target.get_planes().offsets
 
         H = cross_covariance(
             p,
             q,
-            [],
-            [],
+            gravity_src if use_gravity else [],
+            gravity_tgt if use_gravity else [],
             W_P=self.params.point_weight,
-            W_L_D=self.params.line_direction_weight,
+            W_D=self.params.gravity_weight if use_gravity else 1.0,
         )
 
-        # TODO: may be overly optimistic about the number of lines needed
-        lines_needed = max(2 - rank(H, tol=self.params.lin_eps), 0)
-        if num_points == 0:
-            lines_needed = 3
+        H_init_rank = rank(H, tol=self.params.lin_eps)
+        dirs_needed = (
+            max(2 - H_init_rank, 0) if num_points > 0 else (3 - int(use_gravity))
+        )
 
-        if num_lines < lines_needed:
-            raise InsufficientAssociationsException(len(source), len(target), num_lines)
-            # assert num_lines >= lines_needed, (
-            #     f"At least {lines_needed} line correspondences are required to solve for rotation."
-            # )
+        if num_lines + num_planes < dirs_needed:
+            raise InsufficientAssociationsException(
+                len(source), len(target), num_lines + num_planes
+            )
 
-        line_idxs = []
-        if lines_needed > 0:
-            for idx_comb in combinations(range(num_lines), lines_needed):
-                l_dir_subset = l_dirs[list(idx_comb)]
-                j_dir_subset = j_dirs[list(idx_comb)]
+        dir_idxs = []
+        if dirs_needed > 0:
+            s_comb_dir = vstack_opt((s_dir, s_norm))
+            t_comb_dir = vstack_opt((t_dir, t_norm))
+            comb_weights = np.array(
+                [self.params.line_direction_weight] * num_lines
+                + [self.params.plane_normal_weight] * num_planes
+            )
+
+            for idx_comb in combinations(range(num_lines + num_planes), dirs_needed):
+                idx_comb = list(idx_comb)
+                s_dir_subset = s_comb_dir[idx_comb]
+                t_dir_subset = t_comb_dir[idx_comb]
+                subset_weights = comb_weights[idx_comb]
 
                 H_temp = H + cross_covariance(
                     [],
                     [],
-                    l_dir_subset,
-                    j_dir_subset,
+                    s_dir_subset,
+                    t_dir_subset,
                     self.params.point_weight,
-                    self.params.line_direction_weight,
+                    subset_weights,
                 )
 
                 if rank(H_temp, tol=self.params.lin_eps) >= 2:
-                    line_idxs = list(idx_comb)
+                    dir_idxs = idx_comb
                     break
 
-        assert len(line_idxs) == lines_needed, (
-            "Could not find a sufficient set of non-degenerate line correspondences to solve for rotation."
-        )
+        # TODO: more specific error
+        if len(dir_idxs) < dirs_needed:
+            raise InsufficientAssociationsException(
+                len(source), len(target), num_lines + num_planes + int(use_gravity)
+            )
 
-        if lines_needed > 0:
-            PLS = PointLineLoss(
-                W_P=self.params.point_weight,
-                W_L_D=self.params.line_direction_weight,
-                W_L_M=self.params.line_moment_weight,
+        if dirs_needed > 0:
+            PLPLoss = PointLinePlaneLoss(
+                params=self.params,
                 bidirectional=True,
-            ).to(self.params.device)
+            )
 
             best_loss, second_best_loss = float("inf"), float("inf")
             best_R = None
 
-            source_subset = source.get_points() + [
-                source.get_lines()[line_idx_i] for line_idx_i in line_idxs
-            ]
-
-            for signs in product([-1, 1], repeat=lines_needed):
-                j_subset_signed = [
-                    target.get_lines()[line_idx_i].copy() for line_idx_i in line_idxs
+            # TODO: make this cleaner (need to edit above indexing too)
+            source_subset = (
+                source.get_points()
+                + [source.get_lines()[i] for i in dir_idxs if i < num_lines]
+                + [
+                    source.get_planes()[i - num_lines]
+                    for i in dir_idxs
+                    if i >= num_lines
                 ]
-                for line_idx, line in enumerate(j_subset_signed):
-                    line.direction *= signs[line_idx]
-                target_subset_signed = target.get_points() + j_subset_signed
+            )
+
+            for signs in product([-1, 1], repeat=dirs_needed):
+                target_subset_signed = [
+                    target.get_lines()[i].copy() for i in dir_idxs if i < num_lines
+                ] + [
+                    target.get_planes()[i - num_lines].copy()
+                    for i in dir_idxs
+                    if i >= num_lines
+                ]
+
+                for idx, segment in enumerate(target_subset_signed):
+                    if isinstance(segment, SegmentLine):
+                        segment.direction *= signs[idx]
+                    elif isinstance(segment, SegmentPlane):
+                        segment.normal *= signs[idx]
+
+                target_subset_signed = target.get_points() + target_subset_signed
 
                 R_candidate, t_candidate = self.aruns_extended(
-                    source_subset, target_subset_signed, rotation_only=False
+                    source_subset,
+                    target_subset_signed,
+                    gravity_src,
+                    gravity_tgt,
+                    rotation_only=False,
                 )
 
-                loss = PointLineLoss_numpy(
-                    PLS,
-                    R_candidate,
-                    t_candidate,
-                    source,
-                    target,
-                    device=self.params.device,
+                loss = PLPLoss.compute_loss(
+                    R=R_candidate,
+                    t=t_candidate,
+                    source=source,
+                    target=target,
+                    gravity_src=gravity_src,
+                    gravity_tgt=gravity_tgt,
                 )
 
                 if loss < best_loss:
@@ -185,6 +238,7 @@ class Registerer:
                 elif loss < second_best_loss:
                     second_best_loss = loss
 
+            # print(second_best_loss - best_loss)
             if second_best_loss - best_loss < self.params.dup_eps:
                 raise InsufficientAssociationsException(
                     len(source),
@@ -197,29 +251,41 @@ class Registerer:
 
         else:
             R, _ = self.aruns_extended(
-                source.get_points(), target.get_points(), rotation_only=True
+                source.get_points(),
+                target.get_points(),
+                gravity_src,
+                gravity_tgt,
+                rotation_only=True,
             )
 
-        # Make target line directions sign-consistent with source
-        target_consistent = self.compute_consistent_line_directions(R, source, target)
+        # Make target directions sign-consistent with source
+        target_consistent = self.compute_consistent_directions(R, source, target)
 
-        return self.register_consistent(source, target_consistent)
+        return self.register_consistent(
+            source, target_consistent, gravity_src, gravity_tgt
+        )
 
     def register_consistent(
-        self, source: SegmentList, target: SegmentList
+        self,
+        source: SegmentList,
+        target: SegmentList,
+        gravity_src: Optional[np.ndarray] = None,
+        gravity_tgt: Optional[np.ndarray] = None,
     ) -> RegistrationResult:
-        R, t = self.aruns_extended(source, target, rotation_only=False)
+        R, t = self.aruns_extended(
+            source, target, gravity_src, gravity_tgt, rotation_only=False
+        )
 
         if self.params.run_gd:
             assert False, "Refinement not yet supported"
-            R, t, losses = refine_transform(
-                R,
-                t,
-                source,
-                target,
-                device=self.params.device,
-                **self.params.refine_transforms_kwargs,
-            )
+            # R, t, losses = refine_transform(
+            #     R,
+            #     t,
+            #     source,
+            #     target,
+            #     device=self.params.device,
+            #     **self.params.refine_transforms_kwargs,
+            # )
         else:
             losses = []
 
@@ -230,7 +296,7 @@ class Registerer:
 
         return RegistrationResult(transformation=T, losses=losses)
 
-    def compute_consistent_line_directions(
+    def compute_consistent_directions(
         self, R: np.ndarray, source: SegmentList, target: SegmentList
     ) -> SegmentList:
         """
@@ -241,40 +307,57 @@ class Registerer:
         R : np.ndarray
             A 3x3 rotation matrix estimate.
         source : SegmentList
-            Source point-line cloud with points (Nx3) and lines (Mx6 (d, m) Plücker coordinates).
+            Source segments (points, lines, planes), not sign-consistent.
         target : SegmentList
-            Target point-line cloud with points (Nx3) and sign-ambiguous lines (Mx6 (d, m) Plücker coordinates).
+            Target segments (points, lines, planes), not sign-consistent.
 
         Returns:
         target_consistent : SegmentList
             Target cloud with sign-consistent line representations.
         """
-        l_dir = source.get_lines().directions
-        j_lines = target.get_lines().copy()
 
-        for i in range(len(l_dir)):
-            l_dir_rotated = R @ l_dir[i]
-            if np.dot(l_dir_rotated, j_lines[i].direction) < 0:
+        # TODO: avoid duplicate code
+        s_dir = source.get_lines().directions
+        t_lines = target.get_lines().copy()
+
+        for i in range(len(s_dir)):
+            s_dir_transformed = R @ s_dir[i]
+            if np.dot(s_dir_transformed, t_lines[i].direction) < 0:
                 # Flip direction
-                j_lines[i].direction = -j_lines[i].direction
+                t_lines[i].direction = -t_lines[i].direction
 
-        return SegmentList(target.get_points() + j_lines)
+        s_norm = source.get_planes().normals
+        t_planes = target.get_planes().copy()
+
+        for i in range(len(s_norm)):
+            s_norm_transformed = R @ s_norm[i]
+            if np.dot(s_norm_transformed, t_planes[i].normal) < 0:
+                # Flip normal
+                t_planes[i].normal = -t_planes[i].normal
+
+        return SegmentList(target.get_points().copy() + t_lines + t_planes)
 
     def aruns_extended(
         self,
         source: SegmentList,
         target: SegmentList,
+        gravity_src: Optional[np.ndarray] = None,
+        gravity_tgt: Optional[np.ndarray] = None,
         rotation_only: Optional[bool] = False,
     ) -> Tuple[np.ndarray, np.ndarray]:
         """
         Compute the transformation between associated point-line clouds
-        using Arun's method extended to include lines.
+        using Arun's method extended to include lines, planes, and optionally gravity.
 
         Parameters:
         source : SegmentList
-            Source point-line cloud with points (Nx3) and lines (Mx6 (d, m) Plücker coordinates).
+            Source segments (points, lines, planes), sign-consistent.
         target : SegmentList
-            Target point-line cloud (sign-consistent) with points (Nx3) and lines (Mx6 (d, m) Plücker coordinates).
+            Target segments (points, lines, planes), sign-consistent.
+        gravity_src : Optional[np.ndarray]
+            Gravity direction in source frame.
+        gravity_tgt : Optional[np.ndarray]
+            Gravity direction in target frame.
         rotation_only : Optional[bool]
             If True, only compute rotation and set translation to zero.
 
@@ -285,24 +368,47 @@ class Registerer:
             A 3x1 translation vector.
         """
 
-        num_points, num_lines = len(source.get_points()), len(source.get_lines())
-        assert num_points == len(target.get_points()) and num_lines == len(
-            target.get_lines()
-        ), "Source and target must have the same number of points and lines."
-        assert num_lines >= 2 or num_points + num_lines >= 3, (
-            "At least two line or three total correspondences are required."
+        num_points, num_lines, num_planes = (
+            len(source.get_points()),
+            len(source.get_lines()),
+            len(source.get_planes()),
         )
+        use_gravity = (
+            self.params.use_gravity
+            and gravity_src is not None
+            and gravity_tgt is not None
+        )
+        assert (
+            num_points == len(target.get_points())
+            and num_lines == len(target.get_lines())
+            and num_planes == len(target.get_planes())
+        ), "Source and target must have the same number of points and lines."
+        assert (
+            num_lines + num_planes + int(use_gravity) >= 2
+            or num_points + num_lines + num_planes + int(use_gravity) >= 3
+        ), "At least two directional or three total correspondences are required."
 
         p, q = source.get_points().points, target.get_points().points
-        l_dir, j_dir = source.get_lines().directions, target.get_lines().directions
+        s_dir, t_dir = (
+            vstack_opt((source.get_lines().directions, source.get_planes().normals)),
+            vstack_opt((target.get_lines().directions, target.get_planes().normals)),
+        )
+        weights = [self.params.line_direction_weight] * num_lines + [
+            self.params.plane_normal_weight
+        ] * num_planes
+
+        if use_gravity:
+            s_dir = vstack_opt((s_dir, gravity_src))
+            t_dir = vstack_opt((t_dir, gravity_tgt))
+            weights.append(self.params.gravity_weight)
 
         H = cross_covariance(
             p,
             q,
-            l_dir,
-            j_dir,
+            s_dir,
+            t_dir,
             W_P=self.params.point_weight,
-            W_L_D=self.params.line_direction_weight,
+            W_D=weights,
         )
 
         U, S, Vt = np.linalg.svd(H)
@@ -343,23 +449,33 @@ class Registerer:
         t : np.ndarray
             A 3x1 translation vector.
         """
-        num_points, num_lines = len(source.get_points()), len(source.get_lines())
-        assert num_points == len(target.get_points()) and num_lines == len(
-            target.get_lines()
+        num_points, num_lines, num_planes = (
+            len(source.get_points()),
+            len(source.get_lines()),
+            len(source.get_planes()),
+        )
+        assert (
+            num_points == len(target.get_points())
+            and num_lines == len(target.get_lines())
+            and num_planes == len(target.get_planes())
         ), "Source and target must have the same number of points and lines."
-        assert num_points + num_lines > 0, (
+        assert num_points + num_lines + num_planes > 0, (
             "At least one correspondence is required to solve for translation."
         )
 
         p, q = source.get_points().points, target.get_points().points
-        l_dir, l_mom = source.get_lines().directions, source.get_lines().moments
-        j_dir, j_mom = target.get_lines().directions, target.get_lines().moments
+        s_dir, s_mom = source.get_lines().directions, source.get_lines().moments
+        t_dir, t_mom = target.get_lines().directions, target.get_lines().moments
 
-        A = np.zeros((3 * (num_points + num_lines), 3))
-        b = np.zeros(3 * (num_points + num_lines))
+        s_norm, s_off = source.get_planes().normals, source.get_planes().offsets
+        t_norm, t_off = target.get_planes().normals, target.get_planes().offsets
+
+        A = np.zeros((3 * (num_points + num_lines) + num_planes, 3))
+        b = np.zeros(3 * (num_points + num_lines) + num_planes)
 
         W_P_SQ = np.sqrt(self.params.point_weight)
         W_L_M_SQ = np.sqrt(self.params.line_moment_weight)
+        W_F_C_SQ = np.sqrt(self.params.plane_offset_weight)
 
         # TODO: optimize with vectorization
 
@@ -368,14 +484,19 @@ class Registerer:
             A[3 * i : 3 * i + 3] = W_P_SQ * np.eye(3)
             b[3 * i : 3 * i + 3] = W_P_SQ * (q[i] - R @ p[i])
 
-        # Line constraints: [j_dir]_x @ t = j_mom - R @ l_mom
+        # Line constraints: -[t_dir]_x @ t = t_mom - R @ s_mom
         for j in range(num_lines):
             A[3 * (num_points + j) : 3 * (num_points + j) + 3] = W_L_M_SQ * -skew(
-                j_dir[j]
-            )  # TODO: should be R @ l_dir[j]?
+                R @ s_dir[j]
+            )  # TODO: should be R @ s_dir[j]?
             b[3 * (num_points + j) : 3 * (num_points + j) + 3] = W_L_M_SQ * (
-                j_mom[j] - R @ l_mom[j]
+                t_mom[j] - R @ s_mom[j]
             )
+
+        # Plane constraints: (R @ s_norm)^T @ t = t_off - s_off
+        for k in range(num_planes):
+            A[3 * (num_points + num_lines) + k] = W_F_C_SQ * (R @ s_norm[k]).T
+            b[3 * (num_points + num_lines) + k] = W_F_C_SQ * (t_off[k] - s_off[k])
 
         t, *_ = np.linalg.lstsq(A, b, rcond=None)
         return t

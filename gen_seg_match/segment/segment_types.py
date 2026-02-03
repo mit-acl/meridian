@@ -180,9 +180,9 @@ class SegmentLine(GeneralSegment):
             raise ValueError("Missing required field 'direction' for SegmentLine")
         if self.cos_feature is not None:
             self.cos_feature /= np.linalg.norm(self.cos_feature)
-        self._normalize_direction()
         self.point = self._reshape_vector(self.point)
         self.direction = self._reshape_vector(self.direction)
+        self._normalize_direction()
         self.endpoints = (
             self._reshape_vector(self.endpoints[0]),
             self._reshape_vector(self.endpoints[1]),
@@ -504,6 +504,7 @@ class SegmentPlane(GeneralSegment):
             self.cos_feature /= np.linalg.norm(self.cos_feature)
         self.point = self._reshape_vector(self.point)
         self.normal = self._reshape_vector(self.normal)
+        self._normalize_normal()
         super().__post_init__()
 
     def to_array(self, include_ratio=True, include_cos=True) -> np.ndarray:
@@ -538,7 +539,14 @@ class SegmentPlane(GeneralSegment):
         )
 
     def get_normal(self) -> np.ndarray:
-        return self.normal.flatten()
+        return self._normalize_normal()
+
+    def _normalize_normal(self):
+        normalized_normal = self.normal / np.linalg.norm(self.normal)
+        if np.dot(self.normal, normalized_normal) < 0:
+            normalized_normal = -normalized_normal
+        self.normal = normalized_normal
+        return self.normal
 
 
 class ParallelLinesException(Exception):
@@ -745,6 +753,16 @@ class SegmentList(List[GeneralSegment]):
     def to_dim(self, dim: int) -> "SegmentList":
         return SegmentList([seg.to_dim(dim) for seg in self])
 
+    @property
+    def dim(self) -> int:
+        if len(self) == 0:
+            return 0
+        dim = self[0].dim
+        for seg in self:
+            if seg.dim != dim: 
+                return None
+        return dim
+
 
 class PointList(SegmentList[SegmentPoint]):
     def __post_init__(self):
@@ -755,9 +773,7 @@ class PointList(SegmentList[SegmentPoint]):
 
     @property
     def points(self) -> np.ndarray:
-        if len(self) == 0:
-            return np.zeros((0, 3))
-        return np.array([seg.point for seg in self]).reshape(len(self), -1)
+        return np.array([seg.point for seg in self]).reshape(len(self), self.dim)
 
 
 class LineList(SegmentList[SegmentLine]):
@@ -767,16 +783,12 @@ class LineList(SegmentList[SegmentLine]):
 
     @property
     def directions(self) -> np.ndarray:
-        if len(self) == 0:
-            return np.zeros((0, 3))
-        return np.array([seg.direction for seg in self]).reshape(len(self), -1)
+        return np.array([seg.direction for seg in self]).reshape(len(self), self.dim)
 
     @property
     def moments(self) -> np.ndarray:
-        if len(self) == 0:
-            return np.zeros((0, 3))
         return np.array([np.cross(seg.point, seg.direction) for seg in self]).reshape(
-            len(self), -1
+            len(self), self.dim
         )
 
 
@@ -786,3 +798,13 @@ class PlaneList(SegmentList[SegmentPlane]):
             assert type(seg) == SegmentPlane, (
                 "All segments must be of type SegmentPlane"
             )
+
+    @property
+    def normals(self) -> np.ndarray:
+        return np.array([seg.normal for seg in self]).reshape(len(self), self.dim)
+
+    @property
+    def offsets(self) -> np.ndarray:
+        return np.array([np.dot(seg.normal, seg.point) for seg in self]).reshape(
+            len(self), 1
+        )
