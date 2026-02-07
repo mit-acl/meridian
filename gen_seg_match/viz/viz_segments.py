@@ -283,7 +283,7 @@ def render3d_onscreen(geometry_list, label_list, mean_point):
             mat = _make_material(point_size=5.0)
         vis.add_geometry(f"geom-{i}", obj, mat)
     for label in label_list:
-        vis.add_3d_label(*label)
+        vis.add_3d_label(*label[:2])
 
     K = np.array([[200, 0, 200], [0, 200, 200], [0, 0, 1]]).astype(np.float64)
     T_inv = np.array(
