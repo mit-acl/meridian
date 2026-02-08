@@ -148,8 +148,7 @@ class RGBDPoseEstimation:
             rgbd_input.segments = general_segments
 
         # Second pass: add adjacent segments if enabled
-        n_adjacent = self.pipeline_params.use_additional_adjacent_imgs
-        if n_adjacent > 0:
+        if self.pipeline_params.use_multiple_imgs:
             # Store original segments to avoid duplicating already-merged segments
             original_segments = [inp.segments.copy() for inp in inputs]
 
@@ -158,7 +157,7 @@ class RGBDPoseEstimation:
                     continue
 
                 T_world_center = rgbd_input.pose_est
-                for offset in range(-n_adjacent, n_adjacent + 1):
+                for offset in self.pipeline_params.additional_adjacent_imgs_list:
                     if offset == 0:
                         continue
                     adj_idx = i + offset
@@ -250,7 +249,10 @@ class RGBDPoseEstimation:
                         matches2,
                         output_file=f"{output_file_prefix}_matches.png",
                     )
-                    if not np.any(np.isnan(result.T_i_j_hat)):
+                    if (
+                        not np.any(np.isnan(result.T_i_j_hat))
+                        and self.pipeline_params.viz_registration
+                    ):
                         self.draw_registration(
                             in1,
                             in2,

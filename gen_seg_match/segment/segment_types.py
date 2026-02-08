@@ -764,7 +764,7 @@ class SegmentList(List[GeneralSegment]):
             return 0
         dim = self[0].dim
         for seg in self:
-            if seg.dim != dim: 
+            if seg.dim != dim:
                 return None
         return dim
 

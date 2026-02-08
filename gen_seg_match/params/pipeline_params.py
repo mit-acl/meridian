@@ -1,6 +1,6 @@
 import numpy as np
 from dataclasses import dataclass
-from typing import ClassVar
+from typing import ClassVar, Union, List
 from gen_seg_match.params.params_base import ParamsBase
 
 
@@ -15,12 +15,32 @@ class RGBDPoseEstimationParams(ParamsBase):
     min_fov_iou: float = 0.1
     max_fov_depth: float = 8.0
     output_directory: str = None
-    use_additional_adjacent_imgs: int = 0  # 1 = use 1 before and 1 after, etc.
+    use_additional_adjacent_imgs: Union[int, List[int]] = (
+        0  # 1 = use 1 before and 1 after, etc.
+    )
 
     viz_img_matches: bool = True
     viz_img_pixel_sep: int = 10
     viz_write_ids: bool = False
     viz_observations_3d: bool = False
+    viz_registration: bool = False
+
+    @property
+    def use_multiple_imgs(self) -> bool:
+        return (
+            self.use_additional_adjacent_imgs != 0
+            and self.use_additional_adjacent_imgs != []
+        )
+
+    @property
+    def additional_adjacent_imgs_list(self) -> list:
+        if not self.use_multiple_imgs:
+            return [0]
+        elif isinstance(self.use_additional_adjacent_imgs, int):
+            n = self.use_additional_adjacent_imgs
+            return list(range(-n, 0)) + list(range(1, n + 1))
+        else:
+            return self.use_additional_adjacent_imgs
 
 
 @dataclass
