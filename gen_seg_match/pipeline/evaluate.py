@@ -20,7 +20,7 @@ STANDARD_YAW_DIFFS = {
 class EvalParams:
     angular_err_thresh_deg: float = 10.0
     distance_err_thresh_m: float = 1.0
-    evaluation_distance_m: float = 10.0
+    evaluation_distance_m: float = 20.0
     robot_names: List[str] = None
     include_inter_robot: bool = False
 
@@ -97,14 +97,18 @@ class SubmapAlignEvaluator:
         for eval_input in eval_inputs:
             result_paths = self._get_results_paths(eval_input)
             combined_results = []
-            for path, robots in zip(result_paths, self.params.robot_pairs):
-                combined_results.append(
-                    PoseEstimationResultMatrix.load(path).reshape(-1)
-                )
+            try:
+                for path, robots in zip(result_paths, self.params.robot_pairs):
+                    combined_results.append(
+                        PoseEstimationResultMatrix.load(path).reshape(-1)
+                    )
 
-            self.results[eval_input.get_name()] = (
-                PoseEstimationResultMatrix.concatenate(combined_results)
-            )
+                self.results[eval_input.get_name()] = (
+                    PoseEstimationResultMatrix.concatenate(combined_results)
+                )
+            except Exception as e:
+                print(f"Error loading results for {eval_input.get_name()}: {e}")
+                continue
 
     def evaluate_align_success_rate(
         self,

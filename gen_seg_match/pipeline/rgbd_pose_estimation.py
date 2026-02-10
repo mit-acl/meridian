@@ -145,6 +145,11 @@ class RGBDPoseEstimation:
             ]
             general_segments = self.segment_converter.convert(dense_segments)
             general_segments = SegmentList(general_segments)
+            for seg in general_segments:
+                max_numeric_val = 2 ** self.pipeline_params.bits_per_semantic_dim - 1
+                max_descriptor_val = np.max(seg.cos_feature.flatten())
+                cos_feature = seg.cos_feature / max_descriptor_val * max_numeric_val
+                seg.cos_feature = cos_feature.astype(int).astype(np.float32)
             rgbd_input.segments = general_segments
 
         # Second pass: add adjacent segments if enabled

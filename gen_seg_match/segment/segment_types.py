@@ -74,6 +74,7 @@ class GeneralSegment:
             ratio_feature = []
         if self.cos_feature is not None and include_cos:
             cos_feature = self.cos_feature.flatten()
+            cos_feature /= np.linalg.norm(cos_feature)
         else:
             cos_feature = []
         return np.concatenate([ratio_feature, cos_feature])

@@ -18,6 +18,7 @@ class RGBDPoseEstimationParams(ParamsBase):
     use_additional_adjacent_imgs: Union[int, List[int]] = (
         0  # 1 = use 1 before and 1 after, etc.
     )
+    bits_per_semantic_dim: int = 8
 
     viz_img_matches: bool = True
     viz_img_pixel_sep: int = 10
