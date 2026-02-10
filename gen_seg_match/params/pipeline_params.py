@@ -49,6 +49,8 @@ class CrossViewLocalizationParams(ParamsBase):
     # class attribute
     params_key: ClassVar[str] = "cross_view_localization"
 
+    segment_min_points: int = 10
+
     point_max_area_m_sq: float = 5.0
     point_max_len_m: float = 5.0
     line_min_length_m: float = 0.0
@@ -65,6 +67,10 @@ class CrossViewLocalizationParams(ParamsBase):
     aerial_min_dist_to_border_m: float = 0.5
 
     match_min_len_m: float = 5.0
+
+    ground_submap_dist_m: float = 20.0
+    ground_submap_rad_m: float = 20.0
+    ground_submap_time_s: float = 60.0
 
     aerial_viz_downsample: int = 5
     ground_dist_from_aerial_patch_center_m: float = 75.0
