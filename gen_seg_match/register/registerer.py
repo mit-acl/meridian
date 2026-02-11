@@ -414,9 +414,8 @@ class Registerer:
         U, S, Vt = np.linalg.svd(H)
 
         if np.abs(S[1]) < self.params.lin_eps:
-            raise ValueError(
-                "Degenerate configuration: second singular value is too small"
-            )
+            # TODO: more specific error
+            raise InsufficientAssociationsException(-1, -1)
 
         if np.linalg.det(Vt.T @ U.T) < 0:
             Vt[2, :] *= -1

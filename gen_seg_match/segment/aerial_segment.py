@@ -72,8 +72,14 @@ class AerialSegment:
             )
             points_o3d = points_o3d.voxel_down_sample(voxel_size=grid_downsample)
             points = np.asarray(points_o3d.points)[:, :2]
-        # print(len(points))
-        alpha_shape = alphashape.alphashape(points, alpha=alpha)
+        try:
+            alpha_shape = alphashape.alphashape(points, alpha=alpha)
+        except Exception as e:
+            print(
+                f"Error computing alpha shape for segment {self.id} with alpha={alpha}: {e}"
+            )
+            self.alpha_shapes[(alpha, grid_downsample)] = None
+            return None
         if type(alpha_shape) is shapely.geometry.polygon.Polygon:
             x, y = alpha_shape.exterior.xy
             self.alpha_shapes[(alpha, grid_downsample)] = np.vstack([x, y]).T
