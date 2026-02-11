@@ -169,7 +169,7 @@ class DenseToSparseConverter:
             id=dense_segment.id,
             point=offset,  # avoid using dense_segment.center in case _center_ref == 'bottom-middle'
             direction=direction,
-            endpoints=end_pts,
+            endpoints=end_pts if not self.params.line_always_infinite else (None, None),
             ratio_feature=self.get_roman_ratio_feature(dense_segment),
             cos_feature=dense_segment.semantic_descriptor,
             first_seen=dense_segment.first_seen,

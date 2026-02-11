@@ -33,6 +33,7 @@ class DenseToSparseParams(ParamsBase):
     line_separate_endpoints: bool = True  # Create separate points for endpoints
     line_separate_center_point: bool = False  # Create separate point for center point
     line_inclusion: bool = True  # Include line objects
+    line_always_infinite: bool = False  # Always make lines infinite
 
     # joint parameters (need to see if these work) ——————————————
 
