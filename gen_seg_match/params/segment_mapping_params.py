@@ -35,7 +35,7 @@ class SegmentMappingParams(ParamsBase):
     # Voxelization
     iou_voxel_size: float = 0.25
     segment_voxel_size: float = 0.05
-    segment_outlier_removal_std: float = 0.0 # disabled by default
+    segment_outlier_removal_std: float = 0.0  # disabled by default
 
     # Pipeline
     dt: float = 1 / 6  # time step for iterating through data (mapping frequency)

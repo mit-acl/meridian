@@ -11,8 +11,9 @@ from gen_seg_match.segment.segment_types import (
     SegmentList,
     DenseSegment,
 )
+from gen_seg_match.segment.map_segment import MapSegment
 
-DenseSegment = Union[DenseSegment, RomanSegment]
+DenseSegment = Union[DenseSegment, RomanSegment, MapSegment]
 from gen_seg_match.params import DenseToSparseParams
 
 

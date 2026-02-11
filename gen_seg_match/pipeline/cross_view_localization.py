@@ -16,6 +16,7 @@ from roman.map.fastsam_wrapper import FastSAMWrapper
 from roman.params.fastsam_params import FastSAMParams
 from roman.map.map import ROMANMap
 
+from gen_seg_match.map3d.map import SegmentMap
 from gen_seg_match.segment.segment_types import SegmentList
 from gen_seg_match.match.segment_matcher import SegmentMatcher
 from gen_seg_match.register.registerer import (
@@ -149,7 +150,9 @@ class CrossViewLocalization:
         result.reindex()
         return result
 
-    def ground_map_to_submaps(self, ground_map: ROMANMap) -> List[Submap]:
+    def ground_map_to_submaps(
+        self, ground_map: Union[ROMANMap, SegmentMap]
+    ) -> List[Submap]:
         conversion_params = DenseToSparseParams(
             copy_dense_points=True, force_points_only=True
         )

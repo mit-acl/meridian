@@ -8,6 +8,7 @@ from rasterio.transform import xy
 
 from roman.map.map import ROMANMap
 
+from gen_seg_match.map3d.map import SegmentMap
 from gen_seg_match.params.data_params import (
     RGBDPoseEstimationDataParams,
     CrossViewLocalizationDataParams,
@@ -66,7 +67,7 @@ class RGBDPoseEstimationData:
 class CrossViewLocalizationData:
     aerial_img: np.ndarray
     aerial_img_origin: np.ndarray
-    ground_map: ROMANMap
+    ground_map: Union[ROMANMap, SegmentMap]
     gt_pose_data: PoseData = None
 
     aerial_img_scale: float = 0.01
@@ -85,13 +86,29 @@ class CrossViewLocalizationData:
             PoseData.from_dict(params.gt_pose_data) if params.gt_pose_data else None
         )
 
+        ground_map = cls._load_ground_map(params.ground_map_path)
+
         return cls(
             aerial_img=cv.imread(params.aerial_img_path),
             aerial_img_origin=np.array([x_utm, y_utm]),
-            ground_map=ROMANMap.from_pickle(params.ground_map_path),
+            ground_map=ground_map,
             gt_pose_data=gt_pose_data,
             aerial_img_scale=params.aerial_img_scale,
         )
+
+    @staticmethod
+    def _load_ground_map(path: str) -> Union[ROMANMap, SegmentMap]:
+        import pickle
+        import os
+
+        with open(os.path.expanduser(path), "rb") as f:
+            ground_map = pickle.load(f)
+        if isinstance(ground_map, SegmentMap):
+            return ground_map
+        elif isinstance(ground_map, ROMANMap):
+            return ground_map
+        else:
+            raise TypeError(f"Expected SegmentMap or ROMANMap, got {type(ground_map)}")
 
 
 @dataclass
