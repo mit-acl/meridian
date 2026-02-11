@@ -13,15 +13,15 @@ class SegmentMappingParams(ParamsBase):
     ##################
 
     # Association
-    geometric_association_method: str = "iou"
-    semantic_association_method: str = "none"
-    geometric_score_range: Tuple[float] = (0.25, 1.0)
-    semantic_score_range: Tuple[float] = (0.8, 1.0)
-    min_2d_iou: Union[float, None] = 0.8
+    geometric_association_method: str = "iom"
+    semantic_association_method: str = "cosine_similarity"
+    geometric_score_range: Tuple[float] = (0.2, 1.0)
+    semantic_score_range: Tuple[float] = (0.7, 1.0)
+    min_2d_iou: Union[float, None] = None
 
     # Lifecycle
     min_sightings: int = 2
-    max_t_no_sightings: int = 0.4
+    max_t_no_sightings: float = 0.4
     mask_downsample_factor: int = 8
 
     # Segment filtering
@@ -33,9 +33,9 @@ class SegmentMappingParams(ParamsBase):
     segment_graveyard_dist: float = 10.0
 
     # Voxelization
-    iou_voxel_size: float = 0.2
+    iou_voxel_size: float = 0.25
     segment_voxel_size: float = 0.05
-    segment_outlier_removal_std: float = 1.0
+    segment_outlier_removal_std: float = 0.0 # disabled by default
 
     # Pipeline
     dt: float = 1 / 6  # time step for iterating through data (mapping frequency)
