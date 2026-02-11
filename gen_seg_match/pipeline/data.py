@@ -12,6 +12,7 @@ from gen_seg_match.params.data_params import (
     RGBDPoseEstimationDataParams,
     CrossViewLocalizationDataParams,
     GroundToBEVDataParams,
+    SegmentMappingDataParams,
 )
 
 
@@ -161,6 +162,57 @@ class GroundToBEVData:
         # Use bag_t_range for fast lookup from chunk metadata
         bag_path = params.img_data.get("path")
 
+        if bag_path:
+            return ImgData.bag_t_range(bag_path)
+        return None
+
+
+@dataclass
+class SegmentMappingData:
+    img_data: ImgData
+    depth_data: ImgData
+    camera_pose_data: PoseData
+    depth_scale: float = 1e-3
+
+    @classmethod
+    def from_params(
+        cls,
+        params: Union[str, SegmentMappingDataParams],
+        time_range: tuple = None,
+    ):
+        if type(params) is str:
+            params_file = params
+            params = SegmentMappingDataParams.from_yaml(params_file)
+
+        img_data_dict = dict(params.img_data) if params.img_data else {}
+        depth_data_dict = dict(params.depth_data) if params.depth_data else {}
+        camera_pose_data_dict = (
+            dict(params.camera_pose_data) if params.camera_pose_data else {}
+        )
+
+        if time_range is not None:
+            img_data_dict["time_range"] = time_range
+            depth_data_dict["time_range"] = time_range
+
+        img_data = ImgData.from_dict(img_data_dict) if img_data_dict else None
+        depth_data = ImgData.from_dict(depth_data_dict) if depth_data_dict else None
+        camera_pose_data = (
+            PoseData.from_dict(camera_pose_data_dict) if camera_pose_data_dict else None
+        )
+
+        return cls(
+            img_data=img_data,
+            depth_data=depth_data,
+            camera_pose_data=camera_pose_data,
+            depth_scale=params.depth_scale,
+        )
+
+    @staticmethod
+    def get_bag_time_range(params: Union[str, SegmentMappingDataParams]) -> tuple:
+        if type(params) is str:
+            params = SegmentMappingDataParams.from_yaml(params)
+
+        bag_path = params.img_data.get("path")
         if bag_path:
             return ImgData.bag_t_range(bag_path)
         return None
