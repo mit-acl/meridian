@@ -67,6 +67,11 @@ class CrossViewLocalizationDataParams(ParamsBase):
     gt_pose_data: dict = None
 
     aerial_img_scale: float = 0.01
+    T_camera_flu: list = None
+
+    def __post_init__(self):
+        if self.T_camera_flu is not None:
+            self.T_camera_flu = np.array(self.T_camera_flu).reshape((4, 4))
 
 
 @dataclass

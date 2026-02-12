@@ -77,6 +77,8 @@ class CrossViewLocalizationParams(ParamsBase):
     aerial_viz_downsample: int = 5
     ground_dist_from_aerial_patch_center_m: float = 75.0
 
+    pose_viz_target_size_kb: int = 200
+
     @property
     def line_merge_ang_thresh_rad(self):
         return np.deg2rad(self.line_merge_ang_thresh_deg)

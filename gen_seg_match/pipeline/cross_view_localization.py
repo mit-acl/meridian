@@ -49,6 +49,7 @@ from gen_seg_match.segment.segment_types import SegmentPoint, SegmentLine
 from gen_seg_match.map3d.submap import Submap
 from gen_seg_match.map3d.dense_to_sparse_converter import DenseToSparseConverter
 from gen_seg_match.viz.cross_view_viz import viz_cross_view_matches
+from gen_seg_match.map3d.submap import FrameType
 
 Crop = Tuple[int, int, int, int]
 
@@ -214,13 +215,14 @@ class CrossViewLocalization:
                 id=k,
                 time=ground_map.times[idx],
                 segments=SegmentList(submap_segments),
-                pose_flu=pose,
+                pose=pose,
+                segment_frame=FrameType.CAMERA,
             )
 
             # Transform segments from odom frame to submap-local frame
-            T_center_odom = np.linalg.inv(submap.pose_gravity_aligned)
+            T_submap_odom = np.linalg.inv(submap.pose)
             for seg in submap.segments:
-                seg.transform(T_center_odom)
+                seg.transform(T_submap_odom)
 
             submaps.append(submap)
 
@@ -339,8 +341,8 @@ class CrossViewLocalization:
                     id=(i, j),
                     time=0.0,
                     segments=sparse_general_segments,
-                    pose_flu=pose_flu,
-                    segment_frame="utm",
+                    pose=pose_flu,
+                    segment_frame=FrameType.UTM,
                     metadata={
                         "crop_center_m": np.array(
                             [(i + 0.5) * patch_size_m, -(j + 0.5) * patch_size_m]
@@ -404,7 +406,10 @@ class CrossViewLocalization:
 
         for k, submap in enumerate(tqdm(submaps)):
             # first transform the submap from submap frame to 3D odometry for now
-            submap.segments.transform(submap.pose_flu)
+            assert submap.segment_frame == FrameType.CAMERA, (
+                f"Expected submap segments in CAMERA frame, but got {submap.segment_frame}"
+            )
+            submap.segments.transform(submap.pose)
 
             flattened_submap = self.ground_segmenter.flatten_3d_submap(submap)
             aerial_segments = self.ground_segmenter.submap_2d_to_aerial(
@@ -440,8 +445,9 @@ class CrossViewLocalization:
                 id=k,
                 time=submap.time,
                 segments=sparse_general_segments,
-                pose_flu=submap.pose_flu,
-                segment_frame="odometry-2d",
+                pose=np.eye(4),
+                segment_frame=FrameType.ODOMETRY,
+                metadata={"camera_pose": submap.pose},
             )
             results.append(submap_2d)
 
@@ -468,6 +474,8 @@ class CrossViewLocalization:
         ground_submaps: Dict[str, Submap],
         ground_gt_pose: rdp.data.PoseData = None,
         output_dir: Union[str, pathlib.Path] = None,
+        aerial_img: np.ndarray = None,
+        T_camera_flu: np.ndarray = None,
     ) -> None:
         """
         Batch process of cross-view segment matching. For each aerial image crop and ground submap,
@@ -525,6 +533,16 @@ class CrossViewLocalization:
                     .height
                 )
 
+        # precompute crop geometry for pose visualization
+        if aerial_img is not None:
+            px_per_m = 1.0 / self.aerial_segmenter.params.pixel_len_m
+            patch_size_px = int(
+                self.pipeline_params.aerial_img_patch_side_len_m * px_per_m
+            )
+            stride = int(
+                patch_size_px * (1.0 - self.pipeline_params.aerial_img_patch_overlap)
+            )
+
         # iterate over all aerial crops and ground submaps
         for ground_key, ground_sm_i in tqdm(ground_submaps_2d.items()):
             results_matrix = PoseEstimationResultMatrix(
@@ -535,16 +553,13 @@ class CrossViewLocalization:
             ground_pose_gt = None
             if ground_gt_pose is not None:
                 ground_pose_gt = ground_gt_pose.pose(ground_submaps[ground_key].time)
-                ground_pose_gt = rdp.transform.T2d_2_T3d(
-                    rdp.transform.T3d_2_T2d(ground_pose_gt)
-                )
-            T_ground_odom_ground_robot = ground_sm_i.pose_flu
+            T_ground_odom_ground_robot = ground_sm_i.metadata["camera_pose"]
 
             for aerial_key, aerial_sm_j in aerial_submaps_2d.items():
                 # check if the aerial crop is within range of the ground submap
                 if ground_pose_gt is not None:
                     aerial_crop_position = (
-                        aerial_sm_j.pose_flu[:2, 3].copy()
+                        aerial_sm_j.pose[:2, 3].copy()
                         + aerial_sm_j.metadata["crop_center_m"]
                     )
                     if (
@@ -554,9 +569,9 @@ class CrossViewLocalization:
                         > self.pipeline_params.ground_dist_from_aerial_patch_center_m
                     ):
                         continue
-                    T_aerial_ground = (
-                        np.linalg.inv(aerial_sm_j.pose_flu) @ ground_pose_gt
-                    )
+                    T_aerial_ground = np.linalg.inv(aerial_sm_j.pose) @ ground_pose_gt
+                    if T_camera_flu is not None:
+                        T_aerial_ground = T_aerial_ground @ T_camera_flu
                 else:
                     T_aerial_ground = np.zeros((4, 4)) * np.nan
 
@@ -585,8 +600,15 @@ class CrossViewLocalization:
                     T_aerial_ground_hat = (
                         T_aerial_ground_odom_hat @ T_ground_odom_ground_robot
                     )
+                    if T_camera_flu is not None:
+                        T_aerial_ground_hat = T_aerial_ground_hat @ T_camera_flu
                 except InsufficientAssociationsException:
                     T_aerial_ground_hat = np.zeros((4, 4)) * np.nan
+
+                # no z component estimated
+                T_aerial_ground[2, 3] = 0.0
+                if not np.any(np.isnan(T_aerial_ground_hat)):
+                    T_aerial_ground_hat[2, 3] = 0.0
 
                 result = PoseEstimationResult(
                     T_i_j_hat=T_aerial_ground_hat,
@@ -602,6 +624,27 @@ class CrossViewLocalization:
                 fig = plt.gcf()
                 fig.savefig(fname_viz, dpi=400)
                 plt.close(fig)
+
+                # -------- Pose on aerial crop visualization --------
+                if aerial_img is not None and ground_pose_gt is not None:
+                    i, j = aerial_key_to_tuple(aerial_key)
+                    x1 = i * stride
+                    y1 = j * stride
+                    T_est_for_viz = (
+                        T_aerial_ground_hat
+                        if not np.any(np.isnan(T_aerial_ground_hat))
+                        else None
+                    )
+                    viz_bytes = self._viz_pose_on_aerial_crop(
+                        aerial_img, (x1, y1), T_aerial_ground, T_est_for_viz
+                    )
+                    fname_pose = (
+                        ground_sub_dir
+                        / f"ground_{ground_key}_aerial_{aerial_key}_pose.jpg"
+                    )
+                    with open(fname_pose, "wb") as f:
+                        f.write(viz_bytes)
+
                 results_matrix[*aerial_key_to_tuple(aerial_key)] = result
 
                 # -------- Save matches --------
@@ -762,6 +805,81 @@ class CrossViewLocalization:
         ax.set_aspect("equal")
         return ax
 
+    def _viz_pose_on_aerial_crop(
+        self,
+        aerial_img: np.ndarray,
+        crop_origin_px: tuple,
+        T_gt: np.ndarray,
+        T_est: np.ndarray = None,
+    ) -> bytes:
+        px_per_m = 1.0 / self.aerial_segmenter.params.pixel_len_m
+        patch_size_px = int(self.pipeline_params.aerial_img_patch_side_len_m * px_per_m)
+        x1, y1 = crop_origin_px
+        x2 = x1 + patch_size_px
+        y2 = y1 + patch_size_px
+
+        crop = aerial_img[y1:y2, x1:x2].copy()
+        if len(crop.shape) == 2:
+            crop = cv.cvtColor(crop, cv.COLOR_GRAY2BGR)
+
+        arrow_len = 0.08 * patch_size_px
+
+        def draw_pose(img, T, color):
+            pos_px = T[:2, 3] * px_per_m - np.array([x1, y1], dtype=float)
+            cx, cy = int(round(pos_px[0])), int(round(pos_px[1]))
+            cv.circle(img, (cx, cy), 5, color, -1)
+            x_dir = T[:2, 0]
+            x_dir = x_dir / (np.linalg.norm(x_dir) + 1e-12)
+            y_dir = T[:2, 1]
+            y_dir = y_dir / (np.linalg.norm(y_dir) + 1e-12)
+            x_end = (
+                int(round(cx + arrow_len * x_dir[0])),
+                int(round(cy + arrow_len * x_dir[1])),
+            )
+            y_end = (
+                int(round(cx + arrow_len * y_dir[0])),
+                int(round(cy + arrow_len * y_dir[1])),
+            )
+            cv.arrowedLine(img, (cx, cy), x_end, color, 3, tipLength=0.3)
+            cv.arrowedLine(img, (cx, cy), y_end, color, 2, tipLength=0.3)
+
+        gt_color = (0, 200, 0)
+        est_color = (0, 0, 220)
+
+        draw_pose(crop, T_gt, gt_color)
+        if T_est is not None:
+            draw_pose(crop, T_est, est_color)
+
+        return self._downsample_to_target_size(
+            crop, self.pipeline_params.pose_viz_target_size_kb
+        )
+
+    @staticmethod
+    def _downsample_to_target_size(img: np.ndarray, target_kb: int) -> bytes:
+        target_bytes = target_kb * 1024
+        lo, hi = 10, 95
+        best = None
+        while lo <= hi:
+            mid = (lo + hi) // 2
+            _, buf = cv.imencode(".jpg", img, [cv.IMWRITE_JPEG_QUALITY, mid])
+            encoded = buf.tobytes()
+            if len(encoded) <= target_bytes:
+                best = encoded
+                lo = mid + 1
+            else:
+                hi = mid - 1
+        if best is not None:
+            return best
+        # quality 10 still too large — scale down
+        _, buf = cv.imencode(".jpg", img, [cv.IMWRITE_JPEG_QUALITY, 10])
+        encoded = buf.tobytes()
+        scale = (target_bytes / len(encoded)) ** 0.5
+        new_w = max(1, int(img.shape[1] * scale))
+        new_h = max(1, int(img.shape[0] * scale))
+        small = cv.resize(img, (new_w, new_h), interpolation=cv.INTER_AREA)
+        _, buf = cv.imencode(".jpg", small, [cv.IMWRITE_JPEG_QUALITY, 10])
+        return buf.tobytes()
+
     def _downsample_aerial_viz(self, img: np.ndarray) -> np.ndarray:
         return cv.resize(
             img,
@@ -837,6 +955,8 @@ def cross_view_localization(
             initial_ground_segments,
             data.gt_pose_data,
             match_output_dir,
+            aerial_img=data.aerial_img,
+            T_camera_flu=data.T_camera_flu,
         )
 
 

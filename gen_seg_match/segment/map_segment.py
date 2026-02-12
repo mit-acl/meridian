@@ -100,6 +100,7 @@ class MapSegment:
             params.voxel_size
         )  # voxel size used for maintaining point clouds
         self.voxel_grid = dict()
+        self.occluded_voxels = dict()  # maps (i,j,k) voxel key -> bool (True=occluded)
         self.last_propagated_mask = None
         self.last_propagated_time = None
         self.semantic_descriptor = None
@@ -173,7 +174,25 @@ class MapSegment:
         points_obs_world = Rwb @ points_obs_body + np.repeat(
             twb, num_points_obs, axis=1
         )
-        self._add_points(points_obs_world.T)
+        points_world = points_obs_world.T
+
+        # Update occluded voxels: regular points first (un-occlude), then occluded
+        for pt in points_world:
+            self.occluded_voxels[self._point_to_voxel_key(pt)] = False
+
+        if (
+            observation.occluded_points is not None
+            and observation.occluded_points.shape[0] > 0
+        ):
+            occ_body = observation.occluded_points.T
+            num_occ = occ_body.shape[1]
+            occ_world = Rwb @ occ_body + np.repeat(twb, num_occ, axis=1)
+            for pt in occ_world.T:
+                key = self._point_to_voxel_key(pt)
+                if key not in self.occluded_voxels:
+                    self.occluded_voxels[key] = True
+
+        self._add_points(points_world)
 
     def _integrate_points_from_segment(self, segment):
         """Integrate the points from another segment into this segment.
@@ -182,6 +201,13 @@ class MapSegment:
         Args:
             segment (MapSegment): segment to integrate points from
         """
+        # Merge occluded voxels: un-occluded (False) wins
+        for key, is_occluded in segment.occluded_voxels.items():
+            if key in self.occluded_voxels:
+                self.occluded_voxels[key] = self.occluded_voxels[key] and is_occluded
+            else:
+                self.occluded_voxels[key] = is_occluded
+
         if segment.num_points > 0:
             self._add_points(segment.points)
         else:
@@ -221,6 +247,8 @@ class MapSegment:
 
             self._pcd = pcd_pruned  # memoize
 
+        self._prune_occluded_voxels()
+
     def final_cleanup(self, epsilon=0.25, min_points=10):
         """
         Performs DBSCAN clustering on the points of the segment and returns the largest cluster
@@ -249,6 +277,7 @@ class MapSegment:
             self.points = self.points[filtered_indices]
 
             self.reset_memoized()  # clear memory-intensive attributes
+            self._prune_occluded_voxels()
 
     @property
     def num_points(self):
@@ -270,6 +299,30 @@ class MapSegment:
         self._convex_hull = None
         self._convex_hull_last_pose = np.nan
         self.voxel_grid = dict()
+
+    def _point_to_voxel_key(self, point):
+        return tuple(np.floor(point / self.voxel_size).astype(int))
+
+    def _prune_occluded_voxels(self):
+        """Remove occluded voxel entries for voxels no longer occupied by any segment point."""
+        if self.points is None or len(self.occluded_voxels) == 0:
+            self.occluded_voxels.clear()
+            return
+        occupied = set()
+        for pt in self.points:
+            occupied.add(self._point_to_voxel_key(pt))
+        self.occluded_voxels = {
+            k: v for k, v in self.occluded_voxels.items() if k in occupied
+        }
+
+    @property
+    def occluded_points(self):
+        """Returns Nx3 array of voxel centers for voxels still marked occluded."""
+        keys = [k for k, v in self.occluded_voxels.items() if v]
+        if len(keys) == 0:
+            return np.empty((0, 3))
+        keys_arr = np.array(keys)
+        return (keys_arr + 0.5) * self.voxel_size
 
     @property
     def obb(self):
@@ -555,6 +608,20 @@ class MapSegment:
         if self.points is not None:
             self.points = transform(T, self.points, axis=0)
             self.reset_memoized()
+        # Re-key occluded voxels after transform
+        if self.occluded_voxels:
+            old_keys = list(self.occluded_voxels.keys())
+            old_centers = (np.array(old_keys) + 0.5) * self.voxel_size
+            new_centers = transform(T, old_centers, axis=0)
+            new_voxels = {}
+            for i, val in enumerate(self.occluded_voxels.values()):
+                new_key = self._point_to_voxel_key(new_centers[i])
+                # Un-occluded wins if multiple old voxels map to same new voxel
+                if new_key in new_voxels:
+                    new_voxels[new_key] = new_voxels[new_key] and val
+                else:
+                    new_voxels[new_key] = val
+            self.occluded_voxels = new_voxels
 
     def minimal_data(self):
         return MapSegmentMinimalData(

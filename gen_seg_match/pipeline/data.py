@@ -71,6 +71,7 @@ class CrossViewLocalizationData:
     gt_pose_data: PoseData = None
 
     aerial_img_scale: float = 0.01
+    T_camera_flu: np.ndarray = None
 
     @classmethod
     def from_params(cls, params: Union[str, CrossViewLocalizationDataParams]):
@@ -94,6 +95,7 @@ class CrossViewLocalizationData:
             ground_map=ground_map,
             gt_pose_data=gt_pose_data,
             aerial_img_scale=params.aerial_img_scale,
+            T_camera_flu=params.T_camera_flu,
         )
 
     @staticmethod

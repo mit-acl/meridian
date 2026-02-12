@@ -695,6 +695,13 @@ class Segmenter:
             self.depth_cam_params.K,
         ).T
 
+        # Voxel-downsample to sparsify dense border-based occluded points
+        if occluded_pixels_3d_cam.shape[0] > 0:
+            pcd = o3d.geometry.PointCloud()
+            pcd.points = o3d.utility.Vector3dVector(occluded_pixels_3d_cam)
+            pcd = pcd.voxel_down_sample(voxel_size=self.params.voxel_size)
+            occluded_pixels_3d_cam = np.asarray(pcd.points)
+
         occluded_points = (
             np.vstack([occluded_points, occluded_pixels_3d_cam])
             if occluded_points.shape[0] > 0
