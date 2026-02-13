@@ -664,7 +664,8 @@ class DenseSegment(GeneralSegment):
 
     def transform(self, T):
         self.dense_points = transform.transform(T, self.dense_points)
-        self.occluded_points = transform.transform(T, self.occluded_points)
+        if self.occluded_points is not None:
+            self.occluded_points = transform.transform(T, self.occluded_points)
         return self
 
     def copy(self):

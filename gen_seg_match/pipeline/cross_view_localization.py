@@ -45,7 +45,7 @@ from gen_seg_match.map2d.aerial_segmenter import AerialSegmenter
 from gen_seg_match.map2d.ground_segmenter import GroundSegmenter
 from gen_seg_match.map2d.map_processing import clean_up_line_map, split_long_lines
 from gen_seg_match.segment.aerial_segment import AerialSegment
-from gen_seg_match.segment.segment_types import SegmentPoint, SegmentLine
+from gen_seg_match.segment.segment_types import SegmentPoint, SegmentLine, DenseSegment
 from gen_seg_match.map3d.submap import Submap
 from gen_seg_match.map3d.dense_to_sparse_converter import DenseToSparseConverter
 from gen_seg_match.viz.cross_view_viz import viz_cross_view_matches
@@ -154,11 +154,20 @@ class CrossViewLocalization:
     def ground_map_to_submaps(
         self, ground_map: Union[ROMANMap, SegmentMap]
     ) -> List[Submap]:
-        conversion_params = DenseToSparseParams(
-            copy_dense_points=True, force_points_only=True
-        )
-        converter = DenseToSparseConverter(conversion_params)
-        general_segments = converter.convert(ground_map.segments)
+        dense_segments = []
+        for seg in ground_map.segments:
+            dense_segments.append(
+                DenseSegment(
+                    id=seg.id,
+                    dense_points=seg.points,
+                    ratio_feature=DenseToSparseConverter.get_roman_ratio_feature(seg),
+                    cos_feature=seg.semantic_descriptor,
+                    first_seen=seg.first_seen,
+                    last_seen=seg.last_seen,
+                    occluded_points=seg.occluded_points,
+                    history=getattr(seg, "history", []),
+                )
+            )
 
         dist_m = self.pipeline_params.ground_submap_dist_m
         rad_m = self.pipeline_params.ground_submap_rad_m
@@ -185,7 +194,7 @@ class CrossViewLocalization:
 
             submap_time = ground_map.times[idx]
 
-            for seg in general_segments:
+            for seg in dense_segments:
                 if seg.dense_points is None:
                     continue
                 # Check temporal overlap: segment must have been seen
@@ -202,6 +211,37 @@ class CrossViewLocalization:
                 seg_copy = seg.copy()
                 seg_copy.dense_points = seg.dense_points[mask].copy()
                 seg_copy.point = np.mean(seg_copy.dense_points, axis=0)
+
+                # Filter existing occluded points to within radius,
+                # then remove any whose (x,y) grid cell is occupied by a
+                # regular point — if observed at any z, the 2D projection
+                # is not occluded
+                existing_occ = getattr(seg, "occluded_points", None)
+                if existing_occ is not None and len(existing_occ) > 0:
+                    occ_dists = np.linalg.norm(existing_occ - center, axis=1)
+                    existing_occ = existing_occ[occ_dists <= rad_m]
+                if existing_occ is not None and len(existing_occ) > 0:
+                    grid = self.pipeline_params.occluded_grid_voxel_size_m
+                    dp_xy = np.floor(seg_copy.dense_points[:, :2] / grid).astype(int)
+                    regular_keys = set(map(tuple, dp_xy))
+                    occ_xy = np.floor(existing_occ[:, :2] / grid).astype(int)
+                    occ_keep = np.array([tuple(k) not in regular_keys for k in occ_xy])
+                    existing_occ = existing_occ[occ_keep] if np.any(occ_keep) else None
+
+                # Mark border points near radius cutoff as occluded
+                border_mask = mask & (
+                    dists > rad_m - self.pipeline_params.occluded_radius_thresh_m
+                )
+                border_occluded = seg.dense_points[border_mask].copy()
+
+                all_occluded = [border_occluded]
+                if existing_occ is not None and len(existing_occ) > 0:
+                    all_occluded.append(existing_occ)
+                total = sum(len(a) for a in all_occluded)
+                seg_copy.occluded_points = (
+                    np.concatenate(all_occluded, axis=0) if total > 0 else None
+                )
+
                 if (
                     len(seg_copy.dense_points)
                     >= self.pipeline_params.segment_min_points
@@ -434,6 +474,19 @@ class CrossViewLocalization:
                     perp_dist_tol=self.pipeline_params.line_merge_perp_dist_thresh_m,
                 )[0]
             )
+            # Remove lines that are FOV border artifacts
+            valid_lines = SegmentList()
+            for line in sparse_general_segments.get_lines():
+                parent_id = line.history[0] if line.history else None
+                parent_seg = (
+                    flattened_submap.segments.get_segment_from_id(parent_id)
+                    if parent_id is not None
+                    else None
+                )
+                if parent_seg is None or self._line_is_valid(line, parent_seg):
+                    valid_lines.append(line)
+            sparse_general_segments = sparse_general_segments.get_points() + valid_lines
+
             sparse_general_segments.reindex()
             for seg in sparse_general_segments:
                 history_heights = [
@@ -739,7 +792,7 @@ class CrossViewLocalization:
         sparse_general_segments: SegmentList,
     ) -> Tuple[plt.Figure, plt.Axes]:
         # Plot just segment points
-        fig, ax = plt.subplots(2, 2, figsize=(10, 10))
+        fig, ax = plt.subplots(3, 2, figsize=(10, 15))
         for seg in flattened_submap.segments:
             ax[0, 0].plot(
                 seg.dense_points[:, 0],
@@ -765,17 +818,41 @@ class CrossViewLocalization:
         self._viz_general_segments_plt(ax[1, 0], general_segments)
         self._viz_general_segments_plt(ax[1, 1], sparse_general_segments)
 
+        # Plot occluded points
+        for seg in flattened_submap.segments:
+            ax[2, 0].plot(
+                seg.dense_points[:, 0],
+                seg.dense_points[:, 1],
+                ".",
+                linewidth=1.0,
+                alpha=0.5,
+                color=seg.color_from_id(num_type=float),
+            )
+            occ = getattr(seg, "occluded_points", None)
+            if occ is not None and len(occ) > 0:
+                ax[2, 0].plot(
+                    occ[:, 0],
+                    occ[:, 1],
+                    ".",
+                    markersize=3,
+                    color="black",
+                    zorder=10,
+                )
+        ax[2, 0].set_aspect("equal")
+        ax[2, 1].set_visible(False)
+
         xlim = ax[0, 0].get_xlim()
         ylim = ax[0, 0].get_ylim()
-        for i in range(2):
+        for i in range(3):
             for j in range(2):
-                ax[i, j].set_xlim(xlim)
-                ax[i, j].set_ylim(ylim)
+                if ax[i, j].get_visible():
+                    ax[i, j].set_xlim(xlim)
+                    ax[i, j].set_ylim(ylim)
         ratio = (xlim[1] - xlim[0]) / (ylim[1] - ylim[0])
         if ratio > 1:
-            fig.set_size_inches(10, 10 / ratio)
+            fig.set_size_inches(10, 15 / ratio)
         else:
-            fig.set_size_inches(10 * ratio, 10)
+            fig.set_size_inches(10 * ratio, 15)
 
         return fig, ax
 
@@ -804,6 +881,47 @@ class CrossViewLocalization:
             )
         ax.set_aspect("equal")
         return ax
+
+    def _line_is_valid(self, line: SegmentLine, original_segment) -> bool:
+        """Check that a line is not just a FOV border artifact.
+
+        A line is valid when enough of its sampled points are (a) far from
+        occluded points and (b) close to actual dense points.
+        """
+        pt0, pt1 = line.endpoints
+        if pt0 is None or pt1 is None:
+            return True
+
+        n = self.pipeline_params.line_occlusion_num_samples
+        dist_thresh = self.pipeline_params.line_pt_dist_check_m
+
+        # Sample n points along the line
+        t = np.linspace(0, 1, n).reshape(-1, 1)
+        samples = pt0 + t * (pt1 - pt0)  # (n, dim)
+
+        dense_pts = original_segment.dense_points
+        occ_pts = getattr(original_segment, "occluded_points", None)
+
+        # Check proximity to dense points
+        if dense_pts is not None and len(dense_pts) > 0:
+            # (n, 1, dim) - (1, M, dim) -> (n, M) -> (n,)
+            dists_to_dense = np.linalg.norm(
+                samples[:, None, :2] - dense_pts[None, :, :2], axis=2
+            ).min(axis=1)
+            frac_near = np.mean(dists_to_dense < dist_thresh)
+            if frac_near < self.pipeline_params.line_frac_near_points:
+                return False
+
+        # Check distance from occluded points
+        if occ_pts is not None and len(occ_pts) > 0:
+            dists_to_occ = np.linalg.norm(
+                samples[:, None, :2] - occ_pts[None, :, :2], axis=2
+            ).min(axis=1)
+            frac_non_occluded = np.mean(dists_to_occ >= dist_thresh)
+            if frac_non_occluded < self.pipeline_params.line_occlusion_req_non_occluded:
+                return False
+
+        return True
 
     def _viz_pose_on_aerial_crop(
         self,

@@ -18,6 +18,7 @@ class RGBDPoseEstimationParams(ParamsBase):
     use_additional_adjacent_imgs: Union[int, List[int]] = (
         0  # 1 = use 1 before and 1 after, etc.
     )
+    mini_maps: bool = False
     bits_per_semantic_dim: int = 8
 
     viz_img_matches: bool = True
@@ -41,7 +42,7 @@ class RGBDPoseEstimationParams(ParamsBase):
             return [0]
         elif isinstance(self.use_additional_adjacent_imgs, int):
             n = self.use_additional_adjacent_imgs
-            return list(range(-n, 0)) + list(range(1, n + 1))
+            return list(range(-n, n + 1))
         else:
             return self.use_additional_adjacent_imgs
 
@@ -73,6 +74,12 @@ class CrossViewLocalizationParams(ParamsBase):
     ground_submap_dist_m: float = 20.0
     ground_submap_rad_m: float = 20.0
     ground_submap_time_s: float = 60.0
+    occluded_radius_thresh_m: float = 0.5
+    occluded_grid_voxel_size_m: float = 0.25
+    line_occlusion_num_samples: int = 10
+    line_occlusion_req_non_occluded: float = 0.5
+    line_frac_near_points: float = 0.5
+    line_pt_dist_check_m: float = 1.0
 
     aerial_viz_downsample: int = 5
     ground_dist_from_aerial_patch_center_m: float = 75.0

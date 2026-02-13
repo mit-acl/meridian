@@ -275,7 +275,8 @@ class DenseToSparseConverter:
 
         return sparse_segments
 
-    def get_roman_ratio_feature(self, roman_segment: RomanSegment) -> np.ndarray:
+    @classmethod
+    def get_roman_ratio_feature(cls, roman_segment: RomanSegment) -> np.ndarray:
         # volume computation may fail for flat segments
         try:
             volume = roman_segment.volume

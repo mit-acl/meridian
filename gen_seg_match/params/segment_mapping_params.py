@@ -26,7 +26,6 @@ class SegmentMappingParams(ParamsBase):
 
     # Segment filtering
     min_max_extent: float = 0.25
-    clustering_epsilon: float = 0.25
 
     # Graveyard
     segment_graveyard_time: float = 15.0
@@ -36,6 +35,9 @@ class SegmentMappingParams(ParamsBase):
     iou_voxel_size: float = 0.25
     segment_voxel_size: float = 0.05
     segment_outlier_removal_std: float = 0.0  # disabled by default
+    segment_dbscan_eps: float = 0.5
+    segment_dbscan_min_points: int = 10
+    unocclude_point_dist_m: float = 0.1
 
     # Pipeline
     dt: float = 1 / 6  # time step for iterating through data (mapping frequency)
@@ -59,4 +61,7 @@ class SegmentMappingParams(ParamsBase):
         return MapSegmentParams(
             voxel_size=self.segment_voxel_size,
             outlier_removal_std=self.segment_outlier_removal_std,
+            dbscan_eps=self.segment_dbscan_eps,
+            dbscan_min_points=self.segment_dbscan_min_points,
+            unocclude_point_dist_m=self.unocclude_point_dist_m,
         )

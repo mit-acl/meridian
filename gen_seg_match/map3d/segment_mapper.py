@@ -39,10 +39,9 @@ class SegmentMapper:
         self.segment_graveyard = []
         self.id_counter = 0
         self.last_pose = None
-        self.poses_flu_history = []
+        self.poses_cam_history = []
         self.times_history = []
         self.frame_descriptors_history = []
-        self._T_camera_flu = np.eye(4)
 
     def update(
         self,
@@ -51,9 +50,7 @@ class SegmentMapper:
         observations: List[Observation],
         frame_descriptor: np.ndarray,
     ):
-        # have T_WC, want T_WB
-        # T_WB = T_WC @ T_CB
-        self.poses_flu_history.append(pose @ self._T_camera_flu)
+        self.poses_cam_history.append(pose)
         self.times_history.append(t)
         if frame_descriptor is not None:
             self.frame_descriptors_history.append(frame_descriptor)
@@ -108,7 +105,7 @@ class SegmentMapper:
                 self.segments.remove(seg)
                 continue
             try:
-                seg.final_cleanup(epsilon=self.params.clustering_epsilon)
+                seg.final_cleanup()
                 self.inactive_segments.append(seg)
                 self.segments.remove(seg)
             except:  # too few points to form clusters
@@ -402,14 +399,3 @@ class SegmentMapper:
         for seg in segment_map:
             seg.reset_memoized()
         return segment_map
-
-    def set_T_camera_flu(self, T_camera_flu: np.array):
-        """
-        Set the transformation matrix from camera frame to forward-left-up frame
-        """
-        self._T_camera_flu = T_camera_flu
-        return
-
-    @property
-    def T_camera_flu(self):
-        return self._T_camera_flu

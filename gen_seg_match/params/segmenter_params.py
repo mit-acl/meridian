@@ -44,10 +44,12 @@ class SegmenterParams(ParamsBase):
         Tuple[Tuple[int, int], Tuple[int, int], Tuple[int, int]]
     ] = None
     occlusion_edge_img_frac: float = 0.02
+    occlusion_edge_max_img_frac: float = 0.15
     occlusion_max_depth: float = 7.0
     outlier_removal_std: float = None
-    outlier_removal_dbscan_eps: float = 0.25
+    outlier_removal_dbscan_eps: float = 0.5
     outlier_removal_dbscan_min_points: int = 10
+    min_occluded_unoccluded_dist_m: float = 0.1
 
     def get_model_type(self):
         return self.model_type.lower()
