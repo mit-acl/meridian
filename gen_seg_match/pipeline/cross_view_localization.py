@@ -71,6 +71,15 @@ class CrossViewLocalization:
 
     def aerial_img_to_segments(self, img: np.ndarray, crop: Crop = None) -> SegmentList:
         segments = self.aerial_segmenter.run(img, crop=crop)
+        thresh = self.pipeline_params.aerial_segment_line_rejection_thresh_m
+        if thresh is not None:
+            segments = [
+                seg
+                for seg in segments
+                if not (
+                    seg.obb_extents[0] < thresh[0] and seg.obb_extents[1] > thresh[1]
+                )
+            ]
         for segment in segments:
             segment.get_alpha_shape(
                 alpha=self.pipeline_params.alpha_shape_alpha,
@@ -849,9 +858,14 @@ class CrossViewLocalization:
         general_segments: SegmentList,
         sparse_general_segments: SegmentList,
     ) -> Tuple[plt.Figure, plt.Axes]:
-        # Plot just segment points
+        # Plot just segment points (largest first so smallest draw on top)
         fig, ax = plt.subplots(3, 2, figsize=(10, 15))
-        for seg in flattened_submap.segments:
+        segments_by_size = sorted(
+            flattened_submap.segments,
+            key=lambda s: len(s.dense_points),
+            reverse=True,
+        )
+        for seg in segments_by_size:
             ax[0, 0].plot(
                 seg.dense_points[:, 0],
                 seg.dense_points[:, 1],
@@ -884,8 +898,8 @@ class CrossViewLocalization:
         self._viz_general_segments_plt(ax[1, 0], general_segments)
         self._viz_general_segments_plt(ax[1, 1], sparse_general_segments)
 
-        # Plot occluded points
-        for seg in flattened_submap.segments:
+        # Plot occluded points (largest first so smallest draw on top)
+        for seg in segments_by_size:
             ax[2, 0].plot(
                 seg.dense_points[:, 0],
                 seg.dense_points[:, 1],
@@ -1024,8 +1038,8 @@ class CrossViewLocalization:
                 int(round(cx + arrow_len * y_dir[0])),
                 int(round(cy + arrow_len * y_dir[1])),
             )
-            cv.arrowedLine(img, (cx, cy), x_end, color, 3, tipLength=0.3)
-            cv.arrowedLine(img, (cx, cy), y_end, color, 2, tipLength=0.3)
+            cv.arrowedLine(img, (cx, cy), x_end, color, 20, tipLength=0.3)
+            cv.arrowedLine(img, (cx, cy), y_end, color, 20, tipLength=0.3)
 
         gt_color = (0, 200, 0)
         est_color = (0, 0, 220)

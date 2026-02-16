@@ -38,7 +38,19 @@ class AerialSegment:
         self._gaussian = None
         self._eigvals = None
         self._pcd = None
+        self._obb_extents = None
         self.alpha_shapes = {}
+
+    @property
+    def obb_extents(self) -> Tuple[float, float]:
+        """Oriented bounding box extents (minor_axis, major_axis) in meters."""
+        if self._obb_extents is None:
+            cov = np.cov(self.points.T)
+            _, eigvecs = np.linalg.eigh(cov)  # ascending eigenvalue order
+            projected = (self.points - self.points.mean(axis=0)) @ eigvecs
+            extents = projected.max(axis=0) - projected.min(axis=0)
+            self._obb_extents = (extents[0], extents[1])  # (minor, major)
+        return self._obb_extents
 
     @property
     def convex_hull(self) -> np.ndarray:

@@ -136,7 +136,14 @@ def viz_cross_view_matches(
         ax_dense.set_title("Ground Dense Points + Matches")
 
         if ground_segments_all is not None and dense_points_by_id is not None:
-            for seg in ground_segments_all:
+            segments_sorted = sorted(
+                ground_segments_all,
+                key=lambda s: len(
+                    dense_points_by_id.get(s.history[0] if s.history else -1, [])
+                ),
+                reverse=True,
+            )
+            for seg in segments_sorted:
                 parent_id = seg.history[0] if seg.history else None
                 if parent_id is not None and parent_id in dense_points_by_id:
                     pts = dense_points_by_id[parent_id]

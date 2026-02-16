@@ -1,6 +1,6 @@
 import numpy as np
 from dataclasses import dataclass, field
-from typing import ClassVar, Union, List
+from typing import ClassVar, Union, List, Tuple
 from gen_seg_match.params.params_base import ParamsBase
 
 
@@ -57,6 +57,9 @@ class CrossViewLocalizationParams(ParamsBase):
     point_max_area_m_sq: float = 5.0
     point_max_len_m: float = 5.0
     line_min_length_m: float = 0.0
+    # aerial segments with minor axis length below param 0 and
+    # major axis length above param 1 are rejected
+    aerial_segment_line_rejection_thresh_m: Tuple[float, float] = (0.4, 3.0)
     alpha_shape_alpha: float = 0.2
     alpha_shape_grid_downsample: float = 0.25
     alpha_shape_max_n_pts: int = None
