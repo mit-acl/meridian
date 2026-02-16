@@ -509,6 +509,14 @@ class CrossViewLocalization:
                 fname_segment = segment_output_dir / f"{k}.pkl"
                 submap_2d.save(fname_segment)
 
+                # -------- Save per-segment dense 2D points --------
+                dense_dir = segment_output_dir / f"{k}_dense"
+                dense_dir.mkdir(parents=True, exist_ok=True)
+                for aerial_seg in aerial_segments:
+                    dense_path = dense_dir / f"{aerial_seg.id}.pkl"
+                    with open(dense_path, "wb") as f:
+                        pickle.dump(aerial_seg.points, f)
+
                 # -------- GeneralSegments overlay --------
                 fig, ax = self._viz_ground_segments(
                     flattened_submap,
@@ -603,6 +611,21 @@ class CrossViewLocalization:
             )
             ground_sub_dir = viz_output_dir / f"ground_{ground_key}"
             ground_sub_dir.mkdir(parents=True, exist_ok=True)
+
+            # Load per-segment dense 2D points for this ground submap
+            dense_dir = (
+                pathlib.Path(output_dir).parent
+                / "ground"
+                / "segments"
+                / f"{ground_key}_dense"
+            )
+            dense_points_by_id = {}
+            if dense_dir.exists():
+                for dense_file in dense_dir.glob("*.pkl"):
+                    seg_id = int(dense_file.stem)
+                    with open(dense_file, "rb") as f:
+                        dense_points_by_id[seg_id] = pickle.load(f)
+
             ground_pose_gt = None
             if ground_gt_pose is not None:
                 ground_pose_gt = ground_gt_pose.pose(ground_submaps[ground_key].time)
@@ -670,7 +693,29 @@ class CrossViewLocalization:
                 )
 
                 # -------- Match visualization --------
-                viz_cross_view_matches(aerial_segs_j, ground_segs_i, matches)
+                aerial_crop = None
+                aerial_origin_m = None
+                if aerial_img is not None:
+                    i_a, j_a = aerial_key_to_tuple(aerial_key)
+                    x1_a = i_a * stride
+                    y1_a = j_a * stride
+                    aerial_crop = aerial_img[
+                        y1_a : y1_a + patch_size_px,
+                        x1_a : x1_a + patch_size_px,
+                    ].copy()
+                    aerial_origin_m = (x1_a / px_per_m, y1_a / px_per_m)
+
+                viz_cross_view_matches(
+                    aerial_segs_j,
+                    ground_segs_i,
+                    matches,
+                    aerial_crop=aerial_crop,
+                    ground_segments_all=ground_sm_i.segments,
+                    dense_points_by_id=dense_points_by_id,
+                    px_per_m=px_per_m if aerial_img is not None else None,
+                    aerial_origin_m=aerial_origin_m,
+                    target_size_kb=self.pipeline_params.pose_viz_target_size_kb,
+                )
                 fname_viz = (
                     ground_sub_dir / f"ground_{ground_key}_aerial_{aerial_key}.png"
                 )
