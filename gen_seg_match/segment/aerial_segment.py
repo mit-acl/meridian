@@ -5,9 +5,20 @@ import shapely
 from shapely.geometry import MultiPoint
 import open3d as o3d
 import alphashape
-from typing import Dict
+from typing import Dict, Optional
 
 from gen_seg_match.viz.utils import color_from_seed
+
+
+def _grid_downsample_2d(points: np.ndarray, voxel_size: float) -> np.ndarray:
+    """Downsample 2D points by keeping one point per grid cell.
+
+    Uses floor-division to assign each point to a grid cell, then keeps
+    only unique cells and returns the mean point in each cell.
+    """
+    grid_coords = np.floor(points / voxel_size).astype(np.int64)
+    _, unique_idx = np.unique(grid_coords, axis=0, return_index=True)
+    return points[unique_idx]
 
 
 @dataclass
@@ -58,39 +69,41 @@ class AerialSegment:
             np.int32
         )
 
-    def get_alpha_shape(self, alpha=0.5, grid_downsample=None):
-        if (alpha, grid_downsample) in self.alpha_shapes:
-            return self.alpha_shapes[(alpha, grid_downsample)]
+    def get_alpha_shape(
+        self,
+        alpha=0.5,
+        grid_downsample=None,
+        max_n_pts: Optional[int] = None,
+    ):
+        cache_key = (alpha, grid_downsample, max_n_pts)
+        if cache_key in self.alpha_shapes:
+            return self.alpha_shapes[cache_key]
 
         points = self.points.copy()
-        # print(len(points))
         if grid_downsample is not None:
-            # TODO: just do this in numpy
-            points_o3d = o3d.geometry.PointCloud()
-            points_o3d.points = o3d.utility.Vector3dVector(
-                np.hstack([points, np.zeros((len(points), 1))])
-            )
-            points_o3d = points_o3d.voxel_down_sample(voxel_size=grid_downsample)
-            points = np.asarray(points_o3d.points)[:, :2]
+            points = _grid_downsample_2d(points, grid_downsample)
+        if max_n_pts is not None and len(points) > max_n_pts:
+            voxel = grid_downsample if grid_downsample is not None else 0.1
+            while len(points) > max_n_pts:
+                voxel *= 2.0
+                points = _grid_downsample_2d(self.points, voxel)
         try:
             alpha_shape = alphashape.alphashape(points, alpha=alpha)
         except Exception as e:
             print(
                 f"Error computing alpha shape for segment {self.id} with alpha={alpha}: {e}"
             )
-            self.alpha_shapes[(alpha, grid_downsample)] = None
+            self.alpha_shapes[cache_key] = None
             return None
         if type(alpha_shape) is shapely.geometry.polygon.Polygon:
             x, y = alpha_shape.exterior.xy
-            self.alpha_shapes[(alpha, grid_downsample)] = np.vstack([x, y]).T
+            self.alpha_shapes[cache_key] = np.vstack([x, y]).T
         elif type(alpha_shape) is shapely.geometry.MultiPolygon:
-            # x, y = [alpha_shape.geometry.exterior.xy for poly_item in alpha_shape]
-            # x, y = shapely.concave_hull(alpha_shape).exterior.xy
-            self.alpha_shapes[(alpha, grid_downsample)] = None
+            self.alpha_shapes[cache_key] = None
         else:
-            self.alpha_shapes[(alpha, grid_downsample)] = None
+            self.alpha_shapes[cache_key] = None
 
-        return self.alpha_shapes[(alpha, grid_downsample)]
+        return self.alpha_shapes[cache_key]
 
     def get_alpha_shape_pixels(
         self,
@@ -98,8 +111,9 @@ class AerialSegment:
         img_origin_m: Tuple[float, float] = (0.0, 0.0),
         alpha=0.5,
         grid_downsample=None,
+        max_n_pts: Optional[int] = None,
     ):
-        alpha_shape = self.get_alpha_shape(alpha, grid_downsample)
+        alpha_shape = self.get_alpha_shape(alpha, grid_downsample, max_n_pts)
         if alpha_shape is None:
             return None
         alpha_shape_pixels = (

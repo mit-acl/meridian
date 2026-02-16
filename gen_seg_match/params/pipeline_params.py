@@ -59,6 +59,7 @@ class CrossViewLocalizationParams(ParamsBase):
     line_min_length_m: float = 0.0
     alpha_shape_alpha: float = 0.2
     alpha_shape_grid_downsample: float = 0.25
+    alpha_shape_max_n_pts: int = None
 
     line_merge_dist_thresh_m = 1.0
     line_merge_perp_dist_thresh_m = 0.5

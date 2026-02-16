@@ -75,6 +75,7 @@ class CrossViewLocalization:
             segment.get_alpha_shape(
                 alpha=self.pipeline_params.alpha_shape_alpha,
                 grid_downsample=self.pipeline_params.alpha_shape_grid_downsample,
+                max_n_pts=self.pipeline_params.alpha_shape_max_n_pts,
             )
         return segments
 
@@ -125,6 +126,7 @@ class CrossViewLocalization:
             alpha_shape = segment.get_alpha_shape(
                 grid_downsample=self.pipeline_params.alpha_shape_grid_downsample,
                 alpha=self.pipeline_params.alpha_shape_alpha,
+                max_n_pts=self.pipeline_params.alpha_shape_max_n_pts,
             )
             if alpha_shape is None:
                 continue
@@ -461,6 +463,7 @@ class CrossViewLocalization:
                 if seg.get_alpha_shape(
                     alpha=self.pipeline_params.alpha_shape_alpha,
                     grid_downsample=self.pipeline_params.alpha_shape_grid_downsample,
+                    max_n_pts=self.pipeline_params.alpha_shape_max_n_pts,
                 )
                 is not None
             ]
@@ -594,15 +597,15 @@ class CrossViewLocalization:
                     .height
                 )
 
-        # precompute crop geometry for pose visualization
-        if aerial_img is not None:
-            px_per_m = 1.0 / self.aerial_segmenter.params.pixel_len_m
-            patch_size_px = int(
-                self.pipeline_params.aerial_img_patch_side_len_m * px_per_m
-            )
-            stride = int(
-                patch_size_px * (1.0 - self.pipeline_params.aerial_img_patch_overlap)
-            )
+        # precompute crop geometry (from params, independent of aerial_img)
+        pixel_len_m = self.aerial_segmenter.params.pixel_len_m
+        px_per_m = 1.0 / pixel_len_m
+        patch_size_px = int(self.pipeline_params.aerial_img_patch_side_len_m * px_per_m)
+        stride = int(
+            patch_size_px * (1.0 - self.pipeline_params.aerial_img_patch_overlap)
+        )
+        stride_m = stride * pixel_len_m
+        patch_size_m_px = patch_size_px * pixel_len_m
 
         # iterate over all aerial crops and ground submaps
         for ground_key, ground_sm_i in tqdm(ground_submaps_2d.items()):
@@ -632,20 +635,20 @@ class CrossViewLocalization:
             T_ground_odom_ground_robot = ground_sm_i.metadata["camera_pose"]
 
             for aerial_key, aerial_sm_j in aerial_submaps_2d.items():
-                # check if the aerial crop is within range of the ground submap
+                # check if ground pose is contained in this aerial crop
                 if ground_pose_gt is not None:
-                    aerial_crop_position = (
-                        aerial_sm_j.pose[:2, 3].copy()
-                        + aerial_sm_j.metadata["crop_center_m"]
-                    )
-                    if (
-                        np.linalg.norm(
-                            aerial_crop_position.flatten()[:2] - ground_pose_gt[:2, 3]
-                        )
-                        > self.pipeline_params.ground_dist_from_aerial_patch_center_m
+                    T_aerial_ground = np.linalg.inv(aerial_sm_j.pose) @ ground_pose_gt
+                    ground_pos_aerial = T_aerial_ground[:2, 3]
+                    i_a, j_a = aerial_key_to_tuple(aerial_key)
+                    x1_m = i_a * stride_m
+                    y1_m = j_a * stride_m
+                    x2_m = x1_m + patch_size_m_px
+                    y2_m = y1_m + patch_size_m_px
+                    if not (
+                        x1_m <= ground_pos_aerial[0] <= x2_m
+                        and y1_m <= ground_pos_aerial[1] <= y2_m
                     ):
                         continue
-                    T_aerial_ground = np.linalg.inv(aerial_sm_j.pose) @ ground_pose_gt
                     if T_camera_flu is not None:
                         T_aerial_ground = T_aerial_ground @ T_camera_flu
                 else:
@@ -712,7 +715,7 @@ class CrossViewLocalization:
                     aerial_crop=aerial_crop,
                     ground_segments_all=ground_sm_i.segments,
                     dense_points_by_id=dense_points_by_id,
-                    px_per_m=px_per_m if aerial_img is not None else None,
+                    px_per_m=px_per_m,
                     aerial_origin_m=aerial_origin_m,
                     target_size_kb=self.pipeline_params.pose_viz_target_size_kb,
                 )
@@ -789,6 +792,7 @@ class CrossViewLocalization:
                 grid_downsample=self.pipeline_params.alpha_shape_grid_downsample,
                 alpha=self.pipeline_params.alpha_shape_alpha,
                 img_origin_m=img_origin_m,
+                max_n_pts=self.pipeline_params.alpha_shape_max_n_pts,
             )
             if alpha_shape_px is None:
                 continue
@@ -851,9 +855,16 @@ class CrossViewLocalization:
 
         # Plot aerial segments (alpha shapes)
         for seg in aerial_segments:
+            alpha_shape = seg.get_alpha_shape(
+                alpha=self.pipeline_params.alpha_shape_alpha,
+                grid_downsample=self.pipeline_params.alpha_shape_grid_downsample,
+                max_n_pts=self.pipeline_params.alpha_shape_max_n_pts,
+            )
+            if alpha_shape is None:
+                continue
             ax[0, 1].plot(
-                seg.get_alpha_shape(self.pipeline_params.alpha_shape_alpha)[:, 0],
-                seg.get_alpha_shape(self.pipeline_params.alpha_shape_alpha)[:, 1],
+                alpha_shape[:, 0],
+                alpha_shape[:, 1],
                 color=seg.color_from_id(num_type=float),
                 linewidth=2,
             )

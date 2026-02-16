@@ -1,9 +1,15 @@
 import numpy as np
-import copy
 from typing import List
 from copy import deepcopy
 
 from gen_seg_match.segment.segment_types import SegmentLine, SegmentPoint, SegmentList
+
+
+def _point_to_infinite_line_dist(point, line_point, line_dir):
+    """Distance from a point to an infinite line defined by a point and unit direction."""
+    v = point - line_point
+    proj = np.dot(v, line_dir) * line_dir
+    return np.linalg.norm(v - proj)
 
 
 def merge_lines(line1: SegmentLine, line2: SegmentLine) -> SegmentLine:
@@ -80,28 +86,33 @@ def clean_up_line_map(
     perp_dist_tol: float = 0.5,
 ) -> SegmentList:
     def merge_check(line1: SegmentLine, line2: SegmentLine):
-        # First check perpendicular distance
-        if line1.is_parallel_to(line2):
-            if line1.min_dist_to(line2) > perp_dist_tol:
-                return False
-        else:
-            closest_points = line1.closest_points(line2)
-            # need to use infinite lines as that allows us to actually get a
-            # perpendicular distance - otherwise, two collinear line segments
-            # with endpoints far apart would fail this check
-            perp_dist_1 = line1.min_dist_to_point(
-                closest_points[1], use_infinite_line=True
-            )
-            perp_dist_2 = line2.min_dist_to_point(
-                closest_points[0], use_infinite_line=True
-            )
-            if perp_dist_1 > perp_dist_tol or perp_dist_2 > perp_dist_tol:
-                return False
+        d1 = line1.direction
+        d2 = line2.direction
+        cross_norm = np.linalg.norm(np.cross(d1, d2))
 
-        return (
-            line1.is_parallel_to(line2, tol=angle_tol)
-            and line1.min_dist_to(line2) < dist_tol
-        )
+        # Check angle tolerance first (most permissive — fast exit)
+        if cross_norm >= angle_tol:
+            return False
+
+        is_parallel = cross_norm < 1e-3
+
+        if is_parallel:
+            # Parallel case: perpendicular distance is point-to-infinite-line
+            perp = _point_to_infinite_line_dist(line2.point, line1.point, d1)
+            if perp > perp_dist_tol:
+                return False
+            # Segment-to-segment distance for dist_tol
+            min_dist = line1.min_dist_to(line2)
+            return min_dist < dist_tol
+        else:
+            # Near-parallel case: use closest points for perpendicular distance
+            closest_pts = line1.closest_points(line2)
+            perp_1 = _point_to_infinite_line_dist(closest_pts[1], line1.point, d1)
+            perp_2 = _point_to_infinite_line_dist(closest_pts[0], line2.point, d2)
+            if perp_1 > perp_dist_tol or perp_2 > perp_dist_tol:
+                return False
+            min_dist = np.linalg.norm(closest_pts[0] - closest_pts[1])
+            return min_dist < dist_tol
 
     assert perp_dist_tol <= dist_tol, (
         "perp_dist_tol should be less than or equal to dist_tol"
@@ -146,15 +157,16 @@ def _clean_up_map(
     merge_objects: callable,
     max_iter: int = 1000,
 ) -> SegmentList:
-    objects = copy.deepcopy(objects)
-    prev_objects = copy.deepcopy(objects)
+    # only shallow copy the list, not the objects themselves, since we are modifying in place
+    objects = list(objects)
+    prev_objects = list(objects)
+    
     for outer_iter in range(max_iter):
         outer_changed = False
         for i in range(len(prev_objects) - 1, -1, -1):
             for j in range(i + 1, len(objects)):
                 obj_i = prev_objects[i]
                 obj_j = objects[j]
-                # print(line_i.is_parallel_to(line_j, tol=angle_tol), line_i.min_dist_to(line_j))
                 if merge_check(obj_i, obj_j):
                     objects[i] = merge_objects(obj_i, obj_j)
                     del objects[j]
@@ -162,6 +174,6 @@ def _clean_up_map(
                     break
         if not outer_changed:
             break
-        prev_objects = copy.deepcopy(objects)
+        prev_objects = list(objects)
 
     return SegmentList(objects), outer_iter + 1

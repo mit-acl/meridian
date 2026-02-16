@@ -286,11 +286,12 @@ class SegmentLine(GeneralSegment):
         )
 
     def get_direction(self) -> np.ndarray:
-        return self._normalize_direction()
+        return self.direction
 
     def transform(self, T: np.ndarray):
         self.point = transform.transform(T, self.point)
         self.direction = (T[0:3, 0:3] @ self.direction.reshape((3, 1))).flatten()
+        self.direction /= np.linalg.norm(self.direction)
         if self.endpoints[0] is not None:
             self.endpoints = (
                 transform.transform(T, self.endpoints[0]),
@@ -526,6 +527,7 @@ class SegmentPlane(GeneralSegment):
     def transform(self, T: np.ndarray):
         self.point = transform.transform(T, self.point)
         self.normal = (T[0:3, 0:3] @ self.normal.reshape((3, 1))).flatten()
+        self.normal /= np.linalg.norm(self.normal)
         if self.dense_points is not None:
             self.dense_points = transform.transform(T, self.dense_points)
         return self
@@ -544,7 +546,7 @@ class SegmentPlane(GeneralSegment):
         )
 
     def get_normal(self) -> np.ndarray:
-        return self._normalize_normal()
+        return self.normal
 
     def _normalize_normal(self):
         normalized_normal = self.normal / np.linalg.norm(self.normal)
