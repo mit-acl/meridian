@@ -60,11 +60,13 @@ class CrossViewLocalizationParams(ParamsBase):
     alpha_shape_alpha: float = 0.2
     alpha_shape_grid_downsample: float = 0.25
     alpha_shape_max_n_pts: int = None
+    alpha_shape_ref_size_m: float = None
 
-    line_merge_dist_thresh_m = 1.0
-    line_merge_perp_dist_thresh_m = 0.5
-    line_merge_ang_thresh_deg = 10.0
-    line_split_length_m = 15.0
+    line_merge_dist_thresh_m: float = 1.0
+    line_merge_perp_dist_thresh_m: float = 0.5
+    line_merge_ang_thresh_deg: float = 10.0
+    line_merge_short_thresh_m: float = None
+    line_split_length_m: float = 15.0
 
     aerial_img_patch_side_len_m: float = 30.0
     aerial_img_patch_overlap: float = 0.5
@@ -86,6 +88,9 @@ class CrossViewLocalizationParams(ParamsBase):
     ground_dist_from_aerial_patch_center_m: float = 75.0
 
     pose_viz_target_size_kb: int = 200
+
+    match_viz_dist_thresh_m: float = 5.0
+    match_viz_angle_thresh_deg: float = 20.0
 
     @property
     def line_merge_ang_thresh_rad(self):

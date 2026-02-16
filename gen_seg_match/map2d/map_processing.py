@@ -84,14 +84,25 @@ def clean_up_line_map(
     angle_tol: float = np.deg2rad(5),
     dist_tol: float = 0.5,
     perp_dist_tol: float = 0.5,
+    short_line_thresh: float = None,
 ) -> SegmentList:
     def merge_check(line1: SegmentLine, line2: SegmentLine):
         d1 = line1.direction
         d2 = line2.direction
         cross_norm = np.linalg.norm(np.cross(d1, d2))
 
+        # Relax angle tolerance for short lines
+        effective_angle_tol = angle_tol
+        if short_line_thresh is not None:
+            min_len = min(line1.get_length(), line2.get_length())
+            if min_len < short_line_thresh:
+                effective_angle_tol = angle_tol * (
+                    short_line_thresh / max(min_len, 1e-6)
+                )
+                effective_angle_tol = min(effective_angle_tol, np.pi / 4)
+
         # Check angle tolerance first (most permissive — fast exit)
-        if cross_norm >= angle_tol:
+        if cross_norm >= effective_angle_tol:
             return False
 
         is_parallel = cross_norm < 1e-3
@@ -160,7 +171,7 @@ def _clean_up_map(
     # only shallow copy the list, not the objects themselves, since we are modifying in place
     objects = list(objects)
     prev_objects = list(objects)
-    
+
     for outer_iter in range(max_iter):
         outer_changed = False
         for i in range(len(prev_objects) - 1, -1, -1):

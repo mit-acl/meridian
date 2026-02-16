@@ -76,6 +76,7 @@ class CrossViewLocalization:
                 alpha=self.pipeline_params.alpha_shape_alpha,
                 grid_downsample=self.pipeline_params.alpha_shape_grid_downsample,
                 max_n_pts=self.pipeline_params.alpha_shape_max_n_pts,
+                alpha_ref_size=self.pipeline_params.alpha_shape_ref_size_m,
             )
         return segments
 
@@ -127,6 +128,7 @@ class CrossViewLocalization:
                 grid_downsample=self.pipeline_params.alpha_shape_grid_downsample,
                 alpha=self.pipeline_params.alpha_shape_alpha,
                 max_n_pts=self.pipeline_params.alpha_shape_max_n_pts,
+                alpha_ref_size=self.pipeline_params.alpha_shape_ref_size_m,
             )
             if alpha_shape is None:
                 continue
@@ -375,6 +377,7 @@ class CrossViewLocalization:
                         angle_tol=self.pipeline_params.line_merge_ang_thresh_rad,
                         dist_tol=self.pipeline_params.line_merge_dist_thresh_m,
                         perp_dist_tol=self.pipeline_params.line_merge_perp_dist_thresh_m,
+                        short_line_thresh=self.pipeline_params.line_merge_short_thresh_m,
                     )[0]
                 )
                 sparse_general_segments.reindex()
@@ -464,6 +467,7 @@ class CrossViewLocalization:
                     alpha=self.pipeline_params.alpha_shape_alpha,
                     grid_downsample=self.pipeline_params.alpha_shape_grid_downsample,
                     max_n_pts=self.pipeline_params.alpha_shape_max_n_pts,
+                    alpha_ref_size=self.pipeline_params.alpha_shape_ref_size_m,
                 )
                 is not None
             ]
@@ -475,6 +479,7 @@ class CrossViewLocalization:
                     angle_tol=self.pipeline_params.line_merge_ang_thresh_rad,
                     dist_tol=self.pipeline_params.line_merge_dist_thresh_m,
                     perp_dist_tol=self.pipeline_params.line_merge_perp_dist_thresh_m,
+                    short_line_thresh=self.pipeline_params.line_merge_short_thresh_m,
                 )[0]
             )
             # Remove lines that are FOV border artifacts
@@ -765,7 +770,10 @@ class CrossViewLocalization:
             results_matrix.save(
                 segments_output_dir / f"ground_{ground_key}_results_matrix.pkl"
             )
-            results_matrix.plot()
+            results_matrix.plot(
+                dist_thresh=self.pipeline_params.match_viz_dist_thresh_m,
+                angle_thresh_deg=self.pipeline_params.match_viz_angle_thresh_deg,
+            )
             fname_heatmap = viz_output_dir / f"ground_{ground_key}_all.png"
             plt.savefig(fname_heatmap, dpi=400)
             plt.close()
@@ -793,6 +801,7 @@ class CrossViewLocalization:
                 alpha=self.pipeline_params.alpha_shape_alpha,
                 img_origin_m=img_origin_m,
                 max_n_pts=self.pipeline_params.alpha_shape_max_n_pts,
+                alpha_ref_size=self.pipeline_params.alpha_shape_ref_size_m,
             )
             if alpha_shape_px is None:
                 continue
@@ -859,6 +868,7 @@ class CrossViewLocalization:
                 alpha=self.pipeline_params.alpha_shape_alpha,
                 grid_downsample=self.pipeline_params.alpha_shape_grid_downsample,
                 max_n_pts=self.pipeline_params.alpha_shape_max_n_pts,
+                alpha_ref_size=self.pipeline_params.alpha_shape_ref_size_m,
             )
             if alpha_shape is None:
                 continue

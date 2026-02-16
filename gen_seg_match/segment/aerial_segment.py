@@ -74,7 +74,11 @@ class AerialSegment:
         alpha=0.5,
         grid_downsample=None,
         max_n_pts: Optional[int] = None,
+        alpha_ref_size: float = None,
     ):
+        if alpha_ref_size is not None:
+            alpha = alpha * min(1.0, alpha_ref_size / max(self.max_extent, 1e-6))
+
         cache_key = (alpha, grid_downsample, max_n_pts)
         if cache_key in self.alpha_shapes:
             return self.alpha_shapes[cache_key]
@@ -112,8 +116,11 @@ class AerialSegment:
         alpha=0.5,
         grid_downsample=None,
         max_n_pts: Optional[int] = None,
+        alpha_ref_size: float = None,
     ):
-        alpha_shape = self.get_alpha_shape(alpha, grid_downsample, max_n_pts)
+        alpha_shape = self.get_alpha_shape(
+            alpha, grid_downsample, max_n_pts, alpha_ref_size=alpha_ref_size
+        )
         if alpha_shape is None:
             return None
         alpha_shape_pixels = (

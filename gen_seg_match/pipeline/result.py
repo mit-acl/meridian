@@ -168,7 +168,9 @@ class PoseEstimationResultMatrix(np.ndarray):
         """Save the PoseEstimationResultMatrix to a .npz file."""
         np.savez_compressed(filepath, results=self)
 
-    def plot(self, dpi: int = 500):
+    def plot(
+        self, dpi: int = 500, dist_thresh: float = 5.0, angle_thresh_deg: float = 10.0
+    ):
         show_sim = self.has_similarity
 
         fig, ax = plt.subplots(3, 2, figsize=(8, 12), dpi=dpi)
@@ -186,9 +188,6 @@ class PoseEstimationResultMatrix(np.ndarray):
         fig.colorbar(mp, fraction=0.04, pad=0.04)
         ax[0, 1].set_title("Submap Rotation Difference (deg)")
 
-        angle_thresh = 10.0
-        dist_thresh = 5.0
-
         rotation_error_mat = np.rad2deg(self.rotation_error_rad.copy())
         dist_error_mat = self.translation_error_m.copy()
         rotation_error_mat[
@@ -196,10 +195,10 @@ class PoseEstimationResultMatrix(np.ndarray):
                 dist_error_mat > dist_thresh,
                 np.bitwise_not(np.isnan(rotation_error_mat)),
             )
-        ] = angle_thresh
+        ] = angle_thresh_deg
         dist_error_mat[
             np.bitwise_and(
-                rotation_error_mat > angle_thresh,
+                rotation_error_mat > angle_thresh_deg,
                 np.bitwise_not(np.isnan(dist_error_mat)),
             )
         ] = dist_thresh
@@ -211,7 +210,7 @@ class PoseEstimationResultMatrix(np.ndarray):
         ax[1, 0].set_title("Registration Translation Error (m)")
 
         mp = ax[1, 1].imshow(
-            rotation_error_mat, cmap="viridis_r", vmax=angle_thresh, vmin=0.0
+            rotation_error_mat, cmap="viridis_r", vmax=angle_thresh_deg, vmin=0.0
         )
         fig.colorbar(mp, fraction=0.04, pad=0.04)
         ax[1, 1].set_title("Registration Rotation Error (deg)")
