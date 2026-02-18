@@ -92,6 +92,11 @@ class CrossViewLocalizationParams(ParamsBase):
 
     pose_viz_target_size_kb: int = 200
 
+    translation_only: bool = False
+
+    points_only: bool = False
+    lines_only: bool = False
+
     match_viz_dist_thresh_m: float = 5.0
     match_viz_angle_thresh_deg: float = 20.0
 

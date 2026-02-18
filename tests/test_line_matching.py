@@ -68,8 +68,8 @@ def default_matcher_params():
         ratio_epsilon=np.zeros(0),
         cosine_min=0.0,
         cosine_max=1.0,
-        gravity_guided=False,
-        gravity_unc_ang_rad=0.0,
+        z_dir_constrained=False,
+        rot_unc_ang_rad=0.0,
     )
 
 

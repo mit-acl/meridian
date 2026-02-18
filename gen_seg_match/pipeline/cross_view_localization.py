@@ -651,8 +651,8 @@ class CrossViewLocalization:
             for aerial_key, aerial_sm_j in aerial_submaps_2d.items():
                 # check if ground pose is contained in this aerial crop
                 if ground_pose_gt is not None:
-                    T_aerial_ground = np.linalg.inv(aerial_sm_j.pose) @ ground_pose_gt
-                    ground_pos_aerial = T_aerial_ground[:2, 3]
+                    T_aerial_camera = np.linalg.inv(aerial_sm_j.pose) @ ground_pose_gt
+                    ground_pos_aerial = T_aerial_camera[:2, 3]
                     i_a, j_a = aerial_key_to_tuple(aerial_key)
                     x1_m = i_a * stride_m
                     y1_m = j_a * stride_m
@@ -663,10 +663,19 @@ class CrossViewLocalization:
                         and y1_m <= ground_pos_aerial[1] <= y2_m
                     ):
                         continue
+                    # Extract 2D rotation from aerial-to-odom transform
+                    # (ground segments are in the odom frame, not the camera frame)
+                    T_aerial_odom = T_aerial_camera @ np.linalg.inv(
+                        T_ground_odom_ground_robot
+                    )
+                    R_aerial_ground_2d = T_aerial_odom[:2, :2]
                     if T_camera_flu is not None:
-                        T_aerial_ground = T_aerial_ground @ T_camera_flu
+                        T_aerial_ground = T_aerial_camera @ T_camera_flu
+                    else:
+                        T_aerial_ground = T_aerial_camera
                 else:
                     T_aerial_ground = np.zeros((4, 4)) * np.nan
+                    R_aerial_ground_2d = None
 
                 # split long lines before matching
                 ground_segs_i = ground_sm_i.segments.get_points() + split_long_lines(
@@ -680,9 +689,29 @@ class CrossViewLocalization:
                 )
                 aerial_segs_j.reindex()
 
+                if self.pipeline_params.points_only:
+                    ground_segs_i = ground_segs_i.get_points()
+                    aerial_segs_j = aerial_segs_j.get_points()
+                elif self.pipeline_params.lines_only:
+                    ground_segs_i = ground_segs_i.get_lines()
+                    aerial_segs_j = aerial_segs_j.get_lines()
+
+                match_kwargs = {}
+                if (
+                    self.pipeline_params.translation_only
+                    and R_aerial_ground_2d is not None
+                ):
+                    # Aerial is axis-aligned
+                    match_kwargs["global_x_dir1"] = np.array([1.0, 0.0])
+                    match_kwargs["global_y_dir1"] = np.array([0.0, 1.0])
+                    # Ground dirs from gt rotation (before T_camera_flu is applied)
+                    match_kwargs["global_x_dir2"] = R_aerial_ground_2d[:, 0]
+                    match_kwargs["global_y_dir2"] = R_aerial_ground_2d[:, 1]
+
                 matches = self.matcher.match(
                     aerial_segs_j,
                     ground_segs_i,
+                    **match_kwargs,
                 )
                 try:
                     T_aerial_ground_odom_hat = self.registerer.register(

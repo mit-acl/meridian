@@ -115,8 +115,8 @@ class RGBDPoseEstimation:
         associated_ids = self.matcher.match(
             input1.segments,
             input2.segments,
-            input1.gravity_direction,
-            input2.gravity_direction,
+            global_z_dir1=input1.gravity_direction,
+            global_z_dir2=input2.gravity_direction,
         )
         try:
             transformation = self.registerer.register(

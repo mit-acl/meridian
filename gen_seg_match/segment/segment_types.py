@@ -290,7 +290,9 @@ class SegmentLine(GeneralSegment):
 
     def transform(self, T: np.ndarray):
         self.point = transform.transform(T, self.point)
-        self.direction = (T[0:3, 0:3] @ self.direction.reshape((3, 1))).flatten()
+        self.direction = (
+            T[0 : self.dim, 0 : self.dim] @ self.direction.reshape((self.dim, 1))
+        ).flatten()
         self.direction /= np.linalg.norm(self.direction)
         if self.endpoints[0] is not None:
             self.endpoints = (

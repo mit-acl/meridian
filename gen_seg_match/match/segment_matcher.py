@@ -31,8 +31,12 @@ class SegmentMatcher:
         self,
         map1: List[GeneralSegment],
         map2: List[GeneralSegment],
-        gravity_dir1: np.ndarray = None,
-        gravity_dir2: np.ndarray = None,
+        global_x_dir1: np.ndarray = None,
+        global_y_dir1: np.ndarray = None,
+        global_z_dir1: np.ndarray = None,
+        global_x_dir2: np.ndarray = None,
+        global_y_dir2: np.ndarray = None,
+        global_z_dir2: np.ndarray = None,
         bidirectional: bool = True,
         putative_match_matrix: np.ndarray = None,
     ):
@@ -45,14 +49,42 @@ class SegmentMatcher:
         if len(map1) == 0 or len(map2) == 0:
             return np.array([])
 
-        # transform into gravity aligned frame
-        if self.params.gravity_guided:
-            for map_i, gravity_dir_i in zip([map1, map2], [gravity_dir1, gravity_dir2]):
-                assert gravity_dir_i is not None, (
-                    "Must supply gravity direction if using gravity guided"
+        # transform into direction-aligned frame
+        if self.params.z_dir_constrained:
+            for map_i, z_dir_i in zip([map1, map2], [global_z_dir1, global_z_dir2]):
+                assert z_dir_i is not None, (
+                    "Must supply z direction if using z_dir_constrained"
                 )
-                T_world_gravity = self._construct_gravity_aligned_frame(gravity_dir_i)
-                map_i.transform(np.linalg.inv(T_world_gravity))
+                T_world_aligned = self._construct_z_aligned_frame(z_dir_i)
+                map_i.transform(np.linalg.inv(T_world_aligned))
+        elif self.params.xyz_dir_constrained:
+            for map_i, (x_dir_i, y_dir_i, z_dir_i) in zip(
+                [map1, map2],
+                [
+                    (global_x_dir1, global_y_dir1, global_z_dir1),
+                    (global_x_dir2, global_y_dir2, global_z_dir2),
+                ],
+            ):
+                assert (
+                    x_dir_i is not None and y_dir_i is not None and z_dir_i is not None
+                ), "Must supply x, y, and z directions if using xyz_dir_constrained"
+                T_world_aligned = self._construct_xyz_aligned_frame(
+                    x_dir_i, y_dir_i, z_dir_i
+                )
+                map_i.transform(np.linalg.inv(T_world_aligned))
+        elif self.params.xy_dir_constrained_2d:
+            for map_i, (x_dir_i, y_dir_i) in zip(
+                [map1, map2],
+                [
+                    (global_x_dir1, global_y_dir1),
+                    (global_x_dir2, global_y_dir2),
+                ],
+            ):
+                assert x_dir_i is not None and y_dir_i is not None, (
+                    "Must supply x and y directions if using xy_dir_constrained_2d"
+                )
+                T_world_aligned = self._construct_xy_aligned_frame_2d(x_dir_i, y_dir_i)
+                map_i.transform(np.linalg.inv(T_world_aligned))
 
         clipper = self._setup_solver(bidirectional=bidirectional)
 
@@ -140,8 +172,12 @@ class SegmentMatcher:
         self,
         map1: List[GeneralSegment],
         map2: List[GeneralSegment],
-        gravity_dir1: np.ndarray = None,
-        gravity_dir2: np.ndarray = None,
+        global_x_dir1: np.ndarray = None,
+        global_y_dir1: np.ndarray = None,
+        global_z_dir1: np.ndarray = None,
+        global_x_dir2: np.ndarray = None,
+        global_y_dir2: np.ndarray = None,
+        global_z_dir2: np.ndarray = None,
         correspondences: np.array = None,
     ):
         """
@@ -160,7 +196,16 @@ class SegmentMatcher:
             raise InsufficientAssociationsException(len(map1), len(map2))
 
         if correspondences is None:
-            correspondences = self.match(map1, map2, gravity_dir1, gravity_dir2)
+            correspondences = self.match(
+                map1,
+                map2,
+                global_x_dir1=global_x_dir1,
+                global_y_dir1=global_y_dir1,
+                global_z_dir1=global_z_dir1,
+                global_x_dir2=global_x_dir2,
+                global_y_dir2=global_y_dir2,
+                global_z_dir2=global_z_dir2,
+            )
         if len(correspondences) == 0:
             raise InsufficientAssociationsException(len(map1), len(map2))
 
@@ -362,11 +407,11 @@ class SegmentMatcher:
             include_cos=self.params.cos_feature_dim > 0,
         )
 
-    def _construct_gravity_aligned_frame(self, gravity_dir: np.ndarray):
-        e2 = gravity_dir.reshape((3, 1))
+    def _construct_z_aligned_frame(self, z_dir: np.ndarray):
+        e2 = z_dir.reshape((3, 1))
 
         # find a vector, v0, that is non-parallel to e2
-        smallest_component_ax = np.argmin(np.abs(gravity_dir))
+        smallest_component_ax = np.argmin(np.abs(z_dir))
         v0 = np.zeros((3, 1))
         v0[smallest_component_ax] = 1.0
 
@@ -383,4 +428,21 @@ class SegmentMatcher:
 
         transform = np.eye(4)
         transform[:3, :3] = np.hstack([e0, e1, e2])
+        return transform
+
+    def _construct_xyz_aligned_frame(
+        self, x_dir: np.ndarray, y_dir: np.ndarray, z_dir: np.ndarray
+    ):
+        transform = np.eye(4)
+        transform[:3, 0] = x_dir.flatten()
+        transform[:3, 1] = y_dir.flatten()
+        transform[:3, 2] = z_dir.flatten()
+        return transform
+
+    def _construct_xy_aligned_frame_2d(self, x_dir: np.ndarray, y_dir: np.ndarray):
+        transform = np.eye(4)
+        transform[0, 0] = x_dir[0]
+        transform[1, 0] = x_dir[1]
+        transform[0, 1] = y_dir[0]
+        transform[1, 1] = y_dir[1]
         return transform
