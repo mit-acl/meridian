@@ -622,6 +622,7 @@ class CrossViewLocalization:
         patch_size_m_px = patch_size_px * pixel_len_m
 
         # iterate over all aerial crops and ground submaps
+        all_results = {}  # ground_key -> PoseEstimationResultMatrix
         for ground_key, ground_sm_i in tqdm(ground_submaps_2d.items()):
             results_matrix = PoseEstimationResultMatrix(
                 (aerial_x_max + 1, aerial_y_max + 1)
@@ -815,6 +816,54 @@ class CrossViewLocalization:
             fname_heatmap = viz_output_dir / f"ground_{ground_key}_all.png"
             plt.savefig(fname_heatmap, dpi=400)
             plt.close()
+
+            all_results[ground_key] = results_matrix
+
+        self._write_results_summary(all_results, output_dir)
+
+    def _write_results_summary(self, all_results, output_dir):
+        dist_thresh = self.pipeline_params.match_viz_dist_thresh_m
+        angle_thresh_deg = self.pipeline_params.match_viz_angle_thresh_deg
+
+        n_total = len(all_results)
+        n_any_success = 0
+        n_max_assoc_success = 0
+
+        for ground_key, results_matrix in all_results.items():
+            trans_errors = results_matrix.translation_error_m
+            rot_errors = np.rad2deg(results_matrix.rotation_error_rad)
+            num_assoc = results_matrix.num_associations
+
+            # Metric 1: any crop below both thresholds
+            success_mask = (trans_errors < dist_thresh) & (
+                rot_errors < angle_thresh_deg
+            )
+            if np.any(success_mask):
+                n_any_success += 1
+
+            # Metric 2: crop(s) with max associations — majority correct
+            valid_mask = num_assoc > 0
+            if not np.any(valid_mask):
+                continue
+            max_assoc = np.nanmax(num_assoc[valid_mask])
+            if max_assoc == 0:
+                continue
+            tied_mask = num_assoc == max_assoc
+            tied_successes = np.sum(success_mask[tied_mask])
+            tied_total = np.sum(tied_mask)
+            if tied_successes > tied_total / 2:  # strict majority
+                n_max_assoc_success += 1
+
+        results_path = pathlib.Path(output_dir) / "results.txt"
+        with open(results_path, "w") as f:
+            f.write(
+                f"Successful ground submap pose found: "
+                f"{n_any_success} / {n_total}\n"
+            )
+            f.write(
+                f"Successful ground submap pose using max number of "
+                f"associations: {n_max_assoc_success} / {n_total}\n"
+            )
 
     # TODO: all of these visualizations should probably be moved to the viz module
     def _viz_aerial_segments(
