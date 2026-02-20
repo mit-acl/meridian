@@ -10,6 +10,7 @@ import matplotlib.pyplot as plt
 import pickle
 from copy import deepcopy
 import shutil
+import circle_fit
 import robotdatapy as rdp
 
 from roman.map.fastsam_wrapper import FastSAMWrapper
@@ -141,7 +142,34 @@ class CrossViewLocalization:
             )
             if alpha_shape is None:
                 continue
-            # print(alpha_shape)
+
+            # Circle check: if segment is small and alpha shape is circular,
+            # classify as a point using the fitted circle center
+            if segment.area < self.pipeline_params.circle_point_max_area:
+                alpha_pts = alpha_shape
+                if np.allclose(alpha_pts[0], alpha_pts[-1]):
+                    alpha_pts = alpha_pts[:-1]
+                if len(alpha_pts) >= 3:
+                    xc, yc, r, s = circle_fit.least_squares_circle(alpha_pts)
+                    if (
+                        r > 0
+                        and s < self.pipeline_params.circle_point_rad_frac_fit_err * r
+                        and r < self.pipeline_params.circle_point_max_rad
+                    ):
+                        center = np.array([xc, yc])
+                        if pt_within_border(center):
+                            center_points.append(
+                                SegmentPoint(
+                                    j,
+                                    center,
+                                    cos_feature=segment.semantic_descriptor,
+                                    first_seen=segment.first_seen,
+                                    last_seen=segment.last_seen,
+                                    history=[segment.id],
+                                )
+                            )
+                        continue
+
             for i, pt0 in enumerate(alpha_shape):
                 pt1 = alpha_shape[i + 1 if i + 1 < len(alpha_shape) else 0]
                 keep = (
@@ -857,8 +885,7 @@ class CrossViewLocalization:
         results_path = pathlib.Path(output_dir) / "results.txt"
         with open(results_path, "w") as f:
             f.write(
-                f"Successful ground submap pose found: "
-                f"{n_any_success} / {n_total}\n"
+                f"Successful ground submap pose found: {n_any_success} / {n_total}\n"
             )
             f.write(
                 f"Successful ground submap pose using max number of "

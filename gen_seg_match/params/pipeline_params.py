@@ -64,6 +64,8 @@ class CrossViewLocalizationParams(ParamsBase):
     alpha_shape_grid_downsample: float = 0.25
     alpha_shape_max_n_pts: int = None
     alpha_shape_ref_size_m: float = None
+    circle_point_max_area: float = 50.0
+    circle_point_rad_frac_fit_err: float = 0.3
 
     line_merge_dist_thresh_m: float = 1.0
     line_merge_perp_dist_thresh_m: float = 0.5
@@ -103,6 +105,10 @@ class CrossViewLocalizationParams(ParamsBase):
     @property
     def line_merge_ang_thresh_rad(self):
         return np.deg2rad(self.line_merge_ang_thresh_deg)
+
+    @property
+    def circle_point_max_rad(self):
+        return np.sqrt(self.circle_point_max_area / np.pi)
 
 
 @dataclass
