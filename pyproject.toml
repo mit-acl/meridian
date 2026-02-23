@@ -11,6 +11,10 @@ dependencies = [
     "trimesh",
     "manifold3d",
     "rasterio<1.5",
+    "circle-fit",
+    # for dinov3
+    #"torchmetrics",
+    #"termcolor",
     #"segment_anything @ git+https://github.com/facebookresearch/segment-anything.git"
 ]
 requires-python = ">=3.8"

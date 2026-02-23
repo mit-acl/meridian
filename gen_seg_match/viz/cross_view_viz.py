@@ -26,15 +26,22 @@ def plot_seg(seg, ax, custom_color=None):
         else custom_color
     )
     if isinstance(seg, SegmentLine):
-        assert seg.num_endpoints == 2, (
-            "only supports line segments currently (no infinite lines)"
-        )
-        ax.plot(
-            [seg.endpoints[0][0], seg.endpoints[1][0]],
-            [seg.endpoints[0][1], seg.endpoints[1][1]],
-            color=color,
-            linewidth=4,
-        )
+        if seg.num_endpoints == 2:
+            ax.plot(
+                [seg.endpoints[0][0], seg.endpoints[1][0]],
+                [seg.endpoints[0][1], seg.endpoints[1][1]],
+                color=color,
+                linewidth=4,
+            )
+        else:
+            pt = seg.get_point().flatten()
+            d = seg.get_direction().flatten()
+            ax.axline(
+                (pt[0], pt[1]),
+                (pt[0] + d[0], pt[1] + d[1]),
+                color=color,
+                linewidth=4,
+            )
     elif isinstance(seg, SegmentPoint):
         ax.plot(
             seg.get_point()[0],
@@ -122,6 +129,20 @@ def viz_cross_view_matches(
                     ax_crop.plot(
                         [pts_px[0][0], pts_px[1][0]],
                         [pts_px[0][1], pts_px[1][1]],
+                        color=match_color,
+                        linewidth=2,
+                    )
+                elif isinstance(seg, SegmentLine):
+                    pt = seg.get_point().flatten()
+                    d = seg.get_direction().flatten()
+                    pt_px = (
+                        (pt[0] - aerial_origin_m[0]) * px_per_m,
+                        (pt[1] - aerial_origin_m[1]) * px_per_m,
+                    )
+                    d_px = (d[0] * px_per_m, d[1] * px_per_m)
+                    ax_crop.axline(
+                        pt_px,
+                        (pt_px[0] + d_px[0], pt_px[1] + d_px[1]),
                         color=match_color,
                         linewidth=2,
                     )

@@ -67,6 +67,8 @@ class CrossViewLocalizationParams(ParamsBase):
     circle_point_max_area: float = 50.0
     circle_point_rad_frac_fit_err: float = 0.3
 
+    line_len_to_infinite: float = np.inf
+
     line_merge_dist_thresh_m: float = 1.0
     line_merge_perp_dist_thresh_m: float = 0.5
     line_merge_ang_thresh_deg: float = 10.0

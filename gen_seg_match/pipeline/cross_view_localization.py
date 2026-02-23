@@ -55,6 +55,15 @@ from gen_seg_match.map3d.submap import FrameType
 Crop = Tuple[int, int, int, int]
 
 
+def _convert_long_lines_to_infinite(segments: SegmentList, threshold: float):
+    """Convert lines longer than threshold to infinite lines (no endpoints)."""
+    if threshold is None:
+        return
+    for seg in segments.get_lines():
+        if seg.get_length() > threshold:
+            seg.endpoints = (None, None)
+
+
 @dataclass
 class CrossViewLocalization:
     pipeline_params: CrossViewLocalizationParams
@@ -177,17 +186,16 @@ class CrossViewLocalization:
                 )
                 keep &= pt_within_border(pt0) and pt_within_border(pt1)
                 if keep:
-                    lines.append(
-                        SegmentLine.from_endpoints(
-                            j,
-                            pt0,
-                            pt1,
-                            cos_feature=segment.semantic_descriptor,
-                            first_seen=segment.first_seen,
-                            last_seen=segment.last_seen,
-                            history=[segment.id],
-                        )
+                    line = SegmentLine.from_endpoints(
+                        j,
+                        pt0,
+                        pt1,
+                        cos_feature=segment.semantic_descriptor,
+                        first_seen=segment.first_seen,
+                        last_seen=segment.last_seen,
+                        history=[segment.id],
                     )
+                    lines.append(line)
         result = SegmentList(center_points + lines)
         result.reindex()
         return result
@@ -417,6 +425,10 @@ class CrossViewLocalization:
                         short_line_thresh=self.pipeline_params.line_merge_short_thresh_m,
                     )[0]
                 )
+                _convert_long_lines_to_infinite(
+                    sparse_general_segments,
+                    self.pipeline_params.line_len_to_infinite,
+                )
                 sparse_general_segments.reindex()
 
                 results[crop] = Submap(
@@ -531,6 +543,11 @@ class CrossViewLocalization:
                 if parent_seg is None or self._line_is_valid(line, parent_seg):
                     valid_lines.append(line)
             sparse_general_segments = sparse_general_segments.get_points() + valid_lines
+
+            _convert_long_lines_to_infinite(
+                sparse_general_segments,
+                self.pipeline_params.line_len_to_infinite,
+            )
 
             sparse_general_segments.reindex()
             for seg in sparse_general_segments:
@@ -883,14 +900,14 @@ class CrossViewLocalization:
                 n_max_assoc_success += 1
 
         results_path = pathlib.Path(output_dir) / "results.txt"
+        results_str = (
+            f"Successful ground submap pose found: {n_any_success} / {n_total}\n"
+            + f"Successful ground submap pose using max number of "
+            + f"associations: {n_max_assoc_success} / {n_total}\n"
+        )
+        print(results_str)
         with open(results_path, "w") as f:
-            f.write(
-                f"Successful ground submap pose found: {n_any_success} / {n_total}\n"
-            )
-            f.write(
-                f"Successful ground submap pose using max number of "
-                f"associations: {n_max_assoc_success} / {n_total}\n"
-            )
+            f.write(results_str)
 
     # TODO: all of these visualizations should probably be moved to the viz module
     def _viz_aerial_segments(
@@ -945,12 +962,27 @@ class CrossViewLocalization:
 
         # draw lines
         for seg in segments.get_lines():
-            p0 = seg.endpoints[0]
-            p1 = seg.endpoints[1]
+            if seg.num_endpoints == 2:
+                p0 = seg.endpoints[0]
+                p1 = seg.endpoints[1]
+                pt0 = (int(p0[0] * px_per_m - x1), int(p0[1] * px_per_m - y1))
+                pt1 = (int(p1[0] * px_per_m - x1), int(p1[1] * px_per_m - y1))
+            else:
+                pt = seg.get_point().flatten()
+                d = seg.get_direction().flatten()
+                far = 1e4
+                p0_m = pt - d * far
+                p1_m = pt + d * far
+                pt0 = (int(p0_m[0] * px_per_m - x1), int(p0_m[1] * px_per_m - y1))
+                pt1 = (int(p1_m[0] * px_per_m - x1), int(p1_m[1] * px_per_m - y1))
+                h, w = general_viz.shape[:2]
+                ret, pt0, pt1 = cv.clipLine((0, 0, w, h), pt0, pt1)
+                if not ret:
+                    continue
             cv.line(
                 general_viz,
-                (int(p0[0] * px_per_m - x1), int(p0[1] * px_per_m - y1)),
-                (int(p1[0] * px_per_m - x1), int(p1[1] * px_per_m - y1)),
+                pt0,
+                pt1,
                 seg.color_from_id(order="bgr"),
                 20,  # TODO: add some viz params
             )
@@ -1055,15 +1087,26 @@ class CrossViewLocalization:
             )
 
         for seg in general_segments.get_lines():
-            p0 = seg.endpoints[0]
-            p1 = seg.endpoints[1]
-            ax.plot(
-                [p0[0], p1[0]],
-                [p0[1], p1[1]],
-                "-",
-                linewidth=2,
-                color=seg.color_from_id(num_type=float),
-            )
+            color = seg.color_from_id(num_type=float)
+            if seg.num_endpoints == 2:
+                p0 = seg.endpoints[0]
+                p1 = seg.endpoints[1]
+                ax.plot(
+                    [p0[0], p1[0]],
+                    [p0[1], p1[1]],
+                    "-",
+                    linewidth=2,
+                    color=color,
+                )
+            else:
+                pt = seg.get_point().flatten()
+                d = seg.get_direction().flatten()
+                ax.axline(
+                    (pt[0], pt[1]),
+                    (pt[0] + d[0], pt[1] + d[1]),
+                    linewidth=2,
+                    color=color,
+                )
         ax.set_aspect("equal")
         return ax
 

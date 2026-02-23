@@ -147,6 +147,8 @@ def split_long_lines(lines: SegmentList, max_length: float) -> SegmentList:
         line_length = line.get_length()
         if line_length <= max_length:
             new_lines.append(line)
+        elif line.num_endpoints < 2:
+            new_lines.append(line)
         else:
             num_splits = int(np.ceil(line_length / max_length))
             start_pt = line.endpoints[0]
