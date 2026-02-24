@@ -1,3 +1,4 @@
+import os
 import numpy as np
 from dataclasses import dataclass
 from typing import ClassVar, List, Tuple
@@ -22,11 +23,19 @@ class AerialSegmenterParams(ParamsBase):
     min_area: float = 0.01
     max_area: float = np.inf
     semantics: str = "dino"
+    semantics_size: str = "base"
     semantics_dim: int = 768
+    dinov3_path: str = "~/code/dinov3"
+    dinov3_weights: str = None
     triangle_ignore_masks: List[
         Tuple[Tuple[int, int], Tuple[int, int], Tuple[int, int]]
     ] = None
     downsample_factor: int = 5
+
+    def __post_init__(self):
+        self.dinov3_path = os.path.expanduser(self.dinov3_path)
+        if self.dinov3_weights is not None:
+            self.dinov3_weights = os.path.expanduser(self.dinov3_weights)
 
     def get_model_type(self):
         return self.model_type.lower()

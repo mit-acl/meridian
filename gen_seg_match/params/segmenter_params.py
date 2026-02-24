@@ -1,3 +1,4 @@
+import os
 import numpy as np
 from dataclasses import dataclass
 from typing import ClassVar, List, Tuple
@@ -31,6 +32,9 @@ class SegmenterParams(ParamsBase):
     keep_mask_minimal_intersection: float = 0.3
     rotate_img: str = None
     semantics: str = "dino"
+    semantics_size: str = "base"
+    dinov3_path: str = "~/code/dinov3"
+    dinov3_weights: str = None
     frame_descriptor: str = "dino-gem"
     yolo_imgsz: Tuple[int, int] = None
     use_point_cloud: bool = False
@@ -61,5 +65,8 @@ class SegmenterParams(ParamsBase):
             self.frame_descriptor = None
         self.weights_path = expandvars_recursive(self.weights_path)
         self.yolo_weights_path = expandvars_recursive(self.yolo_weights_path)
+        self.dinov3_path = os.path.expanduser(self.dinov3_path)
+        if self.dinov3_weights is not None:
+            self.dinov3_weights = os.path.expanduser(self.dinov3_weights)
         if self.yolo_imgsz is None:
             self.yolo_imgsz = self.imgsz

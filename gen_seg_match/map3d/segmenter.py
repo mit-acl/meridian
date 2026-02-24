@@ -101,21 +101,70 @@ class Segmenter:
                 clip_model, device=self.params.device
             )
         elif self.params.semantics.lower() == "dino":
+            dino_model_name = f"facebook/dinov2-{self.params.semantics_size}"
             self.semantics_preprocess = AutoImageProcessor.from_pretrained(
-                "facebook/dinov2-base", do_center_crop=False
+                dino_model_name, do_center_crop=False
             )
-            self.semantics_model = AutoModel.from_pretrained("facebook/dinov2-base")
+            self.semantics_model = AutoModel.from_pretrained(dino_model_name)
             self.semantics_model.eval()
             self.semantics_model.to(self.params.device)
+            self._num_register_tokens = 0
+        elif self.params.semantics.lower() == "dinov3-hf":
+            size_to_hf_name = {
+                "small": "facebook/dinov3-vits16-pretrain-lvd1689m",
+                "base": "facebook/dinov3-vitb16-pretrain-lvd1689m",
+                "large": "facebook/dinov3-vitl16-pretrain-lvd1689m",
+            }
+            hf_name = size_to_hf_name.get(self.params.semantics_size)
+            if hf_name is None:
+                raise ValueError(
+                    f"Invalid semantics_size for dinov3-hf: {self.params.semantics_size}. "
+                    f"Choose from {list(size_to_hf_name.keys())}."
+                )
+            self.semantics_preprocess = AutoImageProcessor.from_pretrained(
+                hf_name, do_center_crop=False
+            )
+            self.semantics_model = AutoModel.from_pretrained(hf_name)
+            self.semantics_model.eval()
+            self.semantics_model.to(self.params.device)
+            self._num_register_tokens = self.semantics_model.config.num_register_tokens
+        elif self.params.semantics.lower() == "dinov3":
+            import torchvision.transforms as T
+
+            size_to_hub_fn = {
+                "small": "dinov3_vits16",
+                "base": "dinov3_vitb16",
+                "large": "dinov3_vitl16",
+            }
+            hub_fn = size_to_hub_fn.get(self.params.semantics_size)
+            if hub_fn is None:
+                raise ValueError(
+                    f"Invalid semantics_size for dinov3: {self.params.semantics_size}. "
+                    f"Choose from {list(size_to_hub_fn.keys())}."
+                )
+            hub_kwargs = {}
+            if self.params.dinov3_weights is not None:
+                hub_kwargs["weights"] = self.params.dinov3_weights
+            self.semantics_model = torch.hub.load(
+                self.params.dinov3_path, hub_fn, source="local", **hub_kwargs
+            )
+            self.semantics_model.eval()
+            self.semantics_model.to(self.params.device)
+            self.dinov3_transform = T.Compose(
+                [
+                    T.ToTensor(),
+                    T.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+                ]
+            )
         else:
             raise ValueError(
-                f"Invalid semantics option: {self.params.semantics}. Choose from 'clip', 'dino', or 'none'."
+                f"Invalid semantics option: {self.params.semantics}. Choose from 'clip', 'dino', 'dinov3', 'dinov3-hf', or 'none'."
             )
         self.semantic_patches_shape = None
         self.frame_descriptor_type = self.params.frame_descriptor
         if self.params.frame_descriptor is not None:
-            assert self.params.semantics == "dino", (
-                "Frame descriptor only supported with DINO semantics."
+            assert self.params.semantics in ("dino", "dinov3", "dinov3-hf"), (
+                "Frame descriptor only supported with DINO, DINOv3, or DINOv3-HF semantics."
             )
 
         # Set up ignore mask from triangle ignore masks
@@ -209,8 +258,8 @@ class Segmenter:
         # run segmentation
         masks = self._process_img(img_bgr, ignore_mask=ignore_mask, keep_mask=keep_mask)
 
-        if self.params.semantics == "dino":
-            # Process the image for DINO
+        if self.params.semantics in ("dino", "dinov3-hf"):
+            # Process the image for DINO / DINOv3-HF
             img_rgb = cv.cvtColor(img_bgr, cv.COLOR_BGR2RGB)
             preprocessed = self.semantics_preprocess(
                 images=img_rgb, return_tensors="pt"
@@ -224,6 +273,22 @@ class Segmenter:
             dino_features = self.get_per_pixel_features(
                 model_output_patches=dino_output_patches, img_shape=img_bgr.shape
             )
+            dino_features = self.unapply_rotation(dino_features)
+        elif self.params.semantics == "dinov3":
+            img_rgb = cv.cvtColor(img_bgr, cv.COLOR_BGR2RGB)
+            img_tensor = (
+                self.dinov3_transform(img_rgb).unsqueeze(0).to(self.params.device)
+            )
+            with torch.no_grad():
+                features = self.semantics_model.get_intermediate_layers(
+                    img_tensor, n=1, reshape=True, return_class_token=False, norm=True
+                )[0]  # (B, C, H_patches, W_patches)
+            dino_output_patches = features.permute(0, 2, 3, 1)  # (1, H, W, C)
+            dino_features = torch.nn.functional.interpolate(
+                features,
+                size=(img_bgr.shape[0], img_bgr.shape[1]),
+                mode="bilinear",
+            )[0].permute(1, 2, 0)  # (H, W, C)
             dino_features = self.unapply_rotation(dino_features)
 
         frame_descriptor = None
@@ -315,7 +380,7 @@ class Segmenter:
                 )
                 clip_embedding = clip_embedding.squeeze().cpu().detach().numpy()
                 semantic_descriptor = clip_embedding
-            elif self.params.semantics == "dino":
+            elif self.params.semantics in ("dino", "dinov3", "dinov3-hf"):
                 assert (
                     mask.shape[0] == dino_features.shape[0]
                     and mask.shape[1] == dino_features.shape[1]
@@ -579,7 +644,7 @@ class Segmenter:
         Returns:
             ArrayLike: Reshaped (Dino) output
         """
-        model_output_flat_patches = model_output[:, 1:, :]
+        model_output_flat_patches = model_output[:, 1 + self._num_register_tokens :, :]
         if self.semantic_patches_shape is None:
             ratio = img_shape[1] / img_shape[0]  # width / height
             num_patches = model_output_flat_patches.shape[1]
