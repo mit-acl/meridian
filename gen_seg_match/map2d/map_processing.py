@@ -85,6 +85,7 @@ def clean_up_line_map(
     dist_tol: float = 0.5,
     perp_dist_tol: float = 0.5,
     short_line_thresh: float = None,
+    semantic_sim_thresh: float = None,
 ) -> SegmentList:
     def merge_check(line1: SegmentLine, line2: SegmentLine):
         d1 = line1.direction
@@ -104,6 +105,12 @@ def clean_up_line_map(
         # Check angle tolerance first (most permissive — fast exit)
         if cross_norm >= effective_angle_tol:
             return False
+
+        # Check semantic similarity (cosine sim of unit-normalized cos_feature)
+        if semantic_sim_thresh is not None:
+            if line1.cos_feature is not None and line2.cos_feature is not None:
+                if np.dot(line1.cos_feature, line2.cos_feature) < semantic_sim_thresh:
+                    return False
 
         is_parallel = cross_norm < 1e-3
 

@@ -125,6 +125,8 @@ class CrossViewLocalization:
         lines = []
         center_points = []
         for j, segment in enumerate(segments):
+            if segment.area < self.pipeline_params.min_area_m_sq:
+                continue
             if (
                 segment.area < self.pipeline_params.point_max_area_m_sq
                 and segment.max_extent < self.pipeline_params.point_max_len_m
@@ -423,6 +425,7 @@ class CrossViewLocalization:
                         dist_tol=self.pipeline_params.line_merge_dist_thresh_m,
                         perp_dist_tol=self.pipeline_params.line_merge_perp_dist_thresh_m,
                         short_line_thresh=self.pipeline_params.line_merge_short_thresh_m,
+                        semantic_sim_thresh=self.pipeline_params.line_merge_semantic_sim,
                     )[0]
                 )
                 _convert_long_lines_to_infinite(
@@ -529,6 +532,7 @@ class CrossViewLocalization:
                     dist_tol=self.pipeline_params.line_merge_dist_thresh_m,
                     perp_dist_tol=self.pipeline_params.line_merge_perp_dist_thresh_m,
                     short_line_thresh=self.pipeline_params.line_merge_short_thresh_m,
+                    semantic_sim_thresh=self.pipeline_params.line_merge_semantic_sim,
                 )[0]
             )
             # Remove lines that are FOV border artifacts

@@ -54,6 +54,7 @@ class CrossViewLocalizationParams(ParamsBase):
 
     segment_min_points: int = 10
 
+    min_area_m_sq: float = 0.0
     point_max_area_m_sq: float = 5.0
     point_max_len_m: float = 5.0
     line_min_length_m: float = 0.0
@@ -73,6 +74,7 @@ class CrossViewLocalizationParams(ParamsBase):
     line_merge_perp_dist_thresh_m: float = 0.5
     line_merge_ang_thresh_deg: float = 10.0
     line_merge_short_thresh_m: float = None
+    line_merge_semantic_sim: float = 0.7
     line_split_length_m: float = 15.0
 
     aerial_img_patch_side_len_m: float = 30.0
