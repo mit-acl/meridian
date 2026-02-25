@@ -3,6 +3,7 @@ from typing import List, Tuple
 import matplotlib.pyplot as plt
 import clipperpy
 from copy import deepcopy
+from sklearn.neighbors import NearestNeighbors
 
 from gen_seg_match.segment.segment_types import (
     SegmentPoint,
@@ -351,10 +352,26 @@ class SegmentMatcher:
         lines2 = map2.get_lines()
         planes2 = map2.get_planes()
 
-        # set up all to all matching between points and lines separately
-        A_init_points = clipperpy.utils.create_all_to_all(len(points1), len(points2))
-        A_init_lines = clipperpy.utils.create_all_to_all(len(lines1), len(lines2))
-        A_init_planes = clipperpy.utils.create_all_to_all(len(planes1), len(planes2))
+        # set up putative associations between points, lines, and planes separately
+        k = self.params.k_nearest_neighbors
+        use_knn = k is not None and self.params.cos_feature_dim > 0
+
+        if use_knn and len(points1) > 0 and len(points2) > 0:
+            A_init_points = self._knn_filter_associations(points1, points2, k)
+        else:
+            A_init_points = clipperpy.utils.create_all_to_all(
+                len(points1), len(points2)
+            )
+        if use_knn and len(lines1) > 0 and len(lines2) > 0:
+            A_init_lines = self._knn_filter_associations(lines1, lines2, k)
+        else:
+            A_init_lines = clipperpy.utils.create_all_to_all(len(lines1), len(lines2))
+        if use_knn and len(planes1) > 0 and len(planes2) > 0:
+            A_init_planes = self._knn_filter_associations(planes1, planes2, k)
+        else:
+            A_init_planes = clipperpy.utils.create_all_to_all(
+                len(planes1), len(planes2)
+            )
         A_init_lines[:, 0] += len(points1)
         A_init_lines[:, 1] += len(points2)
         A_init_planes[:, 0] += len(points1) + len(lines1)
@@ -375,6 +392,39 @@ class SegmentMatcher:
 
         clipper.score_pairwise_and_single_consistency(map1_cl.T, map2_cl.T, A_init)
         return clipper, A_init
+
+    def _knn_filter_associations(self, segs1, segs2, k):
+        """Return putative associations filtered by k-nearest cos_feature neighbors.
+
+        Bidirectional: for each seg in segs1, find k nearest in segs2 by cosine
+        similarity, and vice versa. Returns union of both directions.
+        """
+        feats1 = np.array([seg.cos_feature.flatten() for seg in segs1])
+        feats2 = np.array([seg.cos_feature.flatten() for seg in segs2])
+
+        pairs = set()
+
+        # segs1 -> segs2
+        k1 = min(k, len(segs2))
+        nn1 = NearestNeighbors(n_neighbors=k1, metric="cosine", algorithm="brute")
+        nn1.fit(feats2)
+        indices1 = nn1.kneighbors(feats1, return_distance=False)
+        for i, neighbors in enumerate(indices1):
+            for j in neighbors:
+                pairs.add((i, j))
+
+        # segs2 -> segs1
+        k2 = min(k, len(segs1))
+        nn2 = NearestNeighbors(n_neighbors=k2, metric="cosine", algorithm="brute")
+        nn2.fit(feats1)
+        indices2 = nn2.kneighbors(feats2, return_distance=False)
+        for j, neighbors in enumerate(indices2):
+            for i in neighbors:
+                pairs.add((i, j))
+
+        if len(pairs) == 0:
+            return np.zeros((0, 2), dtype=np.int32)
+        return np.array(sorted(pairs), dtype=np.int32)
 
     def _create_padded_map_arrays(self, map1_lists, map2_lists):
         max_d = max([arr.shape[0] for arr in map1_lists + map2_lists])

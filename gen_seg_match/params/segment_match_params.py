@@ -62,6 +62,7 @@ class SegmentMatchParams(ParamsBase):
     xyz_dir_constrained: bool = False
     xy_dir_constrained_2d: bool = False
     rot_unc_ang_rad: float = 0.0
+    k_nearest_neighbors: int = None  # None = all-to-all (current behavior)
 
     def to_clipper(
         self,
