@@ -27,7 +27,7 @@ from gen_seg_match.register.registerer import (
 )
 from gen_seg_match.params import (
     SegmentMatchParams,
-    CrossViewLocalizationParams,
+    CrossViewMatchingParams,
     CrossViewLocalizationDataParams,
     AerialSegmenterParams,
     SubmapParams,
@@ -66,8 +66,8 @@ def _convert_long_lines_to_infinite(segments: SegmentList, threshold: float):
 
 
 @dataclass
-class CrossViewLocalization:
-    pipeline_params: CrossViewLocalizationParams
+class CrossViewMatching:
+    pipeline_params: CrossViewMatchingParams
     aerial_segmenter: AerialSegmenter
     matcher: SegmentMatcher
     registerer: Registerer
@@ -483,7 +483,8 @@ class CrossViewLocalization:
                         patch_img, sparse_general_segments, crop=crop
                     )
                     viz_bytes = self._downsample_to_target_size(
-                        sparse_general_viz, self.pipeline_params.aerial_viz_target_size_kb
+                        sparse_general_viz,
+                        self.pipeline_params.aerial_viz_target_size_kb,
                     )
                     fname_sparse_general = viz_output_dir / f"{i}_{j}_sparse.jpg"
                     with open(str(fname_sparse_general), "wb") as f:
@@ -776,10 +777,12 @@ class CrossViewLocalization:
                         noise_deg += np.random.uniform(lo, hi)
                     if noise_deg != 0.0:
                         noise_rad = np.deg2rad(noise_deg)
-                        R_noise = np.array([
-                            [np.cos(noise_rad), -np.sin(noise_rad)],
-                            [np.sin(noise_rad),  np.cos(noise_rad)],
-                        ])
+                        R_noise = np.array(
+                            [
+                                [np.cos(noise_rad), -np.sin(noise_rad)],
+                                [np.sin(noise_rad), np.cos(noise_rad)],
+                            ]
+                        )
                         R_aerial_ground_2d = R_noise @ R_aerial_ground_2d
 
                     # Aerial is axis-aligned
@@ -1281,14 +1284,14 @@ class CrossViewLocalization:
         )
 
 
-def cross_view_localization(
+def cross_view_matching(
     params, output_dir, skip_aerial=False, skip_ground=False, skip_match=False
 ):
-    pipeline_params = CrossViewLocalizationParams.load(params)
+    pipeline_params = CrossViewMatchingParams.load(params)
     pipeline_params.output_directory = output_dir
     segment_match_params = SegmentMatchParams.load(params)
     segment_match_params.dim = 2
-    runner = CrossViewLocalization(
+    runner = CrossViewMatching(
         pipeline_params=pipeline_params,
         matcher=SegmentMatcher(segment_match_params),
         registerer=Registerer(RegisterParams.load(params)),
@@ -1358,7 +1361,7 @@ if __name__ == "__main__":
         type=str,
         required=True,
         help="Path to params directory or file. "
-        + "Required params: cross_view_localization, cross_view_localization_data, "
+        + "Required params: cross_view_matching, cross_view_localization_data, "
         + "aerial_segmenter, segment_match, submap",
     )
     parser.add_argument(
@@ -1386,6 +1389,6 @@ if __name__ == "__main__":
     if not os.path.isdir(args.output):
         os.mkdir(expandvars_recursive(args.output))
 
-    cross_view_localization(
+    cross_view_matching(
         args.params, args.output, args.skip_aerial, args.skip_ground, args.skip_match
     )

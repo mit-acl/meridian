@@ -8,7 +8,7 @@ Usage:
     python -m gen_seg_match.pipeline.cross_view_semantic_sim \
         --aerial <output>/aerial/segments/1_4.pkl \
         --ground <output>/ground/segments/0.pkl \
-        --params gsm_tools/cross_view_localization_params/pennovation_euclid.yaml \
+        --params gsm_tools/cross_view_matching_params/pennovation_euclid.yaml \
         --sim-min 0.3 --sim-max 0.9
 """
 
@@ -488,7 +488,7 @@ def _load_segments(filepath):
 
 if __name__ == "__main__":
     from gen_seg_match.params.data_params import CrossViewLocalizationDataParams
-    from gen_seg_match.params.pipeline_params import CrossViewLocalizationParams
+    from gen_seg_match.params.pipeline_params import CrossViewMatchingParams
     from gen_seg_match.params.aerial_segmenter_params import AerialSegmenterParams
 
     parser = argparse.ArgumentParser(
@@ -531,7 +531,7 @@ if __name__ == "__main__":
 
     if args.params is not None:
         data_params = CrossViewLocalizationDataParams.load(args.params)
-        pipeline_params = CrossViewLocalizationParams.load(args.params)
+        pipeline_params = CrossViewMatchingParams.load(args.params)
         aerial_seg_params = AerialSegmenterParams.load(args.params)
 
         aerial_img = cv2.imread(data_params.aerial_img_path)

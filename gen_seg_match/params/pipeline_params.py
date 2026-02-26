@@ -48,9 +48,9 @@ class RGBDPoseEstimationParams(ParamsBase):
 
 
 @dataclass
-class CrossViewLocalizationParams(ParamsBase):
+class CrossViewMatchingParams(ParamsBase):
     # class attribute
-    params_key: ClassVar[str] = "cross_view_localization"
+    params_key: ClassVar[str] = "cross_view_matching"
 
     segment_min_points: int = 10
 
