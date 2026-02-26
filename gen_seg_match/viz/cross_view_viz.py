@@ -62,7 +62,6 @@ def viz_cross_view_matches(
     dense_points_by_id: dict = None,
     px_per_m: float = None,
     aerial_origin_m: tuple = None,
-    target_size_kb: int = 200,
 ):
     has_bottom = aerial_crop is not None
     color = "k"

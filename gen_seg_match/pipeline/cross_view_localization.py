@@ -1,3 +1,4 @@
+import io
 import numpy as np
 from dataclasses import dataclass
 from typing import List, Tuple, Dict, Union
@@ -459,22 +460,34 @@ class CrossViewLocalization:
                     aerial_viz = self._viz_aerial_segments(
                         patch_img, aerial_segments, crop
                     )
-                    fname_aerial = viz_output_dir / f"{i}_{j}_segments.png"
-                    cv.imwrite(str(fname_aerial), aerial_viz)
+                    viz_bytes = self._downsample_to_target_size(
+                        aerial_viz, self.pipeline_params.aerial_viz_target_size_kb
+                    )
+                    fname_aerial = viz_output_dir / f"{i}_{j}_segments.jpg"
+                    with open(str(fname_aerial), "wb") as f:
+                        f.write(viz_bytes)
 
                     # -------- GeneralSegments overlay --------
                     general_viz = self._viz_general_segments_img(
                         patch_img, general_segments, crop=crop
                     )
-                    fname_general = viz_output_dir / f"{i}_{j}_fine.png"
-                    cv.imwrite(str(fname_general), general_viz)
+                    viz_bytes = self._downsample_to_target_size(
+                        general_viz, self.pipeline_params.aerial_viz_target_size_kb
+                    )
+                    fname_general = viz_output_dir / f"{i}_{j}_fine.jpg"
+                    with open(str(fname_general), "wb") as f:
+                        f.write(viz_bytes)
 
                     # --------- Sparse GeneralSegments overlay --------
                     sparse_general_viz = self._viz_general_segments_img(
                         patch_img, sparse_general_segments, crop=crop
                     )
-                    fname_sparse_general = viz_output_dir / f"{i}_{j}_sparse.png"
-                    cv.imwrite(str(fname_sparse_general), sparse_general_viz)
+                    viz_bytes = self._downsample_to_target_size(
+                        sparse_general_viz, self.pipeline_params.aerial_viz_target_size_kb
+                    )
+                    fname_sparse_general = viz_output_dir / f"{i}_{j}_sparse.jpg"
+                    with open(str(fname_sparse_general), "wb") as f:
+                        f.write(viz_bytes)
 
         return results
 
@@ -580,8 +593,13 @@ class CrossViewLocalization:
                 dense_dir.mkdir(parents=True, exist_ok=True)
                 for aerial_seg in aerial_segments:
                     dense_path = dense_dir / f"{aerial_seg.id}.pkl"
+                    pts = aerial_seg.points
+                    max_n = self.pipeline_params.dense_points_max_n
+                    if max_n is not None and len(pts) > max_n:
+                        idx = np.round(np.linspace(0, len(pts) - 1, max_n)).astype(int)
+                        pts = pts[idx]
                     with open(dense_path, "wb") as f:
-                        pickle.dump(aerial_seg.points, f)
+                        pickle.dump(pts, f)
 
                 # -------- GeneralSegments overlay --------
                 fig, ax = self._viz_ground_segments(
@@ -751,10 +769,23 @@ class CrossViewLocalization:
                     self.pipeline_params.translation_only
                     and R_aerial_ground_2d is not None
                 ):
+                    # Apply rotation perturbation if configured
+                    noise_deg = self.pipeline_params.rot_bias_deg
+                    lo, hi = self.pipeline_params.uniform_rot_noise_bounds_deg
+                    if lo != 0.0 or hi != 0.0:
+                        noise_deg += np.random.uniform(lo, hi)
+                    if noise_deg != 0.0:
+                        noise_rad = np.deg2rad(noise_deg)
+                        R_noise = np.array([
+                            [np.cos(noise_rad), -np.sin(noise_rad)],
+                            [np.sin(noise_rad),  np.cos(noise_rad)],
+                        ])
+                        R_aerial_ground_2d = R_noise @ R_aerial_ground_2d
+
                     # Aerial is axis-aligned
                     match_kwargs["global_x_dir1"] = np.array([1.0, 0.0])
                     match_kwargs["global_y_dir1"] = np.array([0.0, 1.0])
-                    # Ground dirs from gt rotation (before T_camera_flu is applied)
+                    # Ground dirs from (possibly perturbed) rotation
                     match_kwargs["global_x_dir2"] = R_aerial_ground_2d[:, 0]
                     match_kwargs["global_y_dir2"] = R_aerial_ground_2d[:, 1]
 
@@ -810,14 +841,23 @@ class CrossViewLocalization:
                     dense_points_by_id=dense_points_by_id,
                     px_per_m=px_per_m,
                     aerial_origin_m=aerial_origin_m,
-                    target_size_kb=self.pipeline_params.pose_viz_target_size_kb,
-                )
-                fname_viz = (
-                    ground_sub_dir / f"ground_{ground_key}_aerial_{aerial_key}.png"
                 )
                 fig = plt.gcf()
-                fig.savefig(fname_viz, dpi=400)
+                buf = io.BytesIO()
+                fig.savefig(buf, format="png", dpi=150)
                 plt.close(fig)
+                buf.seek(0)
+                img_array = cv.imdecode(
+                    np.frombuffer(buf.getvalue(), dtype=np.uint8), cv.IMREAD_COLOR
+                )
+                viz_bytes = self._downsample_to_target_size(
+                    img_array, self.pipeline_params.match_viz_target_size_kb
+                )
+                fname_viz = (
+                    ground_sub_dir / f"ground_{ground_key}_aerial_{aerial_key}.jpg"
+                )
+                with open(fname_viz, "wb") as f:
+                    f.write(viz_bytes)
 
                 # -------- Pose on aerial crop visualization --------
                 if aerial_img is not None and ground_pose_gt is not None:
@@ -1201,7 +1241,7 @@ class CrossViewLocalization:
             draw_pose(crop, T_est, est_color)
 
         return self._downsample_to_target_size(
-            crop, self.pipeline_params.pose_viz_target_size_kb
+            crop, self.pipeline_params.aerial_viz_target_size_kb
         )
 
     @staticmethod

@@ -96,9 +96,13 @@ class CrossViewLocalizationParams(ParamsBase):
     aerial_viz_downsample: int = 5
     ground_dist_from_aerial_patch_center_m: float = 75.0
 
-    pose_viz_target_size_kb: int = 200
+    aerial_viz_target_size_kb: int = 200
+    match_viz_target_size_kb: int = 200
+    dense_points_max_n: int = 5000
 
     translation_only: bool = False
+    rot_bias_deg: float = 0.0
+    uniform_rot_noise_bounds_deg: Tuple[float, float] = (0.0, 0.0)
 
     points_only: bool = False
     lines_only: bool = False
