@@ -9,6 +9,7 @@ from gen_seg_match.params.register_params import RegisterParams
 
 from gen_seg_match.params.pipeline_params import RGBDPoseEstimationParams
 from gen_seg_match.params.pipeline_params import CrossViewMatchingParams
+from gen_seg_match.params.pipeline_params import CrossViewLocalizationParams
 from gen_seg_match.params.pipeline_params import GroundToBEVParams
 from gen_seg_match.params.data_params import RGBDPoseEstimationDataParams
 from gen_seg_match.params.data_params import CrossViewLocalizationDataParams

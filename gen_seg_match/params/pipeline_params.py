@@ -120,6 +120,17 @@ class CrossViewMatchingParams(ParamsBase):
 
 
 @dataclass
+class CrossViewLocalizationParams(ParamsBase):
+    params_key: ClassVar[str] = "cross_view_localization"
+
+    rotation_consistency_sigma: float = 0.174533  # rad
+    rotation_consistency_epsilon: float = 0.349066  # rad
+    translation_consistency_sigma: float = 5.0  # meters
+    translation_consistency_epsilon: float = 10.0  # meters
+    min_num_associations: int = 3
+
+
+@dataclass
 class GroundToBEVParams(ParamsBase):
     # class attribute
     params_key: ClassVar[str] = "ground_to_bev"
