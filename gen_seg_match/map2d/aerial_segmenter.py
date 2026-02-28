@@ -103,6 +103,64 @@ class AerialSegmenter:
             )
         self.semantic_patches_shape = None
 
+    def get_crop_descriptor(self, img_bgr, crop=None) -> np.ndarray:
+        """Compute a DINO-GeM global descriptor for an image crop.
+
+        Args:
+            img_bgr: BGR image (full aerial image).
+            crop: Optional (x1, y1, x2, y2) pixel crop.
+
+        Returns:
+            Normalized 1-D numpy array of shape (semantics_dim,), or None if
+            semantics is disabled.
+        """
+        if self.semantics_model is None:
+            return None
+
+        if crop is not None:
+            img_bgr = img_bgr[crop[1] : crop[3], crop[0] : crop[2]]
+        image_rgb = cv.cvtColor(img_bgr, cv.COLOR_BGR2RGB)
+
+        if self.params.downsample_factor > 1:
+            image_rgb = cv.resize(
+                image_rgb,
+                (
+                    image_rgb.shape[1] // self.params.downsample_factor,
+                    image_rgb.shape[0] // self.params.downsample_factor,
+                ),
+                interpolation=cv.INTER_LINEAR,
+            )
+
+        with torch.no_grad():
+            if self.params.semantics in ("dino", "dinov3-hf"):
+                preprocessed = self.semantics_preprocess(
+                    images=image_rgb, return_tensors="pt"
+                ).to(self.params.device)
+                dino_output = self.semantics_model(**preprocessed)
+                features = dino_output.last_hidden_state[
+                    :, 1 + self._num_register_tokens :, :
+                ]
+            elif self.params.semantics == "dinov3":
+                img_tensor = (
+                    self.dinov3_transform(image_rgb).unsqueeze(0).to(self.params.device)
+                )
+                features = self.semantics_model.get_intermediate_layers(
+                    img_tensor, n=1, reshape=False, return_class_token=False, norm=True
+                )[0]  # (1, N_patches, C)
+            else:
+                return None
+
+            features_flat = features.reshape(-1, features.shape[-1])
+
+            # GeM pooling
+            cubed = torch.mean(features_flat**3, dim=0)
+            descriptor = torch.sign(cubed) * (
+                torch.abs(cubed).clamp(min=1e-12) ** (1.0 / 3)
+            )
+            descriptor = descriptor / torch.norm(descriptor)
+
+        return descriptor.cpu().numpy()
+
     def run(self, img_bgr, crop=None) -> List[AerialSegment]:
         """
         Run FastSAM on the given image and return a list of observations.

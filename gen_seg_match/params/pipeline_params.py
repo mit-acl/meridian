@@ -131,6 +131,14 @@ class CrossViewLocalizationParams(ParamsBase):
 
 
 @dataclass
+class CrossViewPlaceRecognitionParams(ParamsBase):
+    params_key: ClassVar[str] = "cross_view_place_recognition"
+
+    ground_descriptor_dist_m: float = 5.0
+    k_nearest_neighbors: int = 5
+
+
+@dataclass
 class GroundToBEVParams(ParamsBase):
     # class attribute
     params_key: ClassVar[str] = "ground_to_bev"

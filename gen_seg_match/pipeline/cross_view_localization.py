@@ -361,75 +361,58 @@ class CrossViewLocalization:
         inlier_indices: np.ndarray,
         output_dir: pathlib.Path,
     ):
-        """Plot trajectories on aerial image and compute error metrics."""
-        # Collect odom trajectory from ground submaps
-        odom_poses = {}
-        for c in candidates:
-            key = c["ground_key"]
-            if key not in odom_poses:
-                odom_poses[key] = c["ground_camera_pose"]
+        """Plot full trajectory on aerial image and compute error metrics."""
+        ground_map = data.ground_map
+        traj_times = np.array(ground_map.times)
+        # ground_map.trajectory contains T_odom_camera poses
+        traj_odom = ground_map.trajectory
 
-        # Sort by key for consistent ordering
-        sorted_keys = sorted(odom_poses.keys(), key=lambda k: int(k))
-        odom_trajectory = np.array([odom_poses[k] for k in sorted_keys])
+        # Apply T_camera_flu if available so we track the FLU body position
+        T_cam_flu = data.T_camera_flu  # may be None
 
-        # Transform odom trajectory to UTM
-        est_utm_positions = []
-        for T_odom_camera in odom_trajectory:
-            T_utm_camera = T_utm_odom @ T_odom_camera
-            est_utm_positions.append(T_utm_camera[:2, 3])
-        est_utm_positions = np.array(est_utm_positions)
+        # Build estimated UTM positions & yaws for the full trajectory
+        est_utm_positions = np.full((len(traj_odom), 2), np.nan)
+        est_yaws = np.full(len(traj_odom), np.nan)
+        for i, T_odom_cam in enumerate(traj_odom):
+            if T_cam_flu is not None:
+                T_utm_body = T_utm_odom @ T_odom_cam @ T_cam_flu
+            else:
+                T_utm_body = T_utm_odom @ T_odom_cam
+            est_utm_positions[i] = T_utm_body[:2, 3]
+            est_yaws[i] = np.arctan2(T_utm_body[1, 0], T_utm_body[0, 0])
+
+        # Build GT UTM positions & yaws at the same timestamps
+        gt_utm_positions = None
+        gt_yaws = None
+        if data.gt_pose_data is not None:
+            gt_utm_positions = np.full((len(traj_times), 2), np.nan)
+            gt_yaws = np.full(len(traj_times), np.nan)
+            for i, t in enumerate(traj_times):
+                try:
+                    gt_pose = data.gt_pose_data.pose(t)
+                    if T_cam_flu is not None:
+                        gt_body = gt_pose @ T_cam_flu
+                    else:
+                        gt_body = gt_pose
+                    gt_utm_positions[i] = gt_body[:2, 3]
+                    gt_yaws[i] = np.arctan2(gt_body[1, 0], gt_body[0, 0])
+                except Exception:
+                    pass
 
         # UTM to pixel conversion
         origin_x, origin_y = data.aerial_img_origin
         pixel_len_m = data.aerial_img_scale
 
-        def utm_to_pixel(x_utm, y_utm):
-            x_px = (x_utm - origin_x) / pixel_len_m
-            y_px = (origin_y - y_utm) / pixel_len_m
-            return x_px, y_px
+        def utm_to_pixel(xy_utm):
+            x_px = (xy_utm[:, 0] - origin_x) / pixel_len_m
+            y_px = (origin_y - xy_utm[:, 1]) / pixel_len_m
+            return np.column_stack([x_px, y_px])
 
-        est_px = np.array([
-            utm_to_pixel(p[0], p[1]) for p in est_utm_positions
-        ])
-
-        # GT trajectory
-        gt_utm_positions = None
-        gt_px = None
-        if data.gt_pose_data is not None:
-            gt_utm_positions = []
-            # Get GT poses at the same camera poses' implied times
-            # Load ground submaps to get timestamps
-            gt_match_positions = []
-            for key in sorted_keys:
-                # Find a candidate with this ground_key to get camera_pose
-                T_odom_camera = odom_poses[key]
-                # Get closest GT pose — we need times from submaps
-                # For now use position-based matching from the candidates
-                gt_match_positions.append(T_odom_camera)
-
-            # Load ground submaps to get times
-            ground_dir = output_dir.parent / "ground" / "segments"
-            for key in sorted_keys:
-                ground_submap_path = ground_dir / f"{key}.pkl"
-                if ground_submap_path.exists():
-                    submap = Submap.load(ground_submap_path)
-                    try:
-                        gt_pose = data.gt_pose_data.pose(submap.time)
-                        gt_utm_positions.append(gt_pose[:2, 3])
-                    except Exception:
-                        gt_utm_positions.append(np.array([np.nan, np.nan]))
-                else:
-                    gt_utm_positions.append(np.array([np.nan, np.nan]))
-            gt_utm_positions = np.array(gt_utm_positions)
-            gt_px = np.array([
-                utm_to_pixel(p[0], p[1]) for p in gt_utm_positions
-            ])
+        est_px = utm_to_pixel(est_utm_positions)
 
         # Plot on aerial image
         fig, ax = plt.subplots(1, 1, figsize=(12, 12))
         aerial_img = data.aerial_img
-        # Downsample for file size
         ds = max(1, min(aerial_img.shape[0], aerial_img.shape[1]) // 2000)
         aerial_small = aerial_img[::ds, ::ds]
         ax.imshow(
@@ -437,23 +420,30 @@ class CrossViewLocalization:
             extent=[0, aerial_img.shape[1], aerial_img.shape[0], 0],
         )
 
-        ax.plot(est_px[:, 0], est_px[:, 1], "b.-", linewidth=2, markersize=4, label="Estimated")
-        if gt_px is not None:
-            valid = ~np.any(np.isnan(gt_px), axis=1)
+        ax.plot(
+            est_px[:, 0], est_px[:, 1], "b-",
+            linewidth=1.5, label="Estimated",
+        )
+        if gt_utm_positions is not None:
+            gt_px = utm_to_pixel(gt_utm_positions)
+            valid = ~np.any(np.isnan(gt_utm_positions), axis=1)
             ax.plot(
-                gt_px[valid, 0], gt_px[valid, 1], "g.-",
-                linewidth=2, markersize=4, label="Ground Truth",
+                gt_px[valid, 0], gt_px[valid, 1], "g-",
+                linewidth=1.5, label="Ground Truth",
             )
 
         # Mark inlier candidate positions
         inlier_utm = []
         for idx in inlier_indices:
             c = candidates[idx]
-            T_odom_camera = c["ground_camera_pose"]
-            T_utm_camera = T_utm_odom @ T_odom_camera
-            inlier_utm.append(T_utm_camera[:2, 3])
+            T_odom_cam = c["ground_camera_pose"]
+            if T_cam_flu is not None:
+                T_utm_body = T_utm_odom @ T_odom_cam @ T_cam_flu
+            else:
+                T_utm_body = T_utm_odom @ T_odom_cam
+            inlier_utm.append(T_utm_body[:2, 3])
         inlier_utm = np.array(inlier_utm)
-        inlier_px = np.array([utm_to_pixel(p[0], p[1]) for p in inlier_utm])
+        inlier_px = utm_to_pixel(inlier_utm)
         ax.plot(
             inlier_px[:, 0], inlier_px[:, 1], "r*",
             markersize=8, label=f"Inliers ({len(inlier_indices)})",
@@ -478,40 +468,31 @@ class CrossViewLocalization:
                 )
                 rmse_trans = np.sqrt(np.mean(trans_errors**2))
                 results_lines.append(f"Translation RMSE (m): {rmse_trans:.3f}")
-                results_lines.append(f"Translation mean error (m): {np.mean(trans_errors):.3f}")
-                results_lines.append(f"Translation max error (m): {np.max(trans_errors):.3f}")
+                results_lines.append(
+                    f"Translation mean error (m): {np.mean(trans_errors):.3f}"
+                )
+                results_lines.append(
+                    f"Translation max error (m): {np.max(trans_errors):.3f}"
+                )
 
-                # Compute yaw error from T_utm_odom
-                # GT T_utm_odom can be computed as T_utm_camera_gt @ inv(T_odom_camera)
-                # We compute a single yaw error for the estimated T_utm_odom
-                yaw_errors = []
-                for key_idx, key in enumerate(sorted_keys):
-                    if not valid[key_idx]:
-                        continue
-                    ground_submap_path = ground_dir / f"{key}.pkl"
-                    if ground_submap_path.exists():
-                        submap = Submap.load(ground_submap_path)
-                        try:
-                            gt_pose = data.gt_pose_data.pose(submap.time)
-                            T_odom_camera = odom_poses[key]
-                            T_utm_odom_gt = gt_pose @ np.linalg.inv(T_odom_camera)
-                            yaw_est = np.arctan2(T_utm_odom[1, 0], T_utm_odom[0, 0])
-                            yaw_gt = np.arctan2(
-                                T_utm_odom_gt[1, 0], T_utm_odom_gt[0, 0]
-                            )
-                            yaw_err = abs(
-                                np.arctan2(
-                                    np.sin(yaw_est - yaw_gt),
-                                    np.cos(yaw_est - yaw_gt),
-                                )
-                            )
-                            yaw_errors.append(yaw_err)
-                        except Exception:
-                            pass
-                if yaw_errors:
-                    rmse_yaw = np.sqrt(np.mean(np.array(yaw_errors) ** 2))
+                # Per-pose 2D heading error
+                yaw_valid = valid & ~np.isnan(est_yaws) & ~np.isnan(gt_yaws)
+                if np.any(yaw_valid):
+                    yaw_diff = est_yaws[yaw_valid] - gt_yaws[yaw_valid]
+                    yaw_errors = np.abs(
+                        np.arctan2(np.sin(yaw_diff), np.cos(yaw_diff))
+                    )
+                    rmse_yaw = np.sqrt(np.mean(yaw_errors**2))
                     results_lines.append(
-                        f"Yaw RMSE (deg): {np.rad2deg(rmse_yaw):.3f}"
+                        f"Heading RMSE (deg): {np.rad2deg(rmse_yaw):.3f}"
+                    )
+                    results_lines.append(
+                        f"Heading mean error (deg): "
+                        f"{np.rad2deg(np.mean(yaw_errors)):.3f}"
+                    )
+                    results_lines.append(
+                        f"Heading max error (deg): "
+                        f"{np.rad2deg(np.max(yaw_errors)):.3f}"
                     )
 
         results_str = "\n".join(results_lines)

@@ -29,6 +29,7 @@ from gen_seg_match.params import (
     SegmentMatchParams,
     CrossViewMatchingParams,
     CrossViewLocalizationDataParams,
+    CrossViewPlaceRecognitionParams,
     AerialSegmenterParams,
     SubmapParams,
     GroundSegmenterParams,
@@ -204,7 +205,9 @@ class CrossViewMatching:
         return result
 
     def ground_map_to_submaps(
-        self, ground_map: Union[ROMANMap, SegmentMap]
+        self,
+        ground_map: Union[ROMANMap, SegmentMap],
+        ground_descriptor_dist_m: float = None,
     ) -> List[Submap]:
         dense_segments = []
         for seg in ground_map.segments:
@@ -236,6 +239,16 @@ class CrossViewMatching:
             ):
                 sampled_indices.append(i)
                 last_position = position
+
+        # Precompute descriptor arrays for submap descriptor extraction
+        _attach_descriptors = (
+            ground_descriptor_dist_m is not None
+            and ground_map.descriptors is not None
+        )
+        if _attach_descriptors:
+            _map_times = np.array(ground_map.times)
+            _map_descriptors = np.vstack(ground_map.descriptors)
+            _map_positions = np.array([p[:3, 3] for p in ground_map.trajectory])
 
         # For each sampled pose, collect segments with dense points within radius
         submaps = []
@@ -303,12 +316,46 @@ class CrossViewMatching:
             if len(submap_segments) == 0:
                 continue
 
+            # Attach stacked frame descriptors if available
+            submap_descriptor = None
+            if _attach_descriptors:
+                try:
+                    seg_first = [
+                        s.first_seen for s in submap_segments if s.first_seen is not None
+                    ]
+                    seg_last = [
+                        s.last_seen for s in submap_segments if s.last_seen is not None
+                    ]
+                    if seg_first and seg_last:
+                        start_time = min(s.last_seen for s in submap_segments if s.last_seen is not None)
+                        end_time = max(s.first_seen for s in submap_segments if s.first_seen is not None)
+                        if start_time > end_time:
+                            start_time = min(seg_first)
+                            end_time = max(seg_last)
+                        time_mask = (_map_times >= start_time) & (
+                            _map_times <= end_time
+                        )
+                        if np.any(time_mask):
+                            frame_descs = _map_descriptors[time_mask]
+                            frame_pos = _map_positions[time_mask]
+                            stacked = []
+                            last_pos = None
+                            for fd, fp in zip(frame_descs, frame_pos):
+                                if last_pos is None or np.linalg.norm(fp - last_pos) >= ground_descriptor_dist_m:
+                                    stacked.append(fd)
+                                    last_pos = fp
+                            if stacked:
+                                submap_descriptor = np.vstack(stacked)
+                except Exception:
+                    pass
+
             submap = Submap(
                 id=k,
                 time=ground_map.times[idx],
                 segments=SegmentList(submap_segments),
                 pose=pose,
                 segment_frame=FrameType.CAMERA,
+                descriptor=submap_descriptor,
             )
 
             # Transform segments from odom frame to submap-local frame
@@ -435,12 +482,17 @@ class CrossViewMatching:
                 )
                 sparse_general_segments.reindex()
 
+                crop_descriptor = self.aerial_segmenter.get_crop_descriptor(
+                    img, crop=crop
+                )
+
                 results[crop] = Submap(
                     id=(i, j),
                     time=0.0,
                     segments=sparse_general_segments,
                     pose=pose_flu,
                     segment_frame=FrameType.UTM,
+                    descriptor=crop_descriptor,
                     metadata={
                         "crop_center_m": np.array(
                             [(i + 0.5) * patch_size_m, -(j + 0.5) * patch_size_m]
@@ -580,6 +632,7 @@ class CrossViewMatching:
                 segments=sparse_general_segments,
                 pose=np.eye(4),
                 segment_frame=FrameType.ODOMETRY,
+                descriptor=submap.descriptor,
                 metadata={"camera_pose": submap.pose},
             )
             results.append(submap_2d)
@@ -1326,7 +1379,15 @@ def cross_view_matching(
     # Extract ground segments
     if not skip_ground:
         ground_map = data.ground_map
-        ground_submaps = runner.ground_map_to_submaps(ground_map)
+        try:
+            pr_params = CrossViewPlaceRecognitionParams.load(params)
+            ground_descriptor_dist_m = pr_params.ground_descriptor_dist_m
+        except Exception:
+            ground_descriptor_dist_m = None
+        ground_submaps = runner.ground_map_to_submaps(
+            ground_map,
+            ground_descriptor_dist_m=ground_descriptor_dist_m,
+        )
         initial_ground_submaps = runner.batch_ground_to_sparse_2d_submaps(
             ground_submaps, ground_output_dir
         )
