@@ -186,7 +186,7 @@ def segment_mapping(
     mapping_params = SegmentMappingParams.load(params_path, run=run)
     data_params = SegmentMappingDataParams.load(params_path, run=run)
     segmenter_params = SegmenterParams.load(params_path, run=run)
-    segmenter_params.depth_scale = data_params.depth_scale
+    segmenter_params.depth_scale = 1 / data_params.depth_scale
 
     os.makedirs(output_dir, exist_ok=True)
 

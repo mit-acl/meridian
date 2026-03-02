@@ -6,13 +6,13 @@ import pickle
 from dataclasses import dataclass
 from typing import List, Optional
 
-import clipperpy
 import cv2 as cv
 import matplotlib.pyplot as plt
 import numpy as np
 
+from gen_seg_match.cross_view.rpgo import CrossViewRPGO, CrossViewRPGOResult, se3_to_se2
 from gen_seg_match.map3d.submap import Submap
-from gen_seg_match.params import CrossViewLocalizationParams
+from gen_seg_match.params import CrossViewRPGOParams
 from gen_seg_match.pipeline.cross_view_matching import cross_view_matching
 from gen_seg_match.pipeline.data import CrossViewLocalizationData
 from gen_seg_match.pipeline.result import PoseEstimationResultMatrix
@@ -22,69 +22,23 @@ logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
-# SE(2) helpers
-# ---------------------------------------------------------------------------
-
-
-def se3_to_se2(T: np.ndarray) -> np.ndarray:
-    """Project a 4x4 SE(3) matrix to a 3x3 SE(2) matrix (x, y, yaw)."""
-    yaw = np.arctan2(T[1, 0], T[0, 0])
-    return se2_from_xytheta(T[0, 3], T[1, 3], yaw)
-
-
-def se2_to_se3(T2: np.ndarray) -> np.ndarray:
-    """Embed a 3x3 SE(2) matrix into a 4x4 SE(3) matrix (z=0, roll=pitch=0)."""
-    T = np.eye(4)
-    T[:2, :2] = T2[:2, :2]
-    T[0, 3] = T2[0, 2]
-    T[1, 3] = T2[1, 2]
-    return T
-
-
-def se2_from_xytheta(x: float, y: float, theta: float) -> np.ndarray:
-    """Construct a 3x3 SE(2) matrix from x, y, yaw."""
-    c, s = np.cos(theta), np.sin(theta)
-    return np.array(
-        [
-            [c, -s, x],
-            [s, c, y],
-            [0, 0, 1],
-        ]
-    )
-
-
-def yaw_from_se2(T2: np.ndarray) -> float:
-    """Extract yaw angle from a 3x3 SE(2) matrix."""
-    return np.arctan2(T2[1, 0], T2[0, 0])
-
-
-def average_se2(transforms: List[np.ndarray]) -> np.ndarray:
-    """Average a list of SE(2) transforms (mean x,y; circular mean yaw)."""
-    xs = [T[0, 2] for T in transforms]
-    ys = [T[1, 2] for T in transforms]
-    yaws = [yaw_from_se2(T) for T in transforms]
-    mean_yaw = np.arctan2(np.mean(np.sin(yaws)), np.mean(np.cos(yaws)))
-    return se2_from_xytheta(np.mean(xs), np.mean(ys), mean_yaw)
-
-
-# ---------------------------------------------------------------------------
 # CrossViewLocalization pipeline
 # ---------------------------------------------------------------------------
 
 
 @dataclass
 class CrossViewLocalization:
-    localization_params: CrossViewLocalizationParams
+    rpgo_params: CrossViewRPGOParams
 
     def localize(
         self,
         match_output_dir: str,
         data: CrossViewLocalizationData,
         output_dir: str,
-    ) -> Optional[np.ndarray]:
+    ) -> Optional[CrossViewRPGOResult]:
         """Run the full localization pipeline.
 
-        Returns the 4x4 SE(3) T_utm_odom, or None if localization fails.
+        Returns CrossViewRPGOResult, or None if localization fails.
         """
         match_output_dir = pathlib.Path(match_output_dir)
         output_dir = pathlib.Path(output_dir)
@@ -95,25 +49,26 @@ class CrossViewLocalization:
             logger.warning("No candidates passed filtering — returning None.")
             return None
 
-        M, C = self._build_affinity_matrix(candidates)
-        self._visualize_affinity_matrix(M, C, candidates, output_dir)
-        inlier_indices = self._run_clipper(M, C)
-        if len(inlier_indices) == 0:
-            logger.warning("CLIPPER returned empty solution — returning None.")
+        ground_map = data.ground_map
+        trajectory = ground_map.trajectory
+        times = np.array(ground_map.times)
+
+        rpgo = CrossViewRPGO(params=self.rpgo_params)
+        result = rpgo.solve(candidates, trajectory, times, data.T_camera_flu)
+
+        if result.M is not None:
+            self._visualize_affinity_matrix(result.M, result.C, candidates, output_dir)
+
+        if not result.success:
+            logger.warning("RPGO solve failed — returning None.")
             return None
 
-        if len(inlier_indices) == 1:
-            logger.warning("Only a single inlier — using it directly.")
-
-        T_utm_odom = self._average_inlier_transforms(candidates, inlier_indices)
-        self._save_results(T_utm_odom, candidates, inlier_indices, output_dir)
-        self._visualize_and_report(
-            T_utm_odom, data, candidates, inlier_indices, output_dir
-        )
-        return T_utm_odom
+        self._save_results(result, output_dir)
+        self._visualize_and_report(result, data, output_dir)
+        return result
 
     # ------------------------------------------------------------------
-    # Step 2: Load candidates
+    # Load candidates
     # ------------------------------------------------------------------
 
     def _load_candidates(
@@ -134,7 +89,7 @@ class CrossViewLocalization:
         aerial_submap = Submap.load(aerial_files[0])
         pose_flu = aerial_submap.pose  # T_utm_aerial (FLU-convention pose)
 
-        min_assoc = self.localization_params.min_num_associations
+        min_assoc = self.rpgo_params.min_num_associations
         candidates = []
 
         result_files = sorted(segments_dir.glob("ground_*_results_matrix.pkl.npz"))
@@ -187,89 +142,12 @@ class CrossViewLocalization:
                         "ground_key": ground_key,
                         "aerial_key": f"{idx[0]}_{idx[1]}",
                         "num_associations": result.num_associations,
+                        "ground_submap_time": ground_submap.time,
                     }
                 )
 
         logger.info(f"Loaded {len(candidates)} candidates.")
         return candidates
-
-    # ------------------------------------------------------------------
-    # Step 3: Build affinity matrix
-    # ------------------------------------------------------------------
-
-    def _build_affinity_matrix(self, candidates: List[dict]) -> tuple:
-        """Build CLIPPER affinity (M) and constraint (C) matrices."""
-        N = len(candidates)
-        M = np.zeros((N, N))
-        C = np.ones((N, N))
-
-        sigma_r = self.localization_params.rotation_consistency_sigma
-        sigma_t = self.localization_params.translation_consistency_sigma
-        eps_r = self.localization_params.rotation_consistency_epsilon
-        eps_t = self.localization_params.translation_consistency_epsilon
-
-        for i in range(N):
-            M[i, i] = 1.0
-            ci = candidates[i]
-            for j in range(i + 1, N):
-                cj = candidates[j]
-
-                # Relative transform via odometry
-                odom_relative = se3_to_se2(
-                    np.linalg.inv(ci["T_odom_ground"]) @ cj["T_odom_ground"]
-                )
-
-                # Relative transform via cross-view
-                cv_relative = se3_to_se2(
-                    np.linalg.inv(ci["T_i_j_hat"])
-                    @ np.linalg.inv(ci["aerial_pose"])
-                    @ cj["aerial_pose"]
-                    @ cj["T_i_j_hat"]
-                )
-
-                # Error: should be identity if consistent
-                error = np.linalg.inv(odom_relative) @ cv_relative
-                rot_err = abs(yaw_from_se2(error))
-                trans_err = np.linalg.norm(error[:2, 2])
-
-                if rot_err < eps_r and trans_err < eps_t:
-                    score = np.exp(-0.5 * (rot_err / sigma_r) ** 2) * np.exp(
-                        -0.5 * (trans_err / sigma_t) ** 2
-                    )
-                    M[i, j] = score
-                    M[j, i] = score
-                else:
-                    C[i, j] = 0
-                    C[j, i] = 0
-
-        return M, C
-
-    # ------------------------------------------------------------------
-    # Step 4: CLIPPER
-    # ------------------------------------------------------------------
-
-    @staticmethod
-    def _run_clipper(M: np.ndarray, C: np.ndarray) -> np.ndarray:
-        """Run CLIPPER on the affinity/constraint matrices."""
-        clipper = clipperpy.CLIPPER(
-            clipperpy.invariants.PairwiseInvariant(), clipperpy.Params()
-        )
-        clipper.set_matrix_data(M=M, C=C)
-        clipper.solve()
-        return np.array(clipper.get_solution().nodes)
-
-    # ------------------------------------------------------------------
-    # Step 5: Average inlier transforms
-    # ------------------------------------------------------------------
-
-    @staticmethod
-    def _average_inlier_transforms(
-        candidates: List[dict], inlier_indices: np.ndarray
-    ) -> np.ndarray:
-        """Average inlier T_utm_odom estimates and return as 4x4 SE(3)."""
-        inlier_se2s = [candidates[i]["T_utm_odom_se2"] for i in inlier_indices]
-        T_avg_se2 = average_se2(inlier_se2s)
-        return se2_to_se3(T_avg_se2)
 
     # ------------------------------------------------------------------
     # Diagnostics: affinity matrix heatmap
@@ -342,54 +220,46 @@ class CrossViewLocalization:
             )
 
     # ------------------------------------------------------------------
-    # Step 6: Save, visualize, and report
+    # Save, visualize, and report
     # ------------------------------------------------------------------
 
+    @staticmethod
     def _save_results(
-        self,
-        T_utm_odom: np.ndarray,
-        candidates: List[dict],
-        inlier_indices: np.ndarray,
+        result: CrossViewRPGOResult,
         output_dir: pathlib.Path,
     ):
-        np.save(output_dir / "T_utm_odom.npy", T_utm_odom)
+        np.save(output_dir / "T_utm_odom.npy", result.T_utm_odom)
         with open(output_dir / "candidates.pkl", "wb") as f:
-            pickle.dump(candidates, f)
-        np.save(output_dir / "inlier_indices.npy", inlier_indices)
+            pickle.dump(result.candidates, f)
+        np.save(output_dir / "inlier_indices.npy", result.inlier_indices)
+        with open(output_dir / "optimized_trajectory.pkl", "wb") as f:
+            pickle.dump(result.optimized_trajectory, f)
         logger.info(
-            f"Saved T_utm_odom, {len(candidates)} candidates, "
-            f"{len(inlier_indices)} inliers to {output_dir}"
+            f"Saved T_utm_odom, {len(result.candidates)} candidates, "
+            f"{len(result.inlier_indices)} inliers, "
+            f"optimized_trajectory to {output_dir}"
         )
 
+    @staticmethod
     def _visualize_and_report(
-        self,
-        T_utm_odom: np.ndarray,
+        result: CrossViewRPGOResult,
         data: CrossViewLocalizationData,
-        candidates: List[dict],
-        inlier_indices: np.ndarray,
         output_dir: pathlib.Path,
     ):
         """Plot full trajectory on aerial image and compute error metrics."""
         ground_map = data.ground_map
         traj_times = np.array(ground_map.times)
-        # ground_map.trajectory contains T_odom_camera poses
-        traj_odom = ground_map.trajectory
+        optimized_traj = result.optimized_trajectory
 
-        # Apply T_camera_flu if available so we track the FLU body position
-        T_cam_flu = data.T_camera_flu  # may be None
-
-        # Build estimated UTM positions & yaws for the full trajectory
-        est_utm_positions = np.full((len(traj_odom), 2), np.nan)
-        est_yaws = np.full(len(traj_odom), np.nan)
-        for i, T_odom_cam in enumerate(traj_odom):
-            if T_cam_flu is not None:
-                T_utm_body = T_utm_odom @ T_odom_cam @ T_cam_flu
-            else:
-                T_utm_body = T_utm_odom @ T_odom_cam
+        # Build estimated UTM positions & yaws from optimized trajectory
+        est_utm_positions = np.full((len(optimized_traj), 2), np.nan)
+        est_yaws = np.full(len(optimized_traj), np.nan)
+        for i, T_utm_body in enumerate(optimized_traj):
             est_utm_positions[i] = T_utm_body[:2, 3]
             est_yaws[i] = np.arctan2(T_utm_body[1, 0], T_utm_body[0, 0])
 
         # Build GT UTM positions & yaws at the same timestamps
+        T_cam_flu = data.T_camera_flu
         gt_utm_positions = None
         gt_yaws = None
         if data.gt_pose_data is not None:
@@ -446,16 +316,15 @@ class CrossViewLocalization:
                 label="Ground Truth",
             )
 
-        # Mark inlier candidate positions
+        # Mark inlier candidate positions using optimized trajectory
+        candidates = result.candidates
+        inlier_indices = result.inlier_indices
         inlier_utm = []
         for idx in inlier_indices:
             c = candidates[idx]
-            T_odom_cam = c["ground_camera_pose"]
-            if T_cam_flu is not None:
-                T_utm_body = T_utm_odom @ T_odom_cam @ T_cam_flu
-            else:
-                T_utm_body = T_utm_odom @ T_odom_cam
-            inlier_utm.append(T_utm_body[:2, 3])
+            ground_time = c["ground_submap_time"]
+            traj_idx = int(np.argmin(np.abs(traj_times - ground_time)))
+            inlier_utm.append(optimized_traj[traj_idx][:2, 3])
         inlier_utm = np.array(inlier_utm)
         inlier_px = utm_to_pixel(inlier_utm)
         ax.plot(
@@ -475,7 +344,7 @@ class CrossViewLocalization:
         results_lines = []
         results_lines.append(f"Number of candidates: {len(candidates)}")
         results_lines.append(f"Number of inliers: {len(inlier_indices)}")
-        results_lines.append(f"T_utm_odom:\n{T_utm_odom}")
+        results_lines.append(f"T_utm_odom:\n{result.T_utm_odom}")
 
         if gt_utm_positions is not None:
             valid = ~np.any(np.isnan(gt_utm_positions), axis=1)
@@ -529,14 +398,14 @@ def cross_view_localization(params, output_dir, skip_matching=False):
 
     match_output_dir = os.path.join(output_dir, "match")
 
-    loc_params = CrossViewLocalizationParams.load(params)
+    rpgo_params = CrossViewRPGOParams.load(params)
     data_params = CrossViewLocalizationDataParams.load(params)
     data = CrossViewLocalizationData.from_params(data_params)
 
-    runner = CrossViewLocalization(localization_params=loc_params)
+    runner = CrossViewLocalization(rpgo_params=rpgo_params)
     loc_output_dir = os.path.join(output_dir, "localization")
-    T_utm_odom = runner.localize(match_output_dir, data, loc_output_dir)
-    return T_utm_odom
+    result = runner.localize(match_output_dir, data, loc_output_dir)
+    return result
 
 
 if __name__ == "__main__":
@@ -587,10 +456,10 @@ if __name__ == "__main__":
         )
 
     match_output_dir = os.path.join(args.output, "match")
-    loc_params = CrossViewLocalizationParams.load(args.params)
+    rpgo_params = CrossViewRPGOParams.load(args.params)
     data_params = CrossViewLocalizationDataParams.load(args.params)
     data = CrossViewLocalizationData.from_params(data_params)
 
-    runner = CrossViewLocalization(localization_params=loc_params)
+    runner = CrossViewLocalization(rpgo_params=rpgo_params)
     loc_output_dir = os.path.join(args.output, "localization")
     runner.localize(match_output_dir, data, loc_output_dir)
