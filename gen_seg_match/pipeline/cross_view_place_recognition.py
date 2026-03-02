@@ -7,63 +7,28 @@ import matplotlib.patches as mpatches
 import matplotlib.pyplot as plt
 import numpy as np
 
-from gen_seg_match.pipeline.cross_view_matching import CrossViewMatching, cross_view_matching
+from gen_seg_match.pipeline.cross_view_matching import (
+    CrossViewMatching,
+    cross_view_matching,
+)
 from gen_seg_match.params import CrossViewPlaceRecognitionParams
+from gen_seg_match.cross_view.place_recognition import CrossViewPlaceRecognition
 
 logger = logging.getLogger(__name__)
 
 
-class CrossViewPlaceRecognition:
-    """Place recognition via cosine similarity between submap descriptors."""
+class CrossViewPlaceRecognitionPipeline:
+    """Pipeline for place recognition visualization and results."""
 
     @staticmethod
-    def compute_similarity_matrix(ground_submaps, aerial_submaps):
-        """Compute max cosine similarity between ground and aerial submaps.
-
-        Args:
-            ground_submaps: dict of str -> Submap (ground, with (N,D) descriptors)
-            aerial_submaps: dict of str -> Submap (aerial, with (D,) descriptors)
-
-        Returns:
-            sim_matrix: (num_ground, num_aerial) ndarray
-            ground_keys: list of ground submap keys
-            aerial_keys: list of aerial submap keys
-        """
-        ground_keys = sorted(ground_submaps.keys(), key=lambda k: int(k))
-        aerial_keys = sorted(aerial_submaps.keys())
-
-        sim_matrix = np.full((len(ground_keys), len(aerial_keys)), np.nan)
-
-        for gi, gk in enumerate(ground_keys):
-            g_desc = ground_submaps[gk].descriptor
-            if g_desc is None:
-                continue
-            if g_desc.ndim == 1:
-                g_desc = g_desc.reshape(1, -1)
-
-            # Normalize rows
-            g_norms = np.linalg.norm(g_desc, axis=1, keepdims=True)
-            g_norms = np.where(g_norms < 1e-12, 1.0, g_norms)
-            g_desc_norm = g_desc / g_norms
-
-            for ai, ak in enumerate(aerial_keys):
-                a_desc = aerial_submaps[ak].descriptor
-                if a_desc is None:
-                    continue
-                a_norm = np.linalg.norm(a_desc)
-                if a_norm < 1e-12:
-                    continue
-                a_desc_norm = a_desc / a_norm
-
-                # (N, D) @ (D,) -> (N,), take max
-                dots = g_desc_norm @ a_desc_norm
-                sim_matrix[gi, ai] = np.max(dots)
-
-        return sim_matrix, ground_keys, aerial_keys
-
-    @staticmethod
-    def compute_gt_patches(ground_submaps, aerial_submaps, ground_keys, aerial_keys,
-                           pipeline_params, gt_pose_data=None):
+    def compute_gt_patches(
+        ground_submaps,
+        aerial_submaps,
+        ground_keys,
+        aerial_keys,
+        pipeline_params,
+        gt_pose_data=None,
+    ):
         """Determine which aerial patches contain each ground submap's GT position.
 
         Uses gt_pose_data (ground truth poses in the world/UTM frame) to compute
@@ -134,8 +99,14 @@ class CrossViewPlaceRecognition:
         return top_k
 
     @staticmethod
-    def save_heatmaps(sim_matrix, ground_keys, aerial_keys, output_dir,
-                      gt_patches=None, top_k_patches=None):
+    def save_heatmaps(
+        sim_matrix,
+        ground_keys,
+        aerial_keys,
+        output_dir,
+        gt_patches=None,
+        top_k_patches=None,
+    ):
         """Save per-ground-submap heatmaps and full similarity matrix.
 
         The per-ground heatmaps use the same orientation as the
@@ -172,11 +143,15 @@ class CrossViewPlaceRecognition:
 
             # Draw green boxes around GT patches
             if gt_patches is not None and gk in gt_patches:
-                for (i_gt, j_gt) in gt_patches[gk]:
+                for i_gt, j_gt in gt_patches[gk]:
                     # In grid[i, j], imshow row=i, col=j
                     rect = mpatches.Rectangle(
-                        (j_gt - 0.5, i_gt - 0.5), 1, 1,
-                        linewidth=2, edgecolor="green", facecolor="none",
+                        (j_gt - 0.5, i_gt - 0.5),
+                        1,
+                        1,
+                        linewidth=2,
+                        edgecolor="green",
+                        facecolor="none",
                     )
                     ax.add_patch(rect)
 
@@ -185,14 +160,22 @@ class CrossViewPlaceRecognition:
                 for rank, (i_tk, j_tk) in enumerate(top_k_patches[gk]):
                     # In grid[i, j], imshow row=i, col=j
                     circle = plt.Circle(
-                        (j_tk, i_tk), 0.35,
-                        linewidth=2, edgecolor="red", facecolor="none",
+                        (j_tk, i_tk),
+                        0.35,
+                        linewidth=2,
+                        edgecolor="red",
+                        facecolor="none",
                     )
                     ax.add_patch(circle)
                     ax.text(
-                        j_tk, i_tk, str(rank + 1),
-                        ha="center", va="center", fontsize=7,
-                        color="red", fontweight="bold",
+                        j_tk,
+                        i_tk,
+                        str(rank + 1),
+                        ha="center",
+                        va="center",
+                        fontsize=7,
+                        color="red",
+                        fontweight="bold",
                     )
 
             plt.colorbar(im, ax=ax)
@@ -312,6 +295,7 @@ def cross_view_place_recognition(
         data_params = CrossViewLocalizationDataParams.load(params)
         if data_params.gt_pose_data is not None:
             from robotdatapy.data import PoseData
+
             gt_pose_data = PoseData.from_dict(data_params.gt_pose_data)
     except Exception:
         pass
@@ -325,26 +309,36 @@ def cross_view_place_recognition(
 
     pr_output_dir = os.path.join(output_dir, "place_recognition")
 
-    pr = CrossViewPlaceRecognition()
-    sim_matrix, ground_keys, aerial_keys = pr.compute_similarity_matrix(
+    # Use the descriptor class for similarity computation
+    pr_descriptor = CrossViewPlaceRecognition(pr_params)
+    sim_matrix, ground_keys, aerial_keys = pr_descriptor.compute_similarity_matrix(
         ground_submaps, aerial_submaps
     )
 
-    # Compute GT patch containment and top-k
-    gt_patches = pr.compute_gt_patches(
-        ground_submaps, aerial_submaps, ground_keys, aerial_keys,
-        pipeline_params, gt_pose_data=gt_pose_data,
+    # Use the pipeline class for GT patches, top-k, viz, and results
+    pr_pipeline = CrossViewPlaceRecognitionPipeline()
+    gt_patches = pr_pipeline.compute_gt_patches(
+        ground_submaps,
+        aerial_submaps,
+        ground_keys,
+        aerial_keys,
+        pipeline_params,
+        gt_pose_data=gt_pose_data,
     )
-    top_k_patches = pr.compute_top_k_patches(
+    top_k_patches = pr_pipeline.compute_top_k_patches(
         sim_matrix, ground_keys, aerial_keys, k
     )
 
     viz_dir = os.path.join(pr_output_dir, "viz")
-    pr.save_heatmaps(
-        sim_matrix, ground_keys, aerial_keys, viz_dir,
-        gt_patches=gt_patches, top_k_patches=top_k_patches,
+    pr_pipeline.save_heatmaps(
+        sim_matrix,
+        ground_keys,
+        aerial_keys,
+        viz_dir,
+        gt_patches=gt_patches,
+        top_k_patches=top_k_patches,
     )
-    pr.save_results(sim_matrix, ground_keys, aerial_keys, pr_output_dir)
+    pr_pipeline.save_results(sim_matrix, ground_keys, aerial_keys, pr_output_dir)
 
 
 if __name__ == "__main__":

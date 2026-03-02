@@ -53,6 +53,7 @@ class CrossViewMatchingParams(ParamsBase):
     params_key: ClassVar[str] = "cross_view_matching"
 
     segment_min_points: int = 10
+    matching_mode: str = "vpr"  # "all", "gt", or "vpr"
 
     min_area_m_sq: float = 0.0
     point_max_area_m_sq: float = 5.0
@@ -108,7 +109,7 @@ class CrossViewMatchingParams(ParamsBase):
     lines_only: bool = False
 
     match_viz_dist_thresh_m: float = 5.0
-    match_viz_angle_thresh_deg: float = 20.0
+    match_viz_angle_thresh_deg: float = 10.0
 
     @property
     def line_merge_ang_thresh_rad(self):
@@ -128,14 +129,6 @@ class CrossViewLocalizationParams(ParamsBase):
     translation_consistency_sigma: float = 5.0  # meters
     translation_consistency_epsilon: float = 10.0  # meters
     min_num_associations: int = 3
-
-
-@dataclass
-class CrossViewPlaceRecognitionParams(ParamsBase):
-    params_key: ClassVar[str] = "cross_view_place_recognition"
-
-    ground_descriptor_dist_m: float = 5.0
-    k_nearest_neighbors: int = 5
 
 
 @dataclass

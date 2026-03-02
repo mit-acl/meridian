@@ -44,11 +44,13 @@ def se2_to_se3(T2: np.ndarray) -> np.ndarray:
 def se2_from_xytheta(x: float, y: float, theta: float) -> np.ndarray:
     """Construct a 3x3 SE(2) matrix from x, y, yaw."""
     c, s = np.cos(theta), np.sin(theta)
-    return np.array([
-        [c, -s, x],
-        [s,  c, y],
-        [0,  0, 1],
-    ])
+    return np.array(
+        [
+            [c, -s, x],
+            [s, c, y],
+            [0, 0, 1],
+        ]
+    )
 
 
 def yaw_from_se2(T2: np.ndarray) -> float:
@@ -105,7 +107,9 @@ class CrossViewLocalization:
 
         T_utm_odom = self._average_inlier_transforms(candidates, inlier_indices)
         self._save_results(T_utm_odom, candidates, inlier_indices, output_dir)
-        self._visualize_and_report(T_utm_odom, data, candidates, inlier_indices, output_dir)
+        self._visualize_and_report(
+            T_utm_odom, data, candidates, inlier_indices, output_dir
+        )
         return T_utm_odom
 
     # ------------------------------------------------------------------
@@ -144,7 +148,9 @@ class CrossViewLocalization:
             # Load ground submap to get camera_pose
             ground_submap_path = ground_dir / f"{ground_key}.pkl"
             if not ground_submap_path.exists():
-                logger.warning(f"Ground submap {ground_submap_path} not found, skipping.")
+                logger.warning(
+                    f"Ground submap {ground_submap_path} not found, skipping."
+                )
                 continue
             ground_submap = Submap.load(ground_submap_path)
             ground_camera_pose = ground_submap.metadata["camera_pose"]  # T_odom_camera
@@ -171,16 +177,18 @@ class CrossViewLocalization:
                 T_utm_odom_4x4 = pose_flu @ T_i_j_hat @ np.linalg.inv(T_odom_ground)
                 T_utm_odom_se2 = se3_to_se2(T_utm_odom_4x4)
 
-                candidates.append({
-                    "T_utm_odom_se2": T_utm_odom_se2,
-                    "T_i_j_hat": T_i_j_hat,
-                    "aerial_pose": pose_flu,
-                    "ground_camera_pose": ground_camera_pose,
-                    "T_odom_ground": T_odom_ground,
-                    "ground_key": ground_key,
-                    "aerial_key": f"{idx[0]}_{idx[1]}",
-                    "num_associations": result.num_associations,
-                })
+                candidates.append(
+                    {
+                        "T_utm_odom_se2": T_utm_odom_se2,
+                        "T_i_j_hat": T_i_j_hat,
+                        "aerial_pose": pose_flu,
+                        "ground_camera_pose": ground_camera_pose,
+                        "T_odom_ground": T_odom_ground,
+                        "ground_key": ground_key,
+                        "aerial_key": f"{idx[0]}_{idx[1]}",
+                        "num_associations": result.num_associations,
+                    }
+                )
 
         logger.info(f"Loaded {len(candidates)} candidates.")
         return candidates
@@ -189,9 +197,7 @@ class CrossViewLocalization:
     # Step 3: Build affinity matrix
     # ------------------------------------------------------------------
 
-    def _build_affinity_matrix(
-        self, candidates: List[dict]
-    ) -> tuple:
+    def _build_affinity_matrix(self, candidates: List[dict]) -> tuple:
         """Build CLIPPER affinity (M) and constraint (C) matrices."""
         N = len(candidates)
         M = np.zeros((N, N))
@@ -320,12 +326,14 @@ class CrossViewLocalization:
             f"Affinity matrix: {N} candidates, "
             f"{n_nonzero} compatible pairs (M>0), "
             f"{n_constrained} constrained pairs (C=1), "
-            f"max off-diag M={off_diag.max():.4f}" if len(off_diag) > 0 else ""
+            f"max off-diag M={off_diag.max():.4f}"
+            if len(off_diag) > 0
+            else ""
         )
         print(
             f"Affinity matrix: {N} candidates, "
-            f"{n_nonzero}/{N*(N-1)//2} compatible pairs, "
-            f"{n_constrained}/{N*(N-1)//2} constrained pairs"
+            f"{n_nonzero}/{N * (N - 1) // 2} compatible pairs, "
+            f"{n_constrained}/{N * (N - 1) // 2} constrained pairs"
         )
         if len(off_diag) > 0 and n_nonzero > 0:
             print(
@@ -421,15 +429,21 @@ class CrossViewLocalization:
         )
 
         ax.plot(
-            est_px[:, 0], est_px[:, 1], "b-",
-            linewidth=1.5, label="Estimated",
+            est_px[:, 0],
+            est_px[:, 1],
+            "b-",
+            linewidth=1.5,
+            label="Estimated",
         )
         if gt_utm_positions is not None:
             gt_px = utm_to_pixel(gt_utm_positions)
             valid = ~np.any(np.isnan(gt_utm_positions), axis=1)
             ax.plot(
-                gt_px[valid, 0], gt_px[valid, 1], "g-",
-                linewidth=1.5, label="Ground Truth",
+                gt_px[valid, 0],
+                gt_px[valid, 1],
+                "g-",
+                linewidth=1.5,
+                label="Ground Truth",
             )
 
         # Mark inlier candidate positions
@@ -445,8 +459,11 @@ class CrossViewLocalization:
         inlier_utm = np.array(inlier_utm)
         inlier_px = utm_to_pixel(inlier_utm)
         ax.plot(
-            inlier_px[:, 0], inlier_px[:, 1], "r*",
-            markersize=8, label=f"Inliers ({len(inlier_indices)})",
+            inlier_px[:, 0],
+            inlier_px[:, 1],
+            "r*",
+            markersize=8,
+            label=f"Inliers ({len(inlier_indices)})",
         )
 
         ax.legend()
@@ -479,9 +496,7 @@ class CrossViewLocalization:
                 yaw_valid = valid & ~np.isnan(est_yaws) & ~np.isnan(gt_yaws)
                 if np.any(yaw_valid):
                     yaw_diff = est_yaws[yaw_valid] - gt_yaws[yaw_valid]
-                    yaw_errors = np.abs(
-                        np.arctan2(np.sin(yaw_diff), np.cos(yaw_diff))
-                    )
+                    yaw_errors = np.abs(np.arctan2(np.sin(yaw_diff), np.cos(yaw_diff)))
                     rmse_yaw = np.sqrt(np.mean(yaw_errors**2))
                     results_lines.append(
                         f"Heading RMSE (deg): {np.rad2deg(rmse_yaw):.3f}"
@@ -491,8 +506,7 @@ class CrossViewLocalization:
                         f"{np.rad2deg(np.mean(yaw_errors)):.3f}"
                     )
                     results_lines.append(
-                        f"Heading max error (deg): "
-                        f"{np.rad2deg(np.max(yaw_errors)):.3f}"
+                        f"Heading max error (deg): {np.rad2deg(np.max(yaw_errors)):.3f}"
                     )
 
         results_str = "\n".join(results_lines)

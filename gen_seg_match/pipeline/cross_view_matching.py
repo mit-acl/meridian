@@ -36,6 +36,7 @@ from gen_seg_match.params import (
     RegisterParams,
     DenseToSparseParams,
 )
+from gen_seg_match.cross_view.place_recognition import CrossViewPlaceRecognition
 from gen_seg_match.viz.utils import color_from_seed
 from gen_seg_match.viz.img_sparse_viz import img_sparse_viz
 from gen_seg_match.pipeline.data import CrossViewLocalizationData
@@ -74,6 +75,7 @@ class CrossViewMatching:
     registerer: Registerer
     ground_submap_params: SubmapParams = None
     ground_segmenter: GroundSegmenter = None
+    place_recognition: CrossViewPlaceRecognition = None
 
     def __post_init__(self):
         if self.ground_segmenter is None:
@@ -207,7 +209,6 @@ class CrossViewMatching:
     def ground_map_to_submaps(
         self,
         ground_map: Union[ROMANMap, SegmentMap],
-        ground_descriptor_dist_m: float = None,
     ) -> List[Submap]:
         dense_segments = []
         for seg in ground_map.segments:
@@ -240,15 +241,13 @@ class CrossViewMatching:
                 sampled_indices.append(i)
                 last_position = position
 
-        # Precompute descriptor arrays for submap descriptor extraction
-        _attach_descriptors = (
-            ground_descriptor_dist_m is not None
-            and ground_map.descriptors is not None
+        # Precompute ground map data for semantic-gem descriptors
+        _attach_gem_descriptors = (
+            self.place_recognition is not None
+            and self.place_recognition.method == "semantic-gem"
         )
-        if _attach_descriptors:
-            _map_times = np.array(ground_map.times)
-            _map_descriptors = np.vstack(ground_map.descriptors)
-            _map_positions = np.array([p[:3, 3] for p in ground_map.trajectory])
+        if _attach_gem_descriptors:
+            self.place_recognition.precompute_ground_map_data(ground_map)
 
         # For each sampled pose, collect segments with dense points within radius
         submaps = []
@@ -316,38 +315,12 @@ class CrossViewMatching:
             if len(submap_segments) == 0:
                 continue
 
-            # Attach stacked frame descriptors if available
+            # Attach semantic-gem descriptors if available
             submap_descriptor = None
-            if _attach_descriptors:
-                try:
-                    seg_first = [
-                        s.first_seen for s in submap_segments if s.first_seen is not None
-                    ]
-                    seg_last = [
-                        s.last_seen for s in submap_segments if s.last_seen is not None
-                    ]
-                    if seg_first and seg_last:
-                        start_time = min(s.last_seen for s in submap_segments if s.last_seen is not None)
-                        end_time = max(s.first_seen for s in submap_segments if s.first_seen is not None)
-                        if start_time > end_time:
-                            start_time = min(seg_first)
-                            end_time = max(seg_last)
-                        time_mask = (_map_times >= start_time) & (
-                            _map_times <= end_time
-                        )
-                        if np.any(time_mask):
-                            frame_descs = _map_descriptors[time_mask]
-                            frame_pos = _map_positions[time_mask]
-                            stacked = []
-                            last_pos = None
-                            for fd, fp in zip(frame_descs, frame_pos):
-                                if last_pos is None or np.linalg.norm(fp - last_pos) >= ground_descriptor_dist_m:
-                                    stacked.append(fd)
-                                    last_pos = fp
-                            if stacked:
-                                submap_descriptor = np.vstack(stacked)
-                except Exception:
-                    pass
+            if _attach_gem_descriptors:
+                submap_descriptor = self.place_recognition.ground_descriptor(
+                    None, submap_segments=submap_segments
+                )
 
             submap = Submap(
                 id=k,
@@ -482,23 +455,28 @@ class CrossViewMatching:
                 )
                 sparse_general_segments.reindex()
 
-                crop_descriptor = self.aerial_segmenter.get_crop_descriptor(
-                    img, crop=crop
-                )
-
                 results[crop] = Submap(
                     id=(i, j),
                     time=0.0,
                     segments=sparse_general_segments,
                     pose=pose_flu,
                     segment_frame=FrameType.UTM,
-                    descriptor=crop_descriptor,
+                    descriptor=None,
                     metadata={
                         "crop_center_m": np.array(
                             [(i + 0.5) * patch_size_m, -(j + 0.5) * patch_size_m]
                         )
                     },
                 )
+
+                # Compute descriptor after submap is created
+                if self.place_recognition is not None:
+                    results[crop].descriptor = self.place_recognition.aerial_descriptor(
+                        results[crop],
+                        aerial_segmenter=self.aerial_segmenter,
+                        img_bgr=img,
+                        crop=crop,
+                    )
 
                 # ------------------------------------------------------
                 # 3. Visualization and store segments (if output_dir provided)
@@ -626,13 +604,23 @@ class CrossViewMatching:
                     for id_hist in seg.history
                 ]
                 seg.height = np.mean(history_heights)
+            # For semantic-point-line, compute descriptor from point/line segments
+            ground_descriptor = submap.descriptor
+            if (
+                self.place_recognition is not None
+                and self.place_recognition.method == "semantic-point-line"
+            ):
+                ground_descriptor = self.place_recognition.ground_descriptor(
+                    None, submap_segments=sparse_general_segments
+                )
+
             submap_2d = Submap(
                 id=k,
                 time=submap.time,
                 segments=sparse_general_segments,
                 pose=np.eye(4),
                 segment_frame=FrameType.ODOMETRY,
-                descriptor=submap.descriptor,
+                descriptor=ground_descriptor,
                 metadata={"camera_pose": submap.pose},
             )
             results.append(submap_2d)
@@ -742,6 +730,32 @@ class CrossViewMatching:
         stride_m = stride * pixel_len_m
         patch_size_m_px = patch_size_px * pixel_len_m
 
+        # Precompute VPR top-k patches if needed
+        need_vpr = self.pipeline_params.matching_mode == "vpr" or (
+            self.pipeline_params.matching_mode == "gt" and ground_gt_pose is None
+        )
+        vpr_top_k_sets = {}
+        if need_vpr:
+            assert self.place_recognition is not None, (
+                "VPR mode requires place_recognition to be configured"
+            )
+            sim_matrix, ground_keys_sorted, aerial_keys_sorted = (
+                self.place_recognition.compute_similarity_matrix(
+                    ground_submaps, aerial_submaps
+                )
+            )
+            from gen_seg_match.pipeline.cross_view_place_recognition import (
+                CrossViewPlaceRecognitionPipeline,
+            )
+
+            vpr_top_k = CrossViewPlaceRecognitionPipeline.compute_top_k_patches(
+                sim_matrix,
+                ground_keys_sorted,
+                aerial_keys_sorted,
+                self.place_recognition.params.k_nearest_neighbors,
+            )
+            vpr_top_k_sets = {gk: set(patches) for gk, patches in vpr_top_k.items()}
+
         # iterate over all aerial crops and ground submaps
         all_results = {}  # ground_key -> PoseEstimationResultMatrix
         for ground_key, ground_sm_i in tqdm(ground_submaps_2d.items()):
@@ -771,11 +785,16 @@ class CrossViewMatching:
             T_ground_odom_ground_robot = ground_sm_i.metadata["camera_pose"]
 
             for aerial_key, aerial_sm_j in aerial_submaps_2d.items():
-                # check if ground pose is contained in this aerial crop
-                if ground_pose_gt is not None:
+                i_a, j_a = aerial_key_to_tuple(aerial_key)
+
+                # --- Mode-based filtering ---
+                mode = self.pipeline_params.matching_mode
+                if mode == "gt" and ground_pose_gt is None:
+                    mode = "vpr"
+
+                if mode == "gt":
                     T_aerial_camera = np.linalg.inv(aerial_sm_j.pose) @ ground_pose_gt
                     ground_pos_aerial = T_aerial_camera[:2, 3]
-                    i_a, j_a = aerial_key_to_tuple(aerial_key)
                     x1_m = i_a * stride_m
                     y1_m = j_a * stride_m
                     x2_m = x1_m + patch_size_m_px
@@ -785,8 +804,14 @@ class CrossViewMatching:
                         and y1_m <= ground_pos_aerial[1] <= y2_m
                     ):
                         continue
-                    # Extract 2D rotation from aerial-to-odom transform
-                    # (ground segments are in the odom frame, not the camera frame)
+                elif mode == "vpr":
+                    if (i_a, j_a) not in vpr_top_k_sets.get(ground_key, set()):
+                        continue
+                # mode == "all": no filtering
+
+                # --- Compute GT-derived quantities if GT is available ---
+                if ground_pose_gt is not None:
+                    T_aerial_camera = np.linalg.inv(aerial_sm_j.pose) @ ground_pose_gt
                     T_aerial_odom = T_aerial_camera @ np.linalg.inv(
                         T_ground_odom_ground_robot
                     )
@@ -1344,12 +1369,22 @@ def cross_view_matching(
     pipeline_params.output_directory = output_dir
     segment_match_params = SegmentMatchParams.load(params)
     segment_match_params.dim = 2
+
+    try:
+        pr_params = CrossViewPlaceRecognitionParams.load(params)
+    except Exception:
+        pr_params = None
+    if pr_params is None and pipeline_params.matching_mode == "vpr":
+        pr_params = CrossViewPlaceRecognitionParams()
+    place_recognition = CrossViewPlaceRecognition(pr_params) if pr_params else None
+
     runner = CrossViewMatching(
         pipeline_params=pipeline_params,
         matcher=SegmentMatcher(segment_match_params),
         registerer=Registerer(RegisterParams.load(params)),
         aerial_segmenter=AerialSegmenter(AerialSegmenterParams.load(params)),
         ground_submap_params=SubmapParams.load(params),
+        place_recognition=place_recognition,
     )
     initial_aerial_segments = None
     initial_ground_segments = None
@@ -1379,15 +1414,7 @@ def cross_view_matching(
     # Extract ground segments
     if not skip_ground:
         ground_map = data.ground_map
-        try:
-            pr_params = CrossViewPlaceRecognitionParams.load(params)
-            ground_descriptor_dist_m = pr_params.ground_descriptor_dist_m
-        except Exception:
-            ground_descriptor_dist_m = None
-        ground_submaps = runner.ground_map_to_submaps(
-            ground_map,
-            ground_descriptor_dist_m=ground_descriptor_dist_m,
-        )
+        ground_submaps = runner.ground_map_to_submaps(ground_map)
         initial_ground_submaps = runner.batch_ground_to_sparse_2d_submaps(
             ground_submaps, ground_output_dir
         )
