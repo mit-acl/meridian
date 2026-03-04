@@ -35,6 +35,8 @@ class CrossViewRPGOParams(ParamsBase):
     prior_trans_sigma_m: float = 5.0
     prior_rot_sigma_deg: float = 10.0
 
+    rerun_match_with_known_rot: bool = True
+
     @property
     def rot_consistency_sigma_rad(self) -> float:
         return np.deg2rad(self.rot_consistency_sigma_deg)

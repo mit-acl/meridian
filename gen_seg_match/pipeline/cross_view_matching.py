@@ -6,25 +6,10 @@ import cv2 as cv
 import os
 import argparse
 import pathlib
-from tqdm import tqdm
 import matplotlib.pyplot as plt
 import pickle
-from copy import deepcopy
 import shutil
-import circle_fit
-import robotdatapy as rdp
 
-from roman.map.fastsam_wrapper import FastSAMWrapper
-from roman.params.fastsam_params import FastSAMParams
-from roman.map.map import ROMANMap
-
-from gen_seg_match.map3d.map import SegmentMap
-from gen_seg_match.segment.segment_types import SegmentList
-from gen_seg_match.match.segment_matcher import SegmentMatcher
-from gen_seg_match.register.registerer import (
-    Registerer,
-    InsufficientAssociationsException,
-)
 from gen_seg_match.params import (
     SegmentMatchParams,
     CrossViewMatchingParams,
@@ -32,327 +17,52 @@ from gen_seg_match.params import (
     CrossViewPlaceRecognitionParams,
     AerialSegmenterParams,
     SubmapParams,
-    GroundSegmenterParams,
     RegisterParams,
-    DenseToSparseParams,
 )
 from gen_seg_match.cross_view.place_recognition import CrossViewPlaceRecognition
-from gen_seg_match.viz.utils import color_from_seed
-from gen_seg_match.viz.img_sparse_viz import img_sparse_viz
 from gen_seg_match.pipeline.data import CrossViewLocalizationData
-from gen_seg_match.pipeline.result import (
-    PoseEstimationResultMatrix,
-    PoseEstimationResult,
-)
 from gen_seg_match.utils import expandvars_recursive
 from gen_seg_match.map2d.aerial_segmenter import AerialSegmenter
-from gen_seg_match.map2d.ground_segmenter import GroundSegmenter
-from gen_seg_match.map2d.map_processing import clean_up_line_map, split_long_lines
-from gen_seg_match.segment.aerial_segment import AerialSegment
-from gen_seg_match.segment.segment_types import SegmentPoint, SegmentLine, DenseSegment
+from gen_seg_match.match.segment_matcher import SegmentMatcher
+from gen_seg_match.register.registerer import Registerer
 from gen_seg_match.map3d.submap import Submap
-from gen_seg_match.map3d.dense_to_sparse_converter import DenseToSparseConverter
-from gen_seg_match.viz.cross_view_viz import viz_cross_view_matches
-from gen_seg_match.map3d.submap import FrameType
+from gen_seg_match.viz.cross_view_viz import (
+    viz_cross_view_matches,
+    viz_aerial_segments,
+    viz_general_segments_img,
+    viz_ground_segments,
+    viz_pose_on_aerial_crop,
+    downsample_to_target_size,
+)
+
+# Re-export algorithm class for backward compatibility
+from gen_seg_match.cross_view.matching import (  # noqa: F401
+    CrossViewMatching,
+    CrossViewMatchResult,
+    SingleMatchResult,
+    AerialSegmentationResult,
+    GroundSegmentationResult,
+)
 
 Crop = Tuple[int, int, int, int]
 
 
-def _convert_long_lines_to_infinite(segments: SegmentList, threshold: float):
-    """Convert lines longer than threshold to infinite lines (no endpoints)."""
-    if threshold is None:
-        return
-    for seg in segments.get_lines():
-        if seg.get_length() > threshold:
-            seg.endpoints = (None, None)
+# ---------------------------------------------------------------------------
+# CrossViewMatchingPipeline — thin I/O wrapper
+# ---------------------------------------------------------------------------
 
 
 @dataclass
-class CrossViewMatching:
-    pipeline_params: CrossViewMatchingParams
-    aerial_segmenter: AerialSegmenter
-    matcher: SegmentMatcher
-    registerer: Registerer
-    ground_submap_params: SubmapParams = None
-    ground_segmenter: GroundSegmenter = None
-    place_recognition: CrossViewPlaceRecognition = None
+class CrossViewMatchingPipeline:
+    algorithm: CrossViewMatching
 
-    def __post_init__(self):
-        if self.ground_segmenter is None:
-            self.ground_segmenter = GroundSegmenter(GroundSegmenterParams())
-        if self.ground_submap_params is None:
-            self.ground_submap_params = SubmapParams()
-
-    def aerial_img_to_segments(self, img: np.ndarray, crop: Crop = None) -> SegmentList:
-        segments = self.aerial_segmenter.run(img, crop=crop)
-        thresh = self.pipeline_params.aerial_segment_line_rejection_thresh_m
-        if thresh is not None:
-            segments = [
-                seg
-                for seg in segments
-                if not (
-                    seg.obb_extents[0] < thresh[0] and seg.obb_extents[1] > thresh[1]
-                )
-            ]
-        for segment in segments:
-            segment.get_alpha_shape(
-                alpha=self.pipeline_params.alpha_shape_alpha,
-                grid_downsample=self.pipeline_params.alpha_shape_grid_downsample,
-                max_n_pts=self.pipeline_params.alpha_shape_max_n_pts,
-                alpha_ref_size=self.pipeline_params.alpha_shape_ref_size_m,
-            )
-        return segments
-
-    def aerial_segments_to_general_segments(
-        self, segments: List[AerialSegment], crop: Crop = None
-    ) -> SegmentList:
-        # precomputation
-        if crop is not None:
-            x1, y1, x2, y2 = crop
-            pixel_len_m = self.aerial_segmenter.params.pixel_len_m
-            min_dist_m = self.pipeline_params.aerial_min_dist_to_border_m
-            x1_border = x1 * pixel_len_m + min_dist_m
-            y1_border = y1 * pixel_len_m + min_dist_m
-            x2_border = x2 * pixel_len_m - min_dist_m
-            y2_border = y2 * pixel_len_m - min_dist_m
-        else:
-            # No crop --> no border restrictions
-            x1_border = -np.inf
-            y1_border = -np.inf
-            x2_border = np.inf
-            y2_border = np.inf
-
-        pt_within_border = lambda pt: (
-            x1_border <= pt[0] <= x2_border and y1_border <= pt[1] <= y2_border
-        )
-
-        lines = []
-        center_points = []
-        for j, segment in enumerate(segments):
-            if segment.area < self.pipeline_params.min_area_m_sq:
-                continue
-            if (
-                segment.area < self.pipeline_params.point_max_area_m_sq
-                and segment.max_extent < self.pipeline_params.point_max_len_m
-            ):
-                if not pt_within_border(segment.center):
-                    continue
-                center_points.append(
-                    SegmentPoint(
-                        j,
-                        segment.center,
-                        cos_feature=segment.semantic_descriptor,
-                        first_seen=segment.first_seen,
-                        last_seen=segment.last_seen,
-                        history=[segment.id],
-                    )
-                )
-                continue
-            # try:
-            alpha_shape = segment.get_alpha_shape(
-                grid_downsample=self.pipeline_params.alpha_shape_grid_downsample,
-                alpha=self.pipeline_params.alpha_shape_alpha,
-                max_n_pts=self.pipeline_params.alpha_shape_max_n_pts,
-                alpha_ref_size=self.pipeline_params.alpha_shape_ref_size_m,
-            )
-            if alpha_shape is None:
-                continue
-
-            # Circle check: if segment is small and alpha shape is circular,
-            # classify as a point using the fitted circle center
-            if segment.area < self.pipeline_params.circle_point_max_area:
-                alpha_pts = alpha_shape
-                if np.allclose(alpha_pts[0], alpha_pts[-1]):
-                    alpha_pts = alpha_pts[:-1]
-                if len(alpha_pts) >= 3:
-                    xc, yc, r, s = circle_fit.least_squares_circle(alpha_pts)
-                    if (
-                        r > 0
-                        and s < self.pipeline_params.circle_point_rad_frac_fit_err * r
-                        and r < self.pipeline_params.circle_point_max_rad
-                    ):
-                        center = np.array([xc, yc])
-                        if pt_within_border(center):
-                            center_points.append(
-                                SegmentPoint(
-                                    j,
-                                    center,
-                                    cos_feature=segment.semantic_descriptor,
-                                    first_seen=segment.first_seen,
-                                    last_seen=segment.last_seen,
-                                    history=[segment.id],
-                                )
-                            )
-                        continue
-
-            for i, pt0 in enumerate(alpha_shape):
-                pt1 = alpha_shape[i + 1 if i + 1 < len(alpha_shape) else 0]
-                keep = (
-                    np.linalg.norm(pt1 - pt0) > self.pipeline_params.line_min_length_m
-                )
-                keep &= pt_within_border(pt0) and pt_within_border(pt1)
-                if keep:
-                    line = SegmentLine.from_endpoints(
-                        j,
-                        pt0,
-                        pt1,
-                        cos_feature=segment.semantic_descriptor,
-                        first_seen=segment.first_seen,
-                        last_seen=segment.last_seen,
-                        history=[segment.id],
-                    )
-                    lines.append(line)
-        result = SegmentList(center_points + lines)
-        result.reindex()
-        return result
-
-    def ground_map_to_submaps(
-        self,
-        ground_map: Union[ROMANMap, SegmentMap],
-    ) -> List[Submap]:
-        dense_segments = []
-        for seg in ground_map.segments:
-            dense_segments.append(
-                DenseSegment(
-                    id=seg.id,
-                    dense_points=seg.points,
-                    ratio_feature=DenseToSparseConverter.get_roman_ratio_feature(seg),
-                    cos_feature=seg.semantic_descriptor,
-                    first_seen=seg.first_seen,
-                    last_seen=seg.last_seen,
-                    occluded_points=seg.occluded_points,
-                    history=getattr(seg, "history", []),
-                )
-            )
-
-        dist_m = self.pipeline_params.ground_submap_dist_m
-        rad_m = self.pipeline_params.ground_submap_rad_m
-        time_s = self.pipeline_params.ground_submap_time_s
-
-        # Sample poses along trajectory spaced ground_submap_dist_m apart
-        sampled_indices = []
-        last_position = None
-        for i, pose in enumerate(ground_map.trajectory):
-            position = pose[:3, 3]
-            if (
-                last_position is None
-                or np.linalg.norm(position - last_position) >= dist_m
-            ):
-                sampled_indices.append(i)
-                last_position = position
-
-        # Precompute ground map data for semantic-gem descriptors
-        _attach_gem_descriptors = (
-            self.place_recognition is not None
-            and self.place_recognition.method == "semantic-gem"
-        )
-        if _attach_gem_descriptors:
-            self.place_recognition.precompute_ground_map_data(ground_map)
-
-        # For each sampled pose, collect segments with dense points within radius
-        submaps = []
-        for k, idx in enumerate(sampled_indices):
-            pose = ground_map.trajectory[idx]
-            center = pose[:3, 3]
-            submap_segments = []
-
-            submap_time = ground_map.times[idx]
-
-            for seg in dense_segments:
-                if seg.dense_points is None:
-                    continue
-                # Check temporal overlap: segment must have been seen
-                # within time_s of the submap time
-                if seg.first_seen is not None and seg.last_seen is not None:
-                    if seg.first_seen > submap_time + time_s:
-                        continue
-                    if seg.last_seen < submap_time - time_s:
-                        continue
-                dists = np.linalg.norm(seg.dense_points - center, axis=1)
-                mask = dists <= rad_m
-                if not np.any(mask):
-                    continue
-                seg_copy = seg.copy()
-                seg_copy.dense_points = seg.dense_points[mask].copy()
-                seg_copy.point = np.mean(seg_copy.dense_points, axis=0)
-
-                # Filter existing occluded points to within radius,
-                # then remove any whose (x,y) grid cell is occupied by a
-                # regular point — if observed at any z, the 2D projection
-                # is not occluded
-                existing_occ = getattr(seg, "occluded_points", None)
-                if existing_occ is not None and len(existing_occ) > 0:
-                    occ_dists = np.linalg.norm(existing_occ - center, axis=1)
-                    existing_occ = existing_occ[occ_dists <= rad_m]
-                if existing_occ is not None and len(existing_occ) > 0:
-                    grid = self.pipeline_params.occluded_grid_voxel_size_m
-                    dp_xy = np.floor(seg_copy.dense_points[:, :2] / grid).astype(int)
-                    regular_keys = set(map(tuple, dp_xy))
-                    occ_xy = np.floor(existing_occ[:, :2] / grid).astype(int)
-                    occ_keep = np.array([tuple(k) not in regular_keys for k in occ_xy])
-                    existing_occ = existing_occ[occ_keep] if np.any(occ_keep) else None
-
-                # Mark border points near radius cutoff as occluded
-                border_mask = mask & (
-                    dists > rad_m - self.pipeline_params.occluded_radius_thresh_m
-                )
-                border_occluded = seg.dense_points[border_mask].copy()
-
-                all_occluded = [border_occluded]
-                if existing_occ is not None and len(existing_occ) > 0:
-                    all_occluded.append(existing_occ)
-                total = sum(len(a) for a in all_occluded)
-                seg_copy.occluded_points = (
-                    np.concatenate(all_occluded, axis=0) if total > 0 else None
-                )
-
-                if (
-                    len(seg_copy.dense_points)
-                    >= self.pipeline_params.segment_min_points
-                ):
-                    submap_segments.append(seg_copy)
-
-            if len(submap_segments) == 0:
-                continue
-
-            # Attach semantic-gem descriptors if available
-            submap_descriptor = None
-            if _attach_gem_descriptors:
-                submap_descriptor = self.place_recognition.ground_descriptor(
-                    None, submap_segments=submap_segments
-                )
-
-            submap = Submap(
-                id=k,
-                time=ground_map.times[idx],
-                segments=SegmentList(submap_segments),
-                pose=pose,
-                segment_frame=FrameType.CAMERA,
-                descriptor=submap_descriptor,
-            )
-
-            # Transform segments from odom frame to submap-local frame
-            T_submap_odom = np.linalg.inv(submap.pose)
-            for seg in submap.segments:
-                seg.transform(T_submap_odom)
-
-            submaps.append(submap)
-
-        return submaps
+    # ------------------------------------------------------------------
+    # Delegated convenience accessors
+    # ------------------------------------------------------------------
 
     def load_submaps_from_dir(
-        self,
-        submap_dir: Union[str, pathlib.Path],
+        self, submap_dir: Union[str, pathlib.Path]
     ) -> Dict[str, Submap]:
-        """
-        Loads segments from a directory.
-
-        Args:
-            submap_dir (Union[str, pathlib.Path]): Directory containing segment files.
-
-        Returns:
-            Dict[str, Submap]: List of extracted segments for each submap
-        """
         submap_dir = pathlib.Path(submap_dir)
         segment_files = list(submap_dir.glob("*.pkl"))
         segment_files.sort()
@@ -362,416 +72,243 @@ class CrossViewMatching:
             results[segment_file.stem] = submap
         return results
 
-    def batch_aerial_img_to_segments(
+    # ------------------------------------------------------------------
+    # Aerial segmentation with I/O
+    # ------------------------------------------------------------------
+
+    def run_aerial(
         self,
         img: np.ndarray,
-        output_dir: Union[str, pathlib.Path] = None,
+        output_dir: Union[str, pathlib.Path],
         img_origin: np.ndarray = None,
-    ) -> Dict[Crop, SegmentList]:
-        """
-        Batch process of an aerial image. Splits the image into patches,
-            processes each patch to extract fine-grained segments, and combines the results.
-            If output_dir is provided, saves visualizations of the segments.
-
-        Args:
-            img (np.ndarray): Aerial image
-
-        Returns:
-            Dict[Crop, SegmentList]: Aerial image crop to extracted fine-grained segments
-        """
-
-        # iterate over the images with patch size and overlap
-        # defined from pipeline_params
-        h, w = img.shape[:2]
-        px_per_m = 1.0 / self.aerial_segmenter.params.pixel_len_m
-
-        patch_size_m = self.pipeline_params.aerial_img_patch_side_len_m
-        patch_size_px = int(patch_size_m * px_per_m)
-
-        overlap = self.pipeline_params.aerial_img_patch_overlap
-        stride = int(patch_size_px * (1.0 - overlap))
-
-        if stride <= 0:
-            raise ValueError("Patch overlap too large; stride becomes non-positive.")
-
-        if output_dir is not None:
-            output_dir = pathlib.Path(output_dir)
-            viz_output_dir = output_dir / "viz"
-            segment_output_dir = output_dir / "segments"
-            viz_output_dir.mkdir(parents=True, exist_ok=True)
-            segment_output_dir.mkdir(parents=True, exist_ok=True)
-
-        pose_flu = np.eye(4)
-        pose_flu[:3, :3] = np.array(
-            [
-                [1, 0, 0],
-                [0, -1, 0],
-                [0, 0, -1],
-            ],
-            dtype=float,
+    ) -> Dict[Crop, Submap]:
+        result = self.algorithm.batch_aerial_img_to_segments(
+            img, img_origin, return_intermediates=True
         )
-        if img_origin is not None:
-            pose_flu[0, 3] = img_origin[0]
-            pose_flu[1, 3] = img_origin[1]
+        self._save_aerial_results(result, output_dir)
+        return result.submaps
 
-        results: Dict[Crop, Submap] = {}
+    def _save_aerial_results(
+        self, result: AerialSegmentationResult, output_dir
+    ):
+        output_dir = pathlib.Path(output_dir)
+        viz_output_dir = output_dir / "viz"
+        segment_output_dir = output_dir / "segments"
+        viz_output_dir.mkdir(parents=True, exist_ok=True)
+        segment_output_dir.mkdir(parents=True, exist_ok=True)
 
-        # ------------------------------------------------------
-        # Patch iteration
-        # ------------------------------------------------------
-        for j, y1 in enumerate(tqdm(range(0, h - patch_size_px + 1, stride))):
-            for i, x1 in enumerate(range(0, w - patch_size_px + 1, stride)):
-                x2 = x1 + patch_size_px
-                y2 = y1 + patch_size_px
-                crop = (x1, y1, x2, y2)
+        params = self.algorithm.pipeline_params
+        pixel_len_m = self.algorithm.aerial_segmenter.params.pixel_len_m
+        px_per_m = 1.0 / pixel_len_m
 
-                patch_img = img[y1:y2, x1:x2].copy()
+        for crop, submap in result.submaps.items():
+            x1, y1, x2, y2 = crop
+            # Compute i, j from crop coordinates
+            patch_size_px = int(params.aerial_img_patch_side_len_m * px_per_m)
+            stride = int(patch_size_px * (1.0 - params.aerial_img_patch_overlap))
+            i = x1 // stride
+            j = y1 // stride
 
-                # ------------------------------------------------------
-                # 1. Run aerial segmentation (alpha shape computed inside)
-                # ------------------------------------------------------
-                aerial_segments = self.aerial_img_to_segments(img, crop=crop)
+            # Save submap
+            fname_segment = segment_output_dir / f"{i}_{j}.pkl"
+            submap.save(fname_segment)
 
-                # ------------------------------------------------------
-                # 2. Convert to general segments
-                # ------------------------------------------------------
-                general_segments = self.aerial_segments_to_general_segments(
-                    aerial_segments, crop=crop
+            # Save visualizations if intermediates are available
+            if result.intermediates is not None and crop in result.intermediates:
+                intermediates = result.intermediates[crop]
+
+                # Raw AerialSegments overlay
+                aerial_viz = viz_aerial_segments(
+                    intermediates.patch_img,
+                    intermediates.aerial_segments,
+                    crop,
+                    pixel_len_m,
+                    params.alpha_shape_alpha,
+                    params.alpha_shape_grid_downsample,
+                    params.alpha_shape_max_n_pts,
+                    params.alpha_shape_ref_size_m,
+                    params.aerial_viz_downsample,
                 )
-                sparse_general_segments = (
-                    general_segments.get_points()
-                    + clean_up_line_map(
-                        general_segments.get_lines(),
-                        angle_tol=self.pipeline_params.line_merge_ang_thresh_rad,
-                        dist_tol=self.pipeline_params.line_merge_dist_thresh_m,
-                        perp_dist_tol=self.pipeline_params.line_merge_perp_dist_thresh_m,
-                        short_line_thresh=self.pipeline_params.line_merge_short_thresh_m,
-                        semantic_sim_thresh=self.pipeline_params.line_merge_semantic_sim,
-                    )[0]
+                viz_bytes = downsample_to_target_size(
+                    aerial_viz, params.aerial_viz_target_size_kb
                 )
-                _convert_long_lines_to_infinite(
-                    sparse_general_segments,
-                    self.pipeline_params.line_len_to_infinite,
+                fname_aerial = viz_output_dir / f"{i}_{j}_segments.jpg"
+                with open(str(fname_aerial), "wb") as f:
+                    f.write(viz_bytes)
+
+                # GeneralSegments overlay (pre-sparsification)
+                general_viz = viz_general_segments_img(
+                    intermediates.patch_img,
+                    intermediates.general_segments,
+                    crop=crop,
+                    px_per_m=px_per_m,
+                    downsample_factor=params.aerial_viz_downsample,
                 )
-                sparse_general_segments.reindex()
-
-                results[crop] = Submap(
-                    id=(i, j),
-                    time=0.0,
-                    segments=sparse_general_segments,
-                    pose=pose_flu,
-                    segment_frame=FrameType.UTM,
-                    descriptor=None,
-                    metadata={
-                        "crop_center_m": np.array(
-                            [(i + 0.5) * patch_size_m, -(j + 0.5) * patch_size_m]
-                        )
-                    },
+                viz_bytes = downsample_to_target_size(
+                    general_viz, params.aerial_viz_target_size_kb
                 )
+                fname_general = viz_output_dir / f"{i}_{j}_fine.jpg"
+                with open(str(fname_general), "wb") as f:
+                    f.write(viz_bytes)
 
-                # Compute descriptor after submap is created
-                if self.place_recognition is not None:
-                    results[crop].descriptor = self.place_recognition.aerial_descriptor(
-                        results[crop],
-                        aerial_segmenter=self.aerial_segmenter,
-                        img_bgr=img,
-                        crop=crop,
-                    )
+                # Sparse GeneralSegments overlay
+                sparse_general_viz = viz_general_segments_img(
+                    intermediates.patch_img,
+                    submap.segments,
+                    crop=crop,
+                    px_per_m=px_per_m,
+                    downsample_factor=params.aerial_viz_downsample,
+                )
+                viz_bytes = downsample_to_target_size(
+                    sparse_general_viz, params.aerial_viz_target_size_kb
+                )
+                fname_sparse_general = viz_output_dir / f"{i}_{j}_sparse.jpg"
+                with open(str(fname_sparse_general), "wb") as f:
+                    f.write(viz_bytes)
 
-                # ------------------------------------------------------
-                # 3. Visualization and store segments (if output_dir provided)
-                # ------------------------------------------------------
-                if output_dir is not None:
-                    # -------- Save aerial segments --------
-                    fname_segment = segment_output_dir / f"{i}_{j}.pkl"
-                    results[crop].save(fname_segment)
+    # ------------------------------------------------------------------
+    # Ground segmentation with I/O
+    # ------------------------------------------------------------------
 
-                    # -------- Raw AerialSegments overlay --------
-                    aerial_viz = self._viz_aerial_segments(
-                        patch_img, aerial_segments, crop
-                    )
-                    viz_bytes = self._downsample_to_target_size(
-                        aerial_viz, self.pipeline_params.aerial_viz_target_size_kb
-                    )
-                    fname_aerial = viz_output_dir / f"{i}_{j}_segments.jpg"
-                    with open(str(fname_aerial), "wb") as f:
-                        f.write(viz_bytes)
-
-                    # -------- GeneralSegments overlay --------
-                    general_viz = self._viz_general_segments_img(
-                        patch_img, general_segments, crop=crop
-                    )
-                    viz_bytes = self._downsample_to_target_size(
-                        general_viz, self.pipeline_params.aerial_viz_target_size_kb
-                    )
-                    fname_general = viz_output_dir / f"{i}_{j}_fine.jpg"
-                    with open(str(fname_general), "wb") as f:
-                        f.write(viz_bytes)
-
-                    # --------- Sparse GeneralSegments overlay --------
-                    sparse_general_viz = self._viz_general_segments_img(
-                        patch_img, sparse_general_segments, crop=crop
-                    )
-                    viz_bytes = self._downsample_to_target_size(
-                        sparse_general_viz,
-                        self.pipeline_params.aerial_viz_target_size_kb,
-                    )
-                    fname_sparse_general = viz_output_dir / f"{i}_{j}_sparse.jpg"
-                    with open(str(fname_sparse_general), "wb") as f:
-                        f.write(viz_bytes)
-
-        return results
-
-    def batch_ground_to_sparse_2d_submaps(
-        self, submaps: List[Submap], output_dir: Union[str, pathlib.Path] = None
+    def run_ground(
+        self,
+        submaps: List[Submap],
+        output_dir: Union[str, pathlib.Path],
     ) -> List[Submap]:
-        """
-        Batch process of ground submaps. For each submap, creates a 2D aerial segments
-            and if an output_dir is provided, saves visualizations of the segments.
+        result = self.algorithm.batch_ground_to_sparse_2d_submaps(
+            submaps, return_intermediates=True
+        )
+        self._save_ground_results(result, output_dir)
+        return result.submaps
 
-        Args:
-            submaps (List[Submap]): List of ground submaps
-            output_dir (Union[str, pathlib.Path], optional): Directory to save visualizations. Defaults to None.
+    def _save_ground_results(
+        self, result: GroundSegmentationResult, output_dir
+    ):
+        output_dir = pathlib.Path(output_dir)
+        viz_output_dir = output_dir / "viz"
+        segment_output_dir = output_dir / "segments"
+        viz_output_dir.mkdir(parents=True, exist_ok=True)
+        segment_output_dir.mkdir(parents=True, exist_ok=True)
 
-        Returns:
-            List[Submap]: List of extracted fine-grained segments for each submap
-        """
-        results = []
+        params = self.algorithm.pipeline_params
 
-        if output_dir is not None:
-            output_dir = pathlib.Path(output_dir)
-            viz_output_dir = output_dir / "viz"
-            segment_output_dir = output_dir / "segments"
-            viz_output_dir.mkdir(parents=True, exist_ok=True)
-            segment_output_dir.mkdir(parents=True, exist_ok=True)
+        for k, submap_2d in enumerate(result.submaps):
+            # Save submap
+            fname_segment = segment_output_dir / f"{k}.pkl"
+            submap_2d.save(fname_segment)
 
-        for k, submap in enumerate(tqdm(submaps)):
-            # first transform the submap from submap frame to 3D odometry for now
-            assert submap.segment_frame == FrameType.CAMERA, (
-                f"Expected submap segments in CAMERA frame, but got {submap.segment_frame}"
-            )
-            submap.segments.transform(submap.pose)
-
-            flattened_submap = self.ground_segmenter.flatten_3d_submap(submap)
-            aerial_segments = self.ground_segmenter.submap_2d_to_aerial(
-                flattened_submap
-            )
-            aerial_segments = [
-                seg
-                for seg in aerial_segments
-                if seg.get_alpha_shape(
-                    alpha=self.pipeline_params.alpha_shape_alpha,
-                    grid_downsample=self.pipeline_params.alpha_shape_grid_downsample,
-                    max_n_pts=self.pipeline_params.alpha_shape_max_n_pts,
-                    alpha_ref_size=self.pipeline_params.alpha_shape_ref_size_m,
-                )
-                is not None
-            ]
-            general_segments = self.aerial_segments_to_general_segments(aerial_segments)
-            sparse_general_segments = (
-                general_segments.get_points()
-                + clean_up_line_map(
-                    general_segments.get_lines(),
-                    angle_tol=self.pipeline_params.line_merge_ang_thresh_rad,
-                    dist_tol=self.pipeline_params.line_merge_dist_thresh_m,
-                    perp_dist_tol=self.pipeline_params.line_merge_perp_dist_thresh_m,
-                    short_line_thresh=self.pipeline_params.line_merge_short_thresh_m,
-                    semantic_sim_thresh=self.pipeline_params.line_merge_semantic_sim,
-                )[0]
-            )
-            # Remove lines that are FOV border artifacts
-            valid_lines = SegmentList()
-            for line in sparse_general_segments.get_lines():
-                parent_id = line.history[0] if line.history else None
-                parent_seg = (
-                    flattened_submap.segments.get_segment_from_id(parent_id)
-                    if parent_id is not None
-                    else None
-                )
-                if parent_seg is None or self._line_is_valid(line, parent_seg):
-                    valid_lines.append(line)
-            sparse_general_segments = sparse_general_segments.get_points() + valid_lines
-
-            _convert_long_lines_to_infinite(
-                sparse_general_segments,
-                self.pipeline_params.line_len_to_infinite,
-            )
-
-            sparse_general_segments.reindex()
-            for seg in sparse_general_segments:
-                history_heights = [
-                    submap.segments.get_segment_from_id(id_hist).point.item(2)
-                    for id_hist in seg.history
-                ]
-                seg.height = np.mean(history_heights)
-            # For semantic-point-line, compute descriptor from point/line segments
-            ground_descriptor = submap.descriptor
-            if (
-                self.place_recognition is not None
-                and self.place_recognition.method == "semantic-point-line"
-            ):
-                ground_descriptor = self.place_recognition.ground_descriptor(
-                    None, submap_segments=sparse_general_segments
-                )
-
-            submap_2d = Submap(
-                id=k,
-                time=submap.time,
-                segments=sparse_general_segments,
-                pose=np.eye(4),
-                segment_frame=FrameType.ODOMETRY,
-                descriptor=ground_descriptor,
-                metadata={"camera_pose": submap.pose},
-            )
-            results.append(submap_2d)
-
-            if output_dir is not None:
-                # -------- Save aerial segments --------
-                fname_segment = segment_output_dir / f"{k}.pkl"
-                submap_2d.save(fname_segment)
-
-                # -------- Save per-segment dense 2D points --------
+            # Save per-segment dense 2D points
+            if result.intermediates is not None:
+                intermediates = result.intermediates[k]
                 dense_dir = segment_output_dir / f"{k}_dense"
                 dense_dir.mkdir(parents=True, exist_ok=True)
-                for aerial_seg in aerial_segments:
+                for aerial_seg in intermediates.aerial_segments:
                     dense_path = dense_dir / f"{aerial_seg.id}.pkl"
                     pts = aerial_seg.points
-                    max_n = self.pipeline_params.dense_points_max_n
+                    max_n = params.dense_points_max_n
                     if max_n is not None and len(pts) > max_n:
-                        idx = np.round(np.linspace(0, len(pts) - 1, max_n)).astype(int)
+                        idx = np.round(
+                            np.linspace(0, len(pts) - 1, max_n)
+                        ).astype(int)
                         pts = pts[idx]
                     with open(dense_path, "wb") as f:
                         pickle.dump(pts, f)
 
-                # -------- GeneralSegments overlay --------
-                fig, ax = self._viz_ground_segments(
-                    flattened_submap,
-                    aerial_segments,
-                    general_segments,
-                    sparse_general_segments,
+                # Save visualization
+                fig, ax = viz_ground_segments(
+                    intermediates.flattened_submap,
+                    intermediates.aerial_segments,
+                    intermediates.general_segments,
+                    submap_2d.segments,
+                    params.alpha_shape_alpha,
+                    params.alpha_shape_grid_downsample,
+                    params.alpha_shape_max_n_pts,
+                    params.alpha_shape_ref_size_m,
                 )
                 fname_general = viz_output_dir / f"{k}.png"
                 fig.savefig(fname_general, dpi=400)
+                plt.close(fig)
 
-        return results
+    # ------------------------------------------------------------------
+    # Cross-view matching with I/O
+    # ------------------------------------------------------------------
 
-    def batch_cross_view_match(
+    def run_match(
         self,
         aerial_submaps: Dict[str, Submap],
         ground_submaps: Dict[str, Submap],
-        ground_gt_pose: rdp.data.PoseData = None,
+        reference_trajectory=None,
         output_dir: Union[str, pathlib.Path] = None,
         aerial_img: np.ndarray = None,
         T_camera_flu: np.ndarray = None,
-    ) -> None:
-        """
-        Batch process of cross-view segment matching. For each aerial image crop and ground submap,
-            matches segments and if an output_dir is provided, saves visualizations of the matches.
+        matching_mode: str = None,
+        translation_only: bool = None,
+        ground_dense_dir: pathlib.Path = None,
+    ) -> CrossViewMatchResult:
+        mode = matching_mode or self.algorithm.pipeline_params.matching_mode
+        if mode == "max_intersection":
+            match_result = self.algorithm.cross_view_match_max_intersection(
+                aerial_submaps,
+                ground_submaps,
+                reference_trajectory,
+                T_camera_flu,
+                translation_only,
+            )
+        else:
+            match_result = self.algorithm.cross_view_match(
+                aerial_submaps,
+                ground_submaps,
+                reference_trajectory,
+                T_camera_flu,
+                matching_mode,
+                translation_only,
+            )
+        if output_dir is not None:
+            self._save_match_results(
+                match_result,
+                output_dir,
+                aerial_img,
+                aerial_submaps,
+                ground_submaps,
+                ground_dense_dir,
+            )
+        return match_result
 
-        Args:
-            aerial_submaps (Dict[str, Submap]): Aerial image name to extracted segments
-            ground_submaps (Dict[str, Submap]): Ground image name to extracted segments
-            ground_gt_pose (rdp.data.PoseData, optional): Ground truth ground poses. Defaults to None.
-            output_dir (Union[str, pathlib.Path], optional): Directory to save visualizations. Defaults to None.
-        """
-        assert output_dir is not None, (
-            "Output directory must be provided for match visualization."
-        )
-
+    def _save_match_results(
+        self,
+        match_result: CrossViewMatchResult,
+        output_dir,
+        aerial_img: np.ndarray,
+        aerial_submaps: Dict[str, Submap],
+        ground_submaps: Dict[str, Submap],
+        ground_dense_dir: pathlib.Path = None,
+    ):
         output_dir = pathlib.Path(output_dir)
         viz_output_dir = output_dir / "viz"
         viz_output_dir.mkdir(parents=True, exist_ok=True)
         segments_output_dir = output_dir / "segments"
         segments_output_dir.mkdir(parents=True, exist_ok=True)
 
-        aerial_key_to_tuple = lambda key: tuple(int(x) for x in key.split("_"))
-        aerial_x_max = np.max(
-            [aerial_key_to_tuple(key)[0] for key in aerial_submaps.keys()]
-        )
-        aerial_y_max = np.max(
-            [aerial_key_to_tuple(key)[1] for key in aerial_submaps.keys()]
-        )
-
-        # minor processing on segments
-        # TODO: put to 3d (dim = 3) and filter by length
-        aerial_submaps_2d: Dict[str, Submap] = {}
-        ground_submaps_2d: Dict[str, Submap] = {}
-        for submaps_2d_dict, original_submaps_dict in [
-            (aerial_submaps_2d, aerial_submaps),
-            (ground_submaps_2d, ground_submaps),
-        ]:
-            for key, submap in original_submaps_dict.items():
-                segments_2d = submap.segments.to_dim(2)
-                filtered_lines = [
-                    line
-                    for line in segments_2d.get_lines()
-                    if line.get_length() >= self.pipeline_params.match_min_len_m
-                ]
-                segments_2d = segments_2d.get_points() + SegmentList(filtered_lines)
-                submaps_2d_dict[key] = deepcopy(submap)
-                submaps_2d_dict[key].segments = segments_2d
-
-        # make sure to transfer height (TODO: figure out how to handle this cleanly)
-        for ground_key in ground_submaps_2d.keys():
-            for segment in ground_submaps_2d[ground_key].segments:
-                segment.height = (
-                    ground_submaps[ground_key]
-                    .segments.get_segment_from_id(segment.id)
-                    .height
-                )
-
-        # precompute crop geometry (from params, independent of aerial_img)
-        pixel_len_m = self.aerial_segmenter.params.pixel_len_m
+        params = self.algorithm.pipeline_params
+        pixel_len_m = self.algorithm.aerial_segmenter.params.pixel_len_m
         px_per_m = 1.0 / pixel_len_m
-        patch_size_px = int(self.pipeline_params.aerial_img_patch_side_len_m * px_per_m)
-        stride = int(
-            patch_size_px * (1.0 - self.pipeline_params.aerial_img_patch_overlap)
-        )
-        stride_m = stride * pixel_len_m
-        patch_size_m_px = patch_size_px * pixel_len_m
+        patch_size_px = int(params.aerial_img_patch_side_len_m * px_per_m)
+        stride = int(patch_size_px * (1.0 - params.aerial_img_patch_overlap))
 
-        # Precompute VPR top-k patches if needed
-        need_vpr = self.pipeline_params.matching_mode == "vpr" or (
-            self.pipeline_params.matching_mode == "gt" and ground_gt_pose is None
-        )
-        vpr_top_k_sets = {}
-        if need_vpr:
-            assert self.place_recognition is not None, (
-                "VPR mode requires place_recognition to be configured"
-            )
-            sim_matrix, ground_keys_sorted, aerial_keys_sorted = (
-                self.place_recognition.compute_similarity_matrix(
-                    ground_submaps, aerial_submaps
-                )
-            )
-            from gen_seg_match.pipeline.cross_view_place_recognition import (
-                CrossViewPlaceRecognitionPipeline,
-            )
+        def aerial_key_to_tuple(key):
+            return tuple(int(x) for x in key.split("_"))
 
-            vpr_top_k = CrossViewPlaceRecognitionPipeline.compute_top_k_patches(
-                sim_matrix,
-                ground_keys_sorted,
-                aerial_keys_sorted,
-                self.place_recognition.params.k_nearest_neighbors,
-            )
-            vpr_top_k_sets = {gk: set(patches) for gk, patches in vpr_top_k.items()}
-
-        # iterate over all aerial crops and ground submaps
-        all_results = {}  # ground_key -> PoseEstimationResultMatrix
-        for ground_key, ground_sm_i in tqdm(ground_submaps_2d.items()):
-            results_matrix = PoseEstimationResultMatrix(
-                (aerial_x_max + 1, aerial_y_max + 1)
-            )
+        for ground_key, results_matrix in match_result.results.items():
             ground_sub_dir = viz_output_dir / f"ground_{ground_key}"
             ground_sub_dir.mkdir(parents=True, exist_ok=True)
 
             # Load per-segment dense 2D points for this ground submap
-            dense_dir = (
-                pathlib.Path(output_dir).parent
-                / "ground"
-                / "segments"
-                / f"{ground_key}_dense"
-            )
+            if ground_dense_dir is not None:
+                dense_dir = pathlib.Path(ground_dense_dir) / f"{ground_key}_dense"
+            else:
+                dense_dir = (
+                    output_dir.parent / "ground" / "segments" / f"{ground_key}_dense"
+                )
             dense_points_by_id = {}
             if dense_dir.exists():
                 for dense_file in dense_dir.glob("*.pkl"):
@@ -779,132 +316,16 @@ class CrossViewMatching:
                     with open(dense_file, "rb") as f:
                         dense_points_by_id[seg_id] = pickle.load(f)
 
-            ground_pose_gt = None
-            if ground_gt_pose is not None:
-                ground_pose_gt = ground_gt_pose.pose(ground_submaps[ground_key].time)
-            T_ground_odom_ground_robot = ground_sm_i.metadata["camera_pose"]
+            details = match_result.match_details.get(ground_key, {})
 
-            for aerial_key, aerial_sm_j in aerial_submaps_2d.items():
+            for aerial_key, single_result in details.items():
                 i_a, j_a = aerial_key_to_tuple(aerial_key)
+                result = single_result.pose_result
 
-                # --- Mode-based filtering ---
-                mode = self.pipeline_params.matching_mode
-                if mode == "gt" and ground_pose_gt is None:
-                    mode = "vpr"
-
-                if mode == "gt":
-                    T_aerial_camera = np.linalg.inv(aerial_sm_j.pose) @ ground_pose_gt
-                    ground_pos_aerial = T_aerial_camera[:2, 3]
-                    x1_m = i_a * stride_m
-                    y1_m = j_a * stride_m
-                    x2_m = x1_m + patch_size_m_px
-                    y2_m = y1_m + patch_size_m_px
-                    if not (
-                        x1_m <= ground_pos_aerial[0] <= x2_m
-                        and y1_m <= ground_pos_aerial[1] <= y2_m
-                    ):
-                        continue
-                elif mode == "vpr":
-                    if (i_a, j_a) not in vpr_top_k_sets.get(ground_key, set()):
-                        continue
-                # mode == "all": no filtering
-
-                # --- Compute GT-derived quantities if GT is available ---
-                if ground_pose_gt is not None:
-                    T_aerial_camera = np.linalg.inv(aerial_sm_j.pose) @ ground_pose_gt
-                    T_aerial_odom = T_aerial_camera @ np.linalg.inv(
-                        T_ground_odom_ground_robot
-                    )
-                    R_aerial_ground_2d = T_aerial_odom[:2, :2]
-                    if T_camera_flu is not None:
-                        T_aerial_ground = T_aerial_camera @ T_camera_flu
-                    else:
-                        T_aerial_ground = T_aerial_camera
-                else:
-                    T_aerial_ground = np.zeros((4, 4)) * np.nan
-                    R_aerial_ground_2d = None
-
-                # split long lines before matching
-                ground_segs_i = ground_sm_i.segments.get_points() + split_long_lines(
-                    ground_sm_i.segments.get_lines(),
-                    max_length=self.pipeline_params.line_split_length_m,
-                )
-                ground_segs_i.reindex()
-                aerial_segs_j = aerial_sm_j.segments.get_points() + split_long_lines(
-                    aerial_sm_j.segments.get_lines(),
-                    max_length=self.pipeline_params.line_split_length_m,
-                )
-                aerial_segs_j.reindex()
-
-                if self.pipeline_params.points_only:
-                    ground_segs_i = ground_segs_i.get_points()
-                    aerial_segs_j = aerial_segs_j.get_points()
-                elif self.pipeline_params.lines_only:
-                    ground_segs_i = ground_segs_i.get_lines()
-                    aerial_segs_j = aerial_segs_j.get_lines()
-
-                match_kwargs = {}
-                if (
-                    self.pipeline_params.translation_only
-                    and R_aerial_ground_2d is not None
-                ):
-                    # Apply rotation perturbation if configured
-                    noise_deg = self.pipeline_params.rot_bias_deg
-                    lo, hi = self.pipeline_params.uniform_rot_noise_bounds_deg
-                    if lo != 0.0 or hi != 0.0:
-                        noise_deg += np.random.uniform(lo, hi)
-                    if noise_deg != 0.0:
-                        noise_rad = np.deg2rad(noise_deg)
-                        R_noise = np.array(
-                            [
-                                [np.cos(noise_rad), -np.sin(noise_rad)],
-                                [np.sin(noise_rad), np.cos(noise_rad)],
-                            ]
-                        )
-                        R_aerial_ground_2d = R_noise @ R_aerial_ground_2d
-
-                    # Aerial is axis-aligned
-                    match_kwargs["global_x_dir1"] = np.array([1.0, 0.0])
-                    match_kwargs["global_y_dir1"] = np.array([0.0, 1.0])
-                    # Ground dirs from (possibly perturbed) rotation
-                    match_kwargs["global_x_dir2"] = R_aerial_ground_2d[:, 0]
-                    match_kwargs["global_y_dir2"] = R_aerial_ground_2d[:, 1]
-
-                matches = self.matcher.match(
-                    aerial_segs_j,
-                    ground_segs_i,
-                    **match_kwargs,
-                )
-                try:
-                    T_aerial_ground_odom_hat = self.registerer.register(
-                        aerial_segs_j.to_dim(3),
-                        ground_segs_i.to_dim(3),
-                        correspondences=matches,
-                    ).transformation
-                    T_aerial_ground_hat = (
-                        T_aerial_ground_odom_hat @ T_ground_odom_ground_robot
-                    )
-                    if T_camera_flu is not None:
-                        T_aerial_ground_hat = T_aerial_ground_hat @ T_camera_flu
-                except InsufficientAssociationsException:
-                    T_aerial_ground_hat = np.zeros((4, 4)) * np.nan
-
-                # no z component estimated
-                T_aerial_ground[2, 3] = 0.0
-                if not np.any(np.isnan(T_aerial_ground_hat)):
-                    T_aerial_ground_hat[2, 3] = 0.0
-
-                result = PoseEstimationResult(
-                    T_i_j_hat=T_aerial_ground_hat,
-                    T_i_j=T_aerial_ground,
-                    associations=matches,
-                )
-
-                # -------- Match visualization --------
+                # Match visualization
                 aerial_crop = None
                 aerial_origin_m = None
                 if aerial_img is not None:
-                    i_a, j_a = aerial_key_to_tuple(aerial_key)
                     x1_a = i_a * stride
                     y1_a = j_a * stride
                     aerial_crop = aerial_img[
@@ -913,12 +334,18 @@ class CrossViewMatching:
                     ].copy()
                     aerial_origin_m = (x1_a / px_per_m, y1_a / px_per_m)
 
+                # Get ground submap's full segments for dense viz
+                ground_segments_all = None
+                if ground_key in ground_submaps:
+
+                    ground_segments_all = ground_submaps[ground_key].segments
+
                 viz_cross_view_matches(
-                    aerial_segs_j,
-                    ground_segs_i,
-                    matches,
+                    single_result.aerial_segs_processed,
+                    single_result.ground_segs_processed,
+                    result.associations,
                     aerial_crop=aerial_crop,
-                    ground_segments_all=ground_sm_i.segments,
+                    ground_segments_all=ground_segments_all,
                     dense_points_by_id=dense_points_by_id,
                     px_per_m=px_per_m,
                     aerial_origin_m=aerial_origin_m,
@@ -931,27 +358,33 @@ class CrossViewMatching:
                 img_array = cv.imdecode(
                     np.frombuffer(buf.getvalue(), dtype=np.uint8), cv.IMREAD_COLOR
                 )
-                viz_bytes = self._downsample_to_target_size(
-                    img_array, self.pipeline_params.match_viz_target_size_kb
+                viz_bytes = downsample_to_target_size(
+                    img_array, params.match_viz_target_size_kb
                 )
                 fname_viz = (
-                    ground_sub_dir / f"ground_{ground_key}_aerial_{aerial_key}.jpg"
+                    ground_sub_dir
+                    / f"ground_{ground_key}_aerial_{aerial_key}.jpg"
                 )
                 with open(fname_viz, "wb") as f:
                     f.write(viz_bytes)
 
-                # -------- Pose on aerial crop visualization --------
-                if aerial_img is not None and ground_pose_gt is not None:
-                    i, j = aerial_key_to_tuple(aerial_key)
-                    x1 = i * stride
-                    y1 = j * stride
+                # Pose on aerial crop visualization
+                if aerial_img is not None and not np.any(np.isnan(result.T_i_j)):
+                    x1 = i_a * stride
+                    y1 = j_a * stride
                     T_est_for_viz = (
-                        T_aerial_ground_hat
-                        if not np.any(np.isnan(T_aerial_ground_hat))
+                        result.T_i_j_hat
+                        if not np.any(np.isnan(result.T_i_j_hat))
                         else None
                     )
-                    viz_bytes = self._viz_pose_on_aerial_crop(
-                        aerial_img, (x1, y1), T_aerial_ground, T_est_for_viz
+                    viz_bytes = viz_pose_on_aerial_crop(
+                        aerial_img,
+                        (x1, y1),
+                        result.T_i_j,
+                        px_per_m,
+                        patch_size_px,
+                        T_est_for_viz,
+                        params.aerial_viz_target_size_kb,
                     )
                     fname_pose = (
                         ground_sub_dir
@@ -960,40 +393,36 @@ class CrossViewMatching:
                     with open(fname_pose, "wb") as f:
                         f.write(viz_bytes)
 
-                results_matrix[*aerial_key_to_tuple(aerial_key)] = result
-
-                # -------- Save matches --------
-                matched_ground = SegmentList(
-                    [ground_segs_i.get_segment_from_id(g_id) for g_id, _ in matches]
-                )
-                matched_aerial = SegmentList(
-                    [aerial_segs_j.get_segment_from_id(a_id) for _, a_id in matches]
-                )
+                # Save matched segments
                 fname_matches = (
-                    segments_output_dir / f"ground_{ground_key}_aerial_{aerial_key}.pkl"
+                    segments_output_dir
+                    / f"ground_{ground_key}_aerial_{aerial_key}.pkl"
                 )
                 with open(fname_matches, "wb") as f:
-                    pickle.dump([matched_ground, matched_aerial], f)
+                    pickle.dump(
+                        [single_result.matched_ground, single_result.matched_aerial],
+                        f,
+                    )
 
-            # Save number of associations heatmap
+            # Save results matrix and heatmap
             results_matrix.save(
                 segments_output_dir / f"ground_{ground_key}_results_matrix.pkl"
             )
             results_matrix.plot(
-                dist_thresh=self.pipeline_params.match_viz_dist_thresh_m,
-                angle_thresh_deg=self.pipeline_params.match_viz_angle_thresh_deg,
+                dist_thresh=params.match_viz_dist_thresh_m,
+                angle_thresh_deg=params.match_viz_angle_thresh_deg,
             )
             fname_heatmap = viz_output_dir / f"ground_{ground_key}_all.png"
             plt.savefig(fname_heatmap, dpi=400)
             plt.close()
 
-            all_results[ground_key] = results_matrix
+        self._write_results_summary(match_result.results, output_dir)
 
-        self._write_results_summary(all_results, output_dir)
-
-    def _write_results_summary(self, all_results, output_dir):
-        dist_thresh = self.pipeline_params.match_viz_dist_thresh_m
-        angle_thresh_deg = self.pipeline_params.match_viz_angle_thresh_deg
+    @staticmethod
+    def _write_results_summary(all_results, output_dir):
+        # Use same thresholds as before (sensible defaults)
+        dist_thresh = 5.0
+        angle_thresh_deg = 10.0
 
         n_total = len(all_results)
         n_any_success = 0
@@ -1027,339 +456,17 @@ class CrossViewMatching:
         results_path = pathlib.Path(output_dir) / "results.txt"
         results_str = (
             f"Successful ground submap pose found: {n_any_success} / {n_total}\n"
-            + f"Successful ground submap pose using max number of "
+            + "Successful ground submap pose using max number of "
             + f"associations: {n_max_assoc_success} / {n_total}\n"
         )
         print(results_str)
         with open(results_path, "w") as f:
             f.write(results_str)
 
-    # TODO: all of these visualizations should probably be moved to the viz module
-    def _viz_aerial_segments(
-        self,
-        img: np.ndarray,
-        segments: List[AerialSegment],
-        crop: Crop = None,
-    ) -> np.ndarray:
-        aerial_viz = img.copy()
-        img_origin_m = (
-            (0.0, 0.0)
-            if crop is None
-            else (
-                crop[0] * self.aerial_segmenter.params.pixel_len_m,
-                crop[1] * self.aerial_segmenter.params.pixel_len_m,
-            )
-        )
-        for seg in segments:
-            alpha_shape_px = seg.get_alpha_shape_pixels(
-                img_pixel_scale=self.aerial_segmenter.params.pixel_len_m,
-                grid_downsample=self.pipeline_params.alpha_shape_grid_downsample,
-                alpha=self.pipeline_params.alpha_shape_alpha,
-                img_origin_m=img_origin_m,
-                max_n_pts=self.pipeline_params.alpha_shape_max_n_pts,
-                alpha_ref_size=self.pipeline_params.alpha_shape_ref_size_m,
-            )
-            if alpha_shape_px is None:
-                continue
-            # TODO: add some viz params
-            cv.polylines(aerial_viz, [alpha_shape_px], True, seg.viz_color[::-1], 20)
 
-        # downsample for viz
-        return self._downsample_aerial_viz(aerial_viz)
-
-    def _viz_general_segments_img(
-        self, img: np.ndarray, segments: SegmentList, crop: Crop
-    ) -> np.ndarray:
-        general_viz = img.copy()
-        x1, y1, x2, y2 = crop
-        px_per_m = 1.0 / self.aerial_segmenter.params.pixel_len_m
-
-        # draw points
-        for seg in segments.get_points():
-            p = seg.get_point()
-            cv.circle(
-                general_viz,
-                (int(p[0] * px_per_m - x1), int(p[1] * px_per_m - y1)),
-                10,  # TODO: add some viz params
-                seg.color_from_id(order="bgr"),
-                10,  # TODO: add some viz params
-            )
-
-        # draw lines
-        for seg in segments.get_lines():
-            if seg.num_endpoints == 2:
-                p0 = seg.endpoints[0]
-                p1 = seg.endpoints[1]
-                pt0 = (int(p0[0] * px_per_m - x1), int(p0[1] * px_per_m - y1))
-                pt1 = (int(p1[0] * px_per_m - x1), int(p1[1] * px_per_m - y1))
-            else:
-                pt = seg.get_point().flatten()
-                d = seg.get_direction().flatten()
-                far = 1e4
-                p0_m = pt - d * far
-                p1_m = pt + d * far
-                pt0 = (int(p0_m[0] * px_per_m - x1), int(p0_m[1] * px_per_m - y1))
-                pt1 = (int(p1_m[0] * px_per_m - x1), int(p1_m[1] * px_per_m - y1))
-                h, w = general_viz.shape[:2]
-                ret, pt0, pt1 = cv.clipLine((0, 0, w, h), pt0, pt1)
-                if not ret:
-                    continue
-            cv.line(
-                general_viz,
-                pt0,
-                pt1,
-                seg.color_from_id(order="bgr"),
-                20,  # TODO: add some viz params
-            )
-        return self._downsample_aerial_viz(general_viz)
-
-    def _viz_ground_segments(
-        self,
-        flattened_submap: Submap,
-        aerial_segments: List[AerialSegment],
-        general_segments: SegmentList,
-        sparse_general_segments: SegmentList,
-    ) -> Tuple[plt.Figure, plt.Axes]:
-        # Plot just segment points (largest first so smallest draw on top)
-        fig, ax = plt.subplots(3, 2, figsize=(10, 15))
-        segments_by_size = sorted(
-            flattened_submap.segments,
-            key=lambda s: len(s.dense_points),
-            reverse=True,
-        )
-        for seg in segments_by_size:
-            ax[0, 0].plot(
-                seg.dense_points[:, 0],
-                seg.dense_points[:, 1],
-                ".",
-                linewidth=1.0,
-                alpha=0.5,
-                color=seg.color_from_id(num_type=float),
-            )
-        ax[0, 0].set_aspect("equal")
-
-        # Plot aerial segments (alpha shapes)
-        for seg in aerial_segments:
-            alpha_shape = seg.get_alpha_shape(
-                alpha=self.pipeline_params.alpha_shape_alpha,
-                grid_downsample=self.pipeline_params.alpha_shape_grid_downsample,
-                max_n_pts=self.pipeline_params.alpha_shape_max_n_pts,
-                alpha_ref_size=self.pipeline_params.alpha_shape_ref_size_m,
-            )
-            if alpha_shape is None:
-                continue
-            ax[0, 1].plot(
-                alpha_shape[:, 0],
-                alpha_shape[:, 1],
-                color=seg.color_from_id(num_type=float),
-                linewidth=2,
-            )
-        ax[0, 1].set_aspect("equal")
-
-        # Plot general segments (points and lines)
-        self._viz_general_segments_plt(ax[1, 0], general_segments)
-        self._viz_general_segments_plt(ax[1, 1], sparse_general_segments)
-
-        # Plot occluded points (largest first so smallest draw on top)
-        for seg in segments_by_size:
-            ax[2, 0].plot(
-                seg.dense_points[:, 0],
-                seg.dense_points[:, 1],
-                ".",
-                linewidth=1.0,
-                alpha=0.5,
-                color=seg.color_from_id(num_type=float),
-            )
-            occ = getattr(seg, "occluded_points", None)
-            if occ is not None and len(occ) > 0:
-                ax[2, 0].plot(
-                    occ[:, 0],
-                    occ[:, 1],
-                    ".",
-                    markersize=3,
-                    color="black",
-                    zorder=10,
-                )
-        ax[2, 0].set_aspect("equal")
-        ax[2, 1].set_visible(False)
-
-        xlim = ax[0, 0].get_xlim()
-        ylim = ax[0, 0].get_ylim()
-        for i in range(3):
-            for j in range(2):
-                if ax[i, j].get_visible():
-                    ax[i, j].set_xlim(xlim)
-                    ax[i, j].set_ylim(ylim)
-        ratio = (xlim[1] - xlim[0]) / (ylim[1] - ylim[0])
-        if ratio > 1:
-            fig.set_size_inches(10, 15 / ratio)
-        else:
-            fig.set_size_inches(10 * ratio, 15)
-
-        return fig, ax
-
-    def _viz_general_segments_plt(
-        self, ax: plt.Axes, general_segments: SegmentList
-    ) -> plt.Axes:
-        for seg in general_segments.get_points():
-            p = seg.get_point()
-            ax.plot(
-                p[0],
-                p[1],
-                "o",
-                markersize=4,
-                color=seg.color_from_id(num_type=float),
-            )
-
-        for seg in general_segments.get_lines():
-            color = seg.color_from_id(num_type=float)
-            if seg.num_endpoints == 2:
-                p0 = seg.endpoints[0]
-                p1 = seg.endpoints[1]
-                ax.plot(
-                    [p0[0], p1[0]],
-                    [p0[1], p1[1]],
-                    "-",
-                    linewidth=2,
-                    color=color,
-                )
-            else:
-                pt = seg.get_point().flatten()
-                d = seg.get_direction().flatten()
-                ax.axline(
-                    (pt[0], pt[1]),
-                    (pt[0] + d[0], pt[1] + d[1]),
-                    linewidth=2,
-                    color=color,
-                )
-        ax.set_aspect("equal")
-        return ax
-
-    def _line_is_valid(self, line: SegmentLine, original_segment) -> bool:
-        """Check that a line is not just a FOV border artifact.
-
-        A line is valid when enough of its sampled points are (a) far from
-        occluded points and (b) close to actual dense points.
-        """
-        pt0, pt1 = line.endpoints
-        if pt0 is None or pt1 is None:
-            return True
-
-        n = self.pipeline_params.line_occlusion_num_samples
-        dist_thresh = self.pipeline_params.line_pt_dist_check_m
-
-        # Sample n points along the line
-        t = np.linspace(0, 1, n).reshape(-1, 1)
-        samples = pt0 + t * (pt1 - pt0)  # (n, dim)
-
-        dense_pts = original_segment.dense_points
-        occ_pts = getattr(original_segment, "occluded_points", None)
-
-        # Check proximity to dense points
-        if dense_pts is not None and len(dense_pts) > 0:
-            # (n, 1, dim) - (1, M, dim) -> (n, M) -> (n,)
-            dists_to_dense = np.linalg.norm(
-                samples[:, None, :2] - dense_pts[None, :, :2], axis=2
-            ).min(axis=1)
-            frac_near = np.mean(dists_to_dense < dist_thresh)
-            if frac_near < self.pipeline_params.line_frac_near_points:
-                return False
-
-        # Check distance from occluded points
-        if occ_pts is not None and len(occ_pts) > 0:
-            dists_to_occ = np.linalg.norm(
-                samples[:, None, :2] - occ_pts[None, :, :2], axis=2
-            ).min(axis=1)
-            frac_non_occluded = np.mean(dists_to_occ >= dist_thresh)
-            if frac_non_occluded < self.pipeline_params.line_occlusion_req_non_occluded:
-                return False
-
-        return True
-
-    def _viz_pose_on_aerial_crop(
-        self,
-        aerial_img: np.ndarray,
-        crop_origin_px: tuple,
-        T_gt: np.ndarray,
-        T_est: np.ndarray = None,
-    ) -> bytes:
-        px_per_m = 1.0 / self.aerial_segmenter.params.pixel_len_m
-        patch_size_px = int(self.pipeline_params.aerial_img_patch_side_len_m * px_per_m)
-        x1, y1 = crop_origin_px
-        x2 = x1 + patch_size_px
-        y2 = y1 + patch_size_px
-
-        crop = aerial_img[y1:y2, x1:x2].copy()
-        if len(crop.shape) == 2:
-            crop = cv.cvtColor(crop, cv.COLOR_GRAY2BGR)
-
-        arrow_len = 0.08 * patch_size_px
-
-        def draw_pose(img, T, color):
-            pos_px = T[:2, 3] * px_per_m - np.array([x1, y1], dtype=float)
-            cx, cy = int(round(pos_px[0])), int(round(pos_px[1]))
-            cv.circle(img, (cx, cy), 5, color, -1)
-            x_dir = T[:2, 0]
-            x_dir = x_dir / (np.linalg.norm(x_dir) + 1e-12)
-            y_dir = T[:2, 1]
-            y_dir = y_dir / (np.linalg.norm(y_dir) + 1e-12)
-            x_end = (
-                int(round(cx + arrow_len * x_dir[0])),
-                int(round(cy + arrow_len * x_dir[1])),
-            )
-            y_end = (
-                int(round(cx + arrow_len * y_dir[0])),
-                int(round(cy + arrow_len * y_dir[1])),
-            )
-            cv.arrowedLine(img, (cx, cy), x_end, color, 20, tipLength=0.3)
-            cv.arrowedLine(img, (cx, cy), y_end, color, 20, tipLength=0.3)
-
-        gt_color = (0, 200, 0)
-        est_color = (0, 0, 220)
-
-        draw_pose(crop, T_gt, gt_color)
-        if T_est is not None:
-            draw_pose(crop, T_est, est_color)
-
-        return self._downsample_to_target_size(
-            crop, self.pipeline_params.aerial_viz_target_size_kb
-        )
-
-    @staticmethod
-    def _downsample_to_target_size(img: np.ndarray, target_kb: int) -> bytes:
-        target_bytes = target_kb * 1024
-        lo, hi = 10, 95
-        best = None
-        while lo <= hi:
-            mid = (lo + hi) // 2
-            _, buf = cv.imencode(".jpg", img, [cv.IMWRITE_JPEG_QUALITY, mid])
-            encoded = buf.tobytes()
-            if len(encoded) <= target_bytes:
-                best = encoded
-                lo = mid + 1
-            else:
-                hi = mid - 1
-        if best is not None:
-            return best
-        # quality 10 still too large — scale down
-        _, buf = cv.imencode(".jpg", img, [cv.IMWRITE_JPEG_QUALITY, 10])
-        encoded = buf.tobytes()
-        scale = (target_bytes / len(encoded)) ** 0.5
-        new_w = max(1, int(img.shape[1] * scale))
-        new_h = max(1, int(img.shape[0] * scale))
-        small = cv.resize(img, (new_w, new_h), interpolation=cv.INTER_AREA)
-        _, buf = cv.imencode(".jpg", small, [cv.IMWRITE_JPEG_QUALITY, 10])
-        return buf.tobytes()
-
-    def _downsample_aerial_viz(self, img: np.ndarray) -> np.ndarray:
-        return cv.resize(
-            img,
-            (
-                img.shape[1] // self.pipeline_params.aerial_viz_downsample,
-                img.shape[0] // self.pipeline_params.aerial_viz_downsample,
-            ),
-            interpolation=cv.INTER_AREA,
-        )
+# ---------------------------------------------------------------------------
+# Top-level entry point (backward-compatible signature)
+# ---------------------------------------------------------------------------
 
 
 def cross_view_matching(
@@ -1378,7 +485,7 @@ def cross_view_matching(
         pr_params = CrossViewPlaceRecognitionParams()
     place_recognition = CrossViewPlaceRecognition(pr_params) if pr_params else None
 
-    runner = CrossViewMatching(
+    algorithm = CrossViewMatching(
         pipeline_params=pipeline_params,
         matcher=SegmentMatcher(segment_match_params),
         registerer=Registerer(RegisterParams.load(params)),
@@ -1386,6 +493,8 @@ def cross_view_matching(
         ground_submap_params=SubmapParams.load(params),
         place_recognition=place_recognition,
     )
+    pipeline = CrossViewMatchingPipeline(algorithm=algorithm)
+
     initial_aerial_segments = None
     initial_ground_segments = None
 
@@ -1407,31 +516,27 @@ def cross_view_matching(
 
     # Extract aerial segments
     if not skip_aerial:
-        runner.batch_aerial_img_to_segments(
-            data.aerial_img, aerial_output_dir, data.aerial_img_origin
-        )
+        pipeline.run_aerial(data.aerial_img, aerial_output_dir, data.aerial_img_origin)
 
     # Extract ground segments
     if not skip_ground:
         ground_map = data.ground_map
-        ground_submaps = runner.ground_map_to_submaps(ground_map)
-        initial_ground_submaps = runner.batch_ground_to_sparse_2d_submaps(
-            ground_submaps, ground_output_dir
-        )
-        initial_ground_submaps = {
+        ground_submaps = algorithm.ground_map_to_submaps(ground_map)
+        initial_ground_submaps = pipeline.run_ground(ground_submaps, ground_output_dir)
+        initial_ground_segments = {
             str(k): segs for k, segs in enumerate(initial_ground_submaps)
         }
 
     if not skip_match:
         if initial_aerial_segments is None:
-            initial_aerial_segments = runner.load_submaps_from_dir(
+            initial_aerial_segments = pipeline.load_submaps_from_dir(
                 os.path.join(aerial_output_dir, "segments")
             )
         if initial_ground_segments is None:
-            initial_ground_segments = runner.load_submaps_from_dir(
+            initial_ground_segments = pipeline.load_submaps_from_dir(
                 os.path.join(ground_output_dir, "segments")
             )
-        runner.batch_cross_view_match(
+        pipeline.run_match(
             initial_aerial_segments,
             initial_ground_segments,
             data.gt_pose_data,
@@ -1468,10 +573,6 @@ if __name__ == "__main__":
     parser.add_argument(
         "--skip-match", action="store_true", help="Skip segment matching."
     )
-    # TODO: do I need this?
-    # parser.add_argument(
-    #     "-r", "--runs", type=str, nargs=2, required=True, help="Run names."
-    # )
     args = parser.parse_args()
 
     if not os.path.isdir(args.output):

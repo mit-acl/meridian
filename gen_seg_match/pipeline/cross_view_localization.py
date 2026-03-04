@@ -4,16 +4,26 @@ import os
 import pathlib
 import pickle
 from dataclasses import dataclass
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 import cv2 as cv
 import matplotlib.pyplot as plt
 import numpy as np
 
-from gen_seg_match.cross_view.rpgo import CrossViewRPGO, CrossViewRPGOResult, se3_to_se2
+from gen_seg_match.cross_view.rpgo import (
+    CrossViewRPGO,
+    CrossViewRPGOResult,
+    pose_data_from_trajectory,
+    se3_to_se2,
+)
 from gen_seg_match.map3d.submap import Submap
 from gen_seg_match.params import CrossViewRPGOParams
-from gen_seg_match.pipeline.cross_view_matching import cross_view_matching
+from gen_seg_match.pipeline.cross_view_matching import (
+    CrossViewMatching,
+    CrossViewMatchingPipeline,
+    CrossViewMatchResult,
+    cross_view_matching,
+)
 from gen_seg_match.pipeline.data import CrossViewLocalizationData
 from gen_seg_match.pipeline.result import PoseEstimationResultMatrix
 from gen_seg_match.params.data_params import CrossViewLocalizationDataParams
@@ -35,8 +45,24 @@ class CrossViewLocalization:
         match_output_dir: str,
         data: CrossViewLocalizationData,
         output_dir: str,
+        pipeline: Optional[CrossViewMatchingPipeline] = None,
+        aerial_submaps: Optional[Dict[str, Submap]] = None,
+        ground_submaps: Optional[Dict[str, Submap]] = None,
+        aerial_img: np.ndarray = None,
+        main_output_dir: str = None,
     ) -> Optional[CrossViewRPGOResult]:
         """Run the full localization pipeline.
+
+        Args:
+            match_output_dir: Directory containing initial match results.
+            data: Localization data (aerial image, ground map, GT, etc.).
+            output_dir: Output directory for results.
+            pipeline: Optional CrossViewMatchingPipeline (needed for rerun).
+            aerial_submaps: Optional preloaded aerial submaps (needed for rerun).
+            ground_submaps: Optional preloaded ground submaps (needed for rerun).
+            aerial_img: Optional aerial image for visualizations during rerun.
+            main_output_dir: Top-level output dir, used to find ground dense
+                points when rerunning from a subdirectory.
 
         Returns CrossViewRPGOResult, or None if localization fails.
         """
@@ -65,7 +91,121 @@ class CrossViewLocalization:
 
         self._save_results(result, output_dir)
         self._visualize_and_report(result, data, output_dir)
+
+        # --- Rerun with known rotation ---
+        if (
+            self.rpgo_params.rerun_match_with_known_rot
+            and pipeline is not None
+            and aerial_submaps is not None
+            and ground_submaps is not None
+            and result.optimized_trajectory is not None
+        ):
+            rerun_result = self._rerun_with_known_rotation(
+                result,
+                pipeline,
+                aerial_submaps,
+                ground_submaps,
+                data,
+                trajectory,
+                times,
+                output_dir,
+                aerial_img,
+                main_output_dir,
+            )
+            if rerun_result is not None:
+                return rerun_result
+
         return result
+
+    # ------------------------------------------------------------------
+    # Rerun matching with known rotation
+    # ------------------------------------------------------------------
+
+    def _rerun_with_known_rotation(
+        self,
+        initial_result: CrossViewRPGOResult,
+        pipeline: CrossViewMatchingPipeline,
+        aerial_submaps: Dict[str, Submap],
+        ground_submaps: Dict[str, Submap],
+        data: CrossViewLocalizationData,
+        trajectory: List[np.ndarray],
+        times: np.ndarray,
+        output_dir: pathlib.Path,
+        aerial_img: np.ndarray = None,
+        main_output_dir: str = None,
+    ) -> Optional[CrossViewRPGOResult]:
+        """Re-run matching using optimized trajectory rotation, then re-run RPGO."""
+        logger.info("Rerunning matching with known rotation from initial RPGO...")
+
+        # The optimized trajectory is in body/FLU frame (T_utm_body), but the
+        # matching pipeline expects camera-frame poses (T_utm_camera).  Convert
+        # back so that _match_single_pair / _find_max_intersection_patch don't
+        # double-apply T_camera_flu.
+        if data.T_camera_flu is not None:
+            T_flu_camera = np.linalg.inv(data.T_camera_flu)
+            camera_trajectory = [
+                T_utm_body @ T_flu_camera
+                for T_utm_body in initial_result.optimized_trajectory
+            ]
+        else:
+            camera_trajectory = initial_result.optimized_trajectory
+        optimized_pose_data = pose_data_from_trajectory(camera_trajectory, times)
+
+        rerun_match_dir = output_dir / "match_rerun"
+
+        # Compute ground_dense_dir pointing to existing dense points
+        ground_dense_dir = None
+        if main_output_dir is not None:
+            ground_dense_dir = pathlib.Path(main_output_dir) / "ground" / "segments"
+
+        # Re-run matching with full viz output via pipeline
+        match_result = pipeline.run_match(
+            aerial_submaps,
+            ground_submaps,
+            reference_trajectory=optimized_pose_data,
+            output_dir=rerun_match_dir,
+            aerial_img=aerial_img,
+            T_camera_flu=data.T_camera_flu,
+            matching_mode="max_intersection",
+            translation_only=True,
+            ground_dense_dir=ground_dense_dir,
+        )
+
+        # Build candidates from in-memory match result
+        candidates = self._load_candidates_from_result(
+            match_result, ground_submaps, aerial_submaps, data
+        )
+
+        if len(candidates) == 0:
+            logger.warning(
+                "Rerun: no candidates passed filtering — keeping initial result."
+            )
+            return None
+
+        # Re-run RPGO
+        rpgo = CrossViewRPGO(params=self.rpgo_params)
+        rerun_result = rpgo.solve(candidates, trajectory, times, data.T_camera_flu)
+
+        rerun_output_dir = output_dir / "rerun"
+        rerun_output_dir.mkdir(parents=True, exist_ok=True)
+
+        if rerun_result.M is not None:
+            self._visualize_affinity_matrix(
+                rerun_result.M, rerun_result.C, candidates, rerun_output_dir
+            )
+
+        if not rerun_result.success:
+            logger.warning("Rerun RPGO failed — keeping initial result.")
+            return None
+
+        self._save_results(rerun_result, rerun_output_dir)
+        self._visualize_and_report(rerun_result, data, rerun_output_dir)
+
+        logger.info(
+            f"Rerun complete: {len(rerun_result.inlier_indices)} inliers "
+            f"(initial had {len(initial_result.inlier_indices)})"
+        )
+        return rerun_result
 
     # ------------------------------------------------------------------
     # Load candidates
@@ -147,6 +287,60 @@ class CrossViewLocalization:
                 )
 
         logger.info(f"Loaded {len(candidates)} candidates.")
+        return candidates
+
+    def _load_candidates_from_result(
+        self,
+        match_result: CrossViewMatchResult,
+        ground_submaps: Dict[str, Submap],
+        aerial_submaps: Dict[str, Submap],
+        data: CrossViewLocalizationData,
+    ) -> List[dict]:
+        """Build candidate list from in-memory CrossViewMatchResult."""
+        # Get aerial pose from first aerial submap
+        first_aerial_key = next(iter(aerial_submaps))
+        pose_flu = aerial_submaps[first_aerial_key].pose
+
+        min_assoc = self.rpgo_params.min_num_associations
+        candidates = []
+
+        for ground_key, results_matrix in match_result.results.items():
+            if ground_key not in ground_submaps:
+                continue
+            ground_submap = ground_submaps[ground_key]
+            ground_camera_pose = ground_submap.metadata["camera_pose"]
+
+            for idx in np.ndindex(results_matrix.shape):
+                result = results_matrix[idx]
+                if result.num_associations < min_assoc:
+                    continue
+                T_i_j_hat = result.T_i_j_hat
+                if np.any(np.isnan(T_i_j_hat)):
+                    continue
+
+                if data.T_camera_flu is not None:
+                    T_odom_ground = ground_camera_pose @ data.T_camera_flu
+                else:
+                    T_odom_ground = ground_camera_pose
+
+                T_utm_odom_4x4 = pose_flu @ T_i_j_hat @ np.linalg.inv(T_odom_ground)
+                T_utm_odom_se2 = se3_to_se2(T_utm_odom_4x4)
+
+                candidates.append(
+                    {
+                        "T_utm_odom_se2": T_utm_odom_se2,
+                        "T_i_j_hat": T_i_j_hat,
+                        "aerial_pose": pose_flu,
+                        "ground_camera_pose": ground_camera_pose,
+                        "T_odom_ground": T_odom_ground,
+                        "ground_key": ground_key,
+                        "aerial_key": f"{idx[0]}_{idx[1]}",
+                        "num_associations": result.num_associations,
+                        "ground_submap_time": ground_submap.time,
+                    }
+                )
+
+        logger.info(f"Loaded {len(candidates)} rerun candidates from in-memory result.")
         return candidates
 
     # ------------------------------------------------------------------
@@ -402,9 +596,64 @@ def cross_view_localization(params, output_dir, skip_matching=False):
     data_params = CrossViewLocalizationDataParams.load(params)
     data = CrossViewLocalizationData.from_params(data_params)
 
+    # Build pipeline + load submaps for rerun if enabled
+    pipeline = None
+    aerial_submaps = None
+    ground_submaps = None
+    if rpgo_params.rerun_match_with_known_rot:
+        from gen_seg_match.params import (
+            SegmentMatchParams,
+            CrossViewMatchingParams,
+            CrossViewPlaceRecognitionParams,
+            AerialSegmenterParams,
+            SubmapParams,
+            RegisterParams,
+        )
+        from gen_seg_match.cross_view.place_recognition import CrossViewPlaceRecognition
+        from gen_seg_match.map2d.aerial_segmenter import AerialSegmenter
+        from gen_seg_match.match.segment_matcher import SegmentMatcher
+        from gen_seg_match.register.registerer import Registerer
+
+        pipeline_params = CrossViewMatchingParams.load(params)
+        segment_match_params = SegmentMatchParams.load(params)
+        segment_match_params.dim = 2
+
+        try:
+            pr_params = CrossViewPlaceRecognitionParams.load(params)
+        except Exception:
+            pr_params = None
+        if pr_params is None and pipeline_params.matching_mode == "vpr":
+            pr_params = CrossViewPlaceRecognitionParams()
+        place_recognition = (
+            CrossViewPlaceRecognition(pr_params) if pr_params else None
+        )
+
+        algorithm = CrossViewMatching(
+            pipeline_params=pipeline_params,
+            matcher=SegmentMatcher(segment_match_params),
+            registerer=Registerer(RegisterParams.load(params)),
+            aerial_segmenter=AerialSegmenter(AerialSegmenterParams.load(params)),
+            ground_submap_params=SubmapParams.load(params),
+            place_recognition=place_recognition,
+        )
+        pipeline = CrossViewMatchingPipeline(algorithm=algorithm)
+        aerial_submaps = pipeline.load_submaps_from_dir(
+            os.path.join(output_dir, "aerial", "segments")
+        )
+        ground_submaps = pipeline.load_submaps_from_dir(
+            os.path.join(output_dir, "ground", "segments")
+        )
+
     runner = CrossViewLocalization(rpgo_params=rpgo_params)
     loc_output_dir = os.path.join(output_dir, "localization")
-    result = runner.localize(match_output_dir, data, loc_output_dir)
+    result = runner.localize(
+        match_output_dir, data, loc_output_dir,
+        pipeline=pipeline,
+        aerial_submaps=aerial_submaps,
+        ground_submaps=ground_submaps,
+        aerial_img=data.aerial_img,
+        main_output_dir=output_dir,
+    )
     return result
 
 
@@ -460,6 +709,61 @@ if __name__ == "__main__":
     data_params = CrossViewLocalizationDataParams.load(args.params)
     data = CrossViewLocalizationData.from_params(data_params)
 
+    # Build pipeline + load submaps for rerun if enabled
+    pipeline = None
+    aerial_submaps = None
+    ground_submaps = None
+    if rpgo_params.rerun_match_with_known_rot:
+        from gen_seg_match.params import (
+            SegmentMatchParams,
+            CrossViewMatchingParams,
+            CrossViewPlaceRecognitionParams,
+            AerialSegmenterParams,
+            SubmapParams,
+            RegisterParams,
+        )
+        from gen_seg_match.cross_view.place_recognition import CrossViewPlaceRecognition
+        from gen_seg_match.map2d.aerial_segmenter import AerialSegmenter
+        from gen_seg_match.match.segment_matcher import SegmentMatcher
+        from gen_seg_match.register.registerer import Registerer
+
+        pipeline_params = CrossViewMatchingParams.load(args.params)
+        segment_match_params = SegmentMatchParams.load(args.params)
+        segment_match_params.dim = 2
+
+        try:
+            pr_params = CrossViewPlaceRecognitionParams.load(args.params)
+        except Exception:
+            pr_params = None
+        if pr_params is None and pipeline_params.matching_mode == "vpr":
+            pr_params = CrossViewPlaceRecognitionParams()
+        place_recognition = (
+            CrossViewPlaceRecognition(pr_params) if pr_params else None
+        )
+
+        algorithm = CrossViewMatching(
+            pipeline_params=pipeline_params,
+            matcher=SegmentMatcher(segment_match_params),
+            registerer=Registerer(RegisterParams.load(args.params)),
+            aerial_segmenter=AerialSegmenter(AerialSegmenterParams.load(args.params)),
+            ground_submap_params=SubmapParams.load(args.params),
+            place_recognition=place_recognition,
+        )
+        pipeline = CrossViewMatchingPipeline(algorithm=algorithm)
+        aerial_submaps = pipeline.load_submaps_from_dir(
+            os.path.join(args.output, "aerial", "segments")
+        )
+        ground_submaps = pipeline.load_submaps_from_dir(
+            os.path.join(args.output, "ground", "segments")
+        )
+
     runner = CrossViewLocalization(rpgo_params=rpgo_params)
     loc_output_dir = os.path.join(args.output, "localization")
-    runner.localize(match_output_dir, data, loc_output_dir)
+    runner.localize(
+        match_output_dir, data, loc_output_dir,
+        pipeline=pipeline,
+        aerial_submaps=aerial_submaps,
+        ground_submaps=ground_submaps,
+        aerial_img=data.aerial_img,
+        main_output_dir=args.output,
+    )

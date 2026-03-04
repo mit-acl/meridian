@@ -5,6 +5,7 @@ from typing import List, Optional, Tuple
 import clipperpy
 import gtsam
 import numpy as np
+from scipy.spatial.transform import Rotation as Rot
 
 from gen_seg_match.params.cross_view_params import CrossViewRPGOParams
 
@@ -55,6 +56,27 @@ def average_se2(transforms: List[np.ndarray]) -> np.ndarray:
     yaws = [yaw_from_se2(T) for T in transforms]
     mean_yaw = np.arctan2(np.mean(np.sin(yaws)), np.mean(np.cos(yaws)))
     return se2_from_xytheta(np.mean(xs), np.mean(ys), mean_yaw)
+
+
+def pose_data_from_trajectory(
+    trajectory: List[np.ndarray], times: np.ndarray
+):
+    """Create a PoseData from a list of 4x4 T_utm_body poses and timestamps.
+
+    Returns a PoseData with interpolation enabled and infinite time tolerance
+    so it can be queried at any time.
+    """
+    from robotdatapy.data import PoseData
+
+    positions = np.array([T[:3, 3] for T in trajectory])
+    quats = Rot.from_matrix([T[:3, :3] for T in trajectory]).as_quat()  # xyzw
+    return PoseData(
+        times=times,
+        positions=positions,
+        orientations=quats,
+        interp=True,
+        time_tol=np.inf,
+    )
 
 
 # ---------------------------------------------------------------------------

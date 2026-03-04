@@ -53,7 +53,7 @@ class CrossViewMatchingParams(ParamsBase):
     params_key: ClassVar[str] = "cross_view_matching"
 
     segment_min_points: int = 10
-    matching_mode: str = "vpr"  # "all", "gt", or "vpr"
+    matching_mode: str = "vpr"  # "all", "gt", "vpr", or "max_intersection"
 
     min_area_m_sq: float = 0.0
     point_max_area_m_sq: float = 5.0
