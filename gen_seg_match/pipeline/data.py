@@ -1,3 +1,4 @@
+import logging
 import numpy as np
 from dataclasses import dataclass
 from typing import Union
@@ -15,6 +16,8 @@ from gen_seg_match.params.data_params import (
     GroundToBEVDataParams,
     SegmentMappingDataParams,
 )
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -82,6 +85,12 @@ class CrossViewLocalizationData:
         with rasterio.open(params.aerial_img_path) as ds:
             transform = ds.transform
             x_utm, y_utm = xy(transform, 0, 0)  # row, col
+            geotiff_pixel_size = ds.res[0]  # (x_res, y_res) in CRS units
+
+        aerial_img_scale = params.aerial_img_scale
+        if aerial_img_scale is None:
+            aerial_img_scale = geotiff_pixel_size
+            logger.info(f"Auto-detected aerial pixel size: {aerial_img_scale:.6f} m/px")
 
         gt_pose_data = (
             PoseData.from_dict(params.gt_pose_data) if params.gt_pose_data else None
@@ -94,7 +103,7 @@ class CrossViewLocalizationData:
             aerial_img_origin=np.array([x_utm, y_utm]),
             ground_map=ground_map,
             gt_pose_data=gt_pose_data,
-            aerial_img_scale=params.aerial_img_scale,
+            aerial_img_scale=aerial_img_scale,
             T_camera_flu=params.T_camera_flu,
         )
 

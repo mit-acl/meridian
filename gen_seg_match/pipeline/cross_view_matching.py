@@ -83,7 +83,7 @@ class CrossViewMatchingPipeline:
         img_origin: np.ndarray = None,
     ) -> Dict[Crop, Submap]:
         result = self.algorithm.batch_aerial_img_to_segments(
-            img, img_origin, return_intermediates=True
+            img, img_origin, return_intermediates=True, show_progress=True
         )
         self._save_aerial_results(result, output_dir)
         return result.submaps
@@ -174,7 +174,7 @@ class CrossViewMatchingPipeline:
         output_dir: Union[str, pathlib.Path],
     ) -> List[Submap]:
         result = self.algorithm.batch_ground_to_sparse_2d_submaps(
-            submaps, return_intermediates=True
+            submaps, return_intermediates=True, show_progress=True
         )
         self._save_ground_results(result, output_dir)
         return result.submaps
@@ -247,6 +247,7 @@ class CrossViewMatchingPipeline:
                 reference_trajectory,
                 T_camera_flu,
                 translation_only,
+                show_progress=True,
             )
         else:
             match_result = self.algorithm.cross_view_match(
@@ -256,6 +257,7 @@ class CrossViewMatchingPipeline:
                 T_camera_flu,
                 matching_mode,
                 translation_only,
+                show_progress=True,
             )
         if output_dir is not None:
             self._save_match_results(
@@ -492,6 +494,9 @@ def cross_view_matching(
     # Load data
     data_params = CrossViewLocalizationDataParams.load(params)
     data = CrossViewLocalizationData.from_params(data_params)
+
+    # Sync aerial segmenter pixel size with data
+    algorithm.aerial_segmenter.params.pixel_len_m = data.aerial_img_scale
 
     # Set up output directories
     aerial_output_dir = os.path.join(output_dir, "aerial")

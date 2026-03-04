@@ -5,6 +5,7 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple, Union
 
 import circle_fit
+from tqdm import tqdm
 
 from gen_seg_match.cross_view.place_recognition import CrossViewPlaceRecognition
 from gen_seg_match.map2d.aerial_segmenter import AerialSegmenter
@@ -438,6 +439,7 @@ class CrossViewMatching:
         img: np.ndarray,
         img_origin: np.ndarray = None,
         return_intermediates: bool = False,
+        show_progress: bool = False,
     ) -> AerialSegmentationResult:
         h, w = img.shape[:2]
         px_per_m = 1.0 / self.aerial_segmenter.params.pixel_len_m
@@ -469,65 +471,72 @@ class CrossViewMatching:
             {} if return_intermediates else None
         )
 
-        for j, y1 in enumerate(range(0, h - patch_size_px + 1, stride)):
-            for i, x1 in enumerate(range(0, w - patch_size_px + 1, stride)):
-                x2 = x1 + patch_size_px
-                y2 = y1 + patch_size_px
-                crop = (x1, y1, x2, y2)
+        patches = [
+            (j, y1, i, x1)
+            for j, y1 in enumerate(range(0, h - patch_size_px + 1, stride))
+            for i, x1 in enumerate(range(0, w - patch_size_px + 1, stride))
+        ]
+        iterator = patches
+        if show_progress:
+            iterator = tqdm(iterator, desc="Aerial segmentation")
+        for j, y1, i, x1 in iterator:
+            x2 = x1 + patch_size_px
+            y2 = y1 + patch_size_px
+            crop = (x1, y1, x2, y2)
 
-                patch_img = img[y1:y2, x1:x2].copy()
+            patch_img = img[y1:y2, x1:x2].copy()
 
-                aerial_segments = self.aerial_img_to_segments(img, crop=crop)
+            aerial_segments = self.aerial_img_to_segments(img, crop=crop)
 
-                general_segments = self.aerial_segments_to_general_segments(
-                    aerial_segments, crop=crop
-                )
-                sparse_general_segments = (
-                    general_segments.get_points()
-                    + clean_up_line_map(
-                        general_segments.get_lines(),
-                        angle_tol=self.pipeline_params.line_merge_ang_thresh_rad,
-                        dist_tol=self.pipeline_params.line_merge_dist_thresh_m,
-                        perp_dist_tol=self.pipeline_params.line_merge_perp_dist_thresh_m,
-                        short_line_thresh=self.pipeline_params.line_merge_short_thresh_m,
-                        semantic_sim_thresh=self.pipeline_params.line_merge_semantic_sim,
-                    )[0]
-                )
-                _convert_long_lines_to_infinite(
-                    sparse_general_segments,
-                    self.pipeline_params.line_len_to_infinite,
-                )
-                sparse_general_segments.reindex()
+            general_segments = self.aerial_segments_to_general_segments(
+                aerial_segments, crop=crop
+            )
+            sparse_general_segments = (
+                general_segments.get_points()
+                + clean_up_line_map(
+                    general_segments.get_lines(),
+                    angle_tol=self.pipeline_params.line_merge_ang_thresh_rad,
+                    dist_tol=self.pipeline_params.line_merge_dist_thresh_m,
+                    perp_dist_tol=self.pipeline_params.line_merge_perp_dist_thresh_m,
+                    short_line_thresh=self.pipeline_params.line_merge_short_thresh_m,
+                    semantic_sim_thresh=self.pipeline_params.line_merge_semantic_sim,
+                )[0]
+            )
+            _convert_long_lines_to_infinite(
+                sparse_general_segments,
+                self.pipeline_params.line_len_to_infinite,
+            )
+            sparse_general_segments.reindex()
 
-                submaps[crop] = Submap(
-                    id=(i, j),
-                    time=0.0,
-                    segments=sparse_general_segments,
-                    pose=pose_flu,
-                    segment_frame=FrameType.UTM,
-                    descriptor=None,
-                    metadata={
-                        "crop_center_m": np.array(
-                            [(i + 0.5) * patch_size_m, -(j + 0.5) * patch_size_m]
-                        )
-                    },
-                )
-
-                # Compute descriptor after submap is created
-                if self.place_recognition is not None:
-                    submaps[crop].descriptor = self.place_recognition.aerial_descriptor(
-                        submaps[crop],
-                        aerial_segmenter=self.aerial_segmenter,
-                        img_bgr=img,
-                        crop=crop,
+            submaps[crop] = Submap(
+                id=(i, j),
+                time=0.0,
+                segments=sparse_general_segments,
+                pose=pose_flu,
+                segment_frame=FrameType.UTM,
+                descriptor=None,
+                metadata={
+                    "crop_center_m": np.array(
+                        [(i + 0.5) * patch_size_m, -(j + 0.5) * patch_size_m]
                     )
+                },
+            )
 
-                if return_intermediates:
-                    intermediates[crop] = AerialPatchIntermediates(
-                        patch_img=patch_img,
-                        aerial_segments=aerial_segments,
-                        general_segments=general_segments,
-                    )
+            # Compute descriptor after submap is created
+            if self.place_recognition is not None:
+                submaps[crop].descriptor = self.place_recognition.aerial_descriptor(
+                    submaps[crop],
+                    aerial_segmenter=self.aerial_segmenter,
+                    img_bgr=img,
+                    crop=crop,
+                )
+
+            if return_intermediates:
+                intermediates[crop] = AerialPatchIntermediates(
+                    patch_img=patch_img,
+                    aerial_segments=aerial_segments,
+                    general_segments=general_segments,
+                )
 
         return AerialSegmentationResult(submaps=submaps, intermediates=intermediates)
 
@@ -539,11 +548,15 @@ class CrossViewMatching:
         self,
         submaps: List[Submap],
         return_intermediates: bool = False,
+        show_progress: bool = False,
     ) -> GroundSegmentationResult:
         result_submaps = []
         intermediates_list = [] if return_intermediates else None
 
-        for k, submap in enumerate(submaps):
+        iterator = enumerate(submaps)
+        if show_progress:
+            iterator = tqdm(iterator, desc="Ground segmentation", total=len(submaps))
+        for k, submap in iterator:
             assert submap.segment_frame == FrameType.CAMERA, (
                 f"Expected submap segments in CAMERA frame, but got {submap.segment_frame}"
             )
@@ -647,6 +660,7 @@ class CrossViewMatching:
         T_camera_flu: np.ndarray = None,
         matching_mode: str = None,
         translation_only: bool = None,
+        show_progress: bool = False,
     ) -> CrossViewMatchResult:
         """Match aerial and ground submaps without any I/O.
 
@@ -715,7 +729,10 @@ class CrossViewMatching:
         all_results = {}
         all_details = {}
 
-        for ground_key, ground_sm_i in ground_submaps_2d.items():
+        iterator = ground_submaps_2d.items()
+        if show_progress:
+            iterator = tqdm(iterator, desc="Matching", total=len(ground_submaps_2d))
+        for ground_key, ground_sm_i in iterator:
             results_matrix = PoseEstimationResultMatrix(
                 (aerial_x_max + 1, aerial_y_max + 1)
             )
@@ -1038,6 +1055,7 @@ class CrossViewMatching:
         reference_trajectory=None,
         T_camera_flu: np.ndarray = None,
         translation_only: bool = None,
+        show_progress: bool = False,
     ) -> CrossViewMatchResult:
         """Cross-view match using max_intersection mode.
 
@@ -1061,7 +1079,10 @@ class CrossViewMatching:
         all_results = {}
         all_details = {}
 
-        for ground_key, ground_sm_i in ground_submaps_2d.items():
+        iterator = ground_submaps_2d.items()
+        if show_progress:
+            iterator = tqdm(iterator, desc="Matching", total=len(ground_submaps_2d))
+        for ground_key, ground_sm_i in iterator:
             results_matrix = PoseEstimationResultMatrix(
                 (aerial_x_max + 1, aerial_y_max + 1)
             )

@@ -634,6 +634,8 @@ def cross_view_localization(params, output_dir, skip_matching=False):
             ground_submap_params=SubmapParams.load(params),
             place_recognition=place_recognition,
         )
+        # Sync aerial segmenter pixel size with data
+        algorithm.aerial_segmenter.params.pixel_len_m = data.aerial_img_scale
         pipeline = CrossViewMatchingPipeline(algorithm=algorithm)
         aerial_submaps = pipeline.load_submaps_from_dir(
             os.path.join(output_dir, "aerial", "segments")
@@ -747,6 +749,8 @@ if __name__ == "__main__":
             ground_submap_params=SubmapParams.load(args.params),
             place_recognition=place_recognition,
         )
+        # Sync aerial segmenter pixel size with data
+        algorithm.aerial_segmenter.params.pixel_len_m = data.aerial_img_scale
         pipeline = CrossViewMatchingPipeline(algorithm=algorithm)
         aerial_submaps = pipeline.load_submaps_from_dir(
             os.path.join(args.output, "aerial", "segments")

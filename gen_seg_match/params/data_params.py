@@ -66,7 +66,7 @@ class CrossViewLocalizationDataParams(ParamsBase):
     ground_map_path: str
     gt_pose_data: dict = None
 
-    aerial_img_scale: float = 0.01
+    aerial_img_scale: float = None  # None = auto-detect from GeoTIFF
     T_camera_flu: list = None
 
     def __post_init__(self):
