@@ -624,9 +624,7 @@ def cross_view_localization(params, output_dir, skip_matching=False):
             pr_params = None
         if pr_params is None and pipeline_params.matching_mode == "vpr":
             pr_params = CrossViewPlaceRecognitionParams()
-        place_recognition = (
-            CrossViewPlaceRecognition(pr_params) if pr_params else None
-        )
+        place_recognition = CrossViewPlaceRecognition(pr_params) if pr_params else None
 
         algorithm = CrossViewMatching(
             pipeline_params=pipeline_params,
@@ -647,7 +645,9 @@ def cross_view_localization(params, output_dir, skip_matching=False):
     runner = CrossViewLocalization(rpgo_params=rpgo_params)
     loc_output_dir = os.path.join(output_dir, "localization")
     result = runner.localize(
-        match_output_dir, data, loc_output_dir,
+        match_output_dir,
+        data,
+        loc_output_dir,
         pipeline=pipeline,
         aerial_submaps=aerial_submaps,
         ground_submaps=ground_submaps,
@@ -737,9 +737,7 @@ if __name__ == "__main__":
             pr_params = None
         if pr_params is None and pipeline_params.matching_mode == "vpr":
             pr_params = CrossViewPlaceRecognitionParams()
-        place_recognition = (
-            CrossViewPlaceRecognition(pr_params) if pr_params else None
-        )
+        place_recognition = CrossViewPlaceRecognition(pr_params) if pr_params else None
 
         algorithm = CrossViewMatching(
             pipeline_params=pipeline_params,
@@ -760,7 +758,9 @@ if __name__ == "__main__":
     runner = CrossViewLocalization(rpgo_params=rpgo_params)
     loc_output_dir = os.path.join(args.output, "localization")
     runner.localize(
-        match_output_dir, data, loc_output_dir,
+        match_output_dir,
+        data,
+        loc_output_dir,
         pipeline=pipeline,
         aerial_submaps=aerial_submaps,
         ground_submaps=ground_submaps,

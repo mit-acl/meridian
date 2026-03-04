@@ -58,9 +58,7 @@ def average_se2(transforms: List[np.ndarray]) -> np.ndarray:
     return se2_from_xytheta(np.mean(xs), np.mean(ys), mean_yaw)
 
 
-def pose_data_from_trajectory(
-    trajectory: List[np.ndarray], times: np.ndarray
-):
+def pose_data_from_trajectory(trajectory: List[np.ndarray], times: np.ndarray):
     """Create a PoseData from a list of 4x4 T_utm_body poses and timestamps.
 
     Returns a PoseData with interpolation enabled and infinite time tolerance

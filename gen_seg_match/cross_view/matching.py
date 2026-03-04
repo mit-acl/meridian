@@ -337,12 +337,8 @@ class CrossViewMatching:
                     dp_xy = np.floor(seg_copy.dense_points[:, :2] / grid).astype(int)
                     regular_keys = set(map(tuple, dp_xy))
                     occ_xy = np.floor(existing_occ[:, :2] / grid).astype(int)
-                    occ_keep = np.array(
-                        [tuple(k) not in regular_keys for k in occ_xy]
-                    )
-                    existing_occ = (
-                        existing_occ[occ_keep] if np.any(occ_keep) else None
-                    )
+                    occ_keep = np.array([tuple(k) not in regular_keys for k in occ_xy])
+                    existing_occ = existing_occ[occ_keep] if np.any(occ_keep) else None
 
                 # Mark border points near radius cutoff as occluded
                 border_mask = mask & (
@@ -469,7 +465,9 @@ class CrossViewMatching:
             pose_flu[1, 3] = img_origin[1]
 
         submaps: Dict[Crop, Submap] = {}
-        intermediates: Dict[Crop, AerialPatchIntermediates] = {} if return_intermediates else None
+        intermediates: Dict[Crop, AerialPatchIntermediates] = (
+            {} if return_intermediates else None
+        )
 
         for j, y1 in enumerate(range(0, h - patch_size_px + 1, stride)):
             for i, x1 in enumerate(range(0, w - patch_size_px + 1, stride)):
@@ -677,12 +675,8 @@ class CrossViewMatching:
         )
 
         aerial_key_to_tuple = _aerial_key_to_tuple
-        aerial_x_max = max(
-            aerial_key_to_tuple(key)[0] for key in aerial_submaps.keys()
-        )
-        aerial_y_max = max(
-            aerial_key_to_tuple(key)[1] for key in aerial_submaps.keys()
-        )
+        aerial_x_max = max(aerial_key_to_tuple(key)[0] for key in aerial_submaps.keys())
+        aerial_y_max = max(aerial_key_to_tuple(key)[1] for key in aerial_submaps.keys())
 
         # Precompute crop geometry
         pixel_len_m = self.aerial_segmenter.params.pixel_len_m
@@ -695,9 +689,7 @@ class CrossViewMatching:
         patch_size_m_px = patch_size_px * pixel_len_m
 
         # Precompute VPR top-k patches if needed
-        need_vpr = mode == "vpr" or (
-            mode == "gt" and reference_trajectory is None
-        )
+        need_vpr = mode == "vpr" or (mode == "gt" and reference_trajectory is None)
         vpr_top_k_sets = {}
         if need_vpr:
             assert self.place_recognition is not None, (
@@ -872,9 +864,7 @@ class CrossViewMatching:
         # Compute rotation from reference trajectory if available
         if ground_pose_ref is not None:
             T_aerial_camera = np.linalg.inv(aerial_sm.pose) @ ground_pose_ref
-            T_aerial_odom = T_aerial_camera @ np.linalg.inv(
-                T_ground_odom_ground_robot
-            )
+            T_aerial_odom = T_aerial_camera @ np.linalg.inv(T_ground_odom_ground_robot)
             R_aerial_ground_2d = T_aerial_odom[:2, :2]
             if T_camera_flu is not None:
                 T_aerial_ground = T_aerial_camera @ T_camera_flu
@@ -945,9 +935,7 @@ class CrossViewMatching:
                 ground_segs_i.to_dim(3),
                 correspondences=matches,
             ).transformation
-            T_aerial_ground_hat = (
-                T_aerial_ground_odom_hat @ T_ground_odom_ground_robot
-            )
+            T_aerial_ground_hat = T_aerial_ground_odom_hat @ T_ground_odom_ground_robot
             if T_camera_flu is not None:
                 T_aerial_ground_hat = T_aerial_ground_hat @ T_camera_flu
         except InsufficientAssociationsException:
@@ -1067,12 +1055,8 @@ class CrossViewMatching:
         )
 
         aerial_key_to_tuple = _aerial_key_to_tuple
-        aerial_x_max = max(
-            aerial_key_to_tuple(key)[0] for key in aerial_submaps.keys()
-        )
-        aerial_y_max = max(
-            aerial_key_to_tuple(key)[1] for key in aerial_submaps.keys()
-        )
+        aerial_x_max = max(aerial_key_to_tuple(key)[0] for key in aerial_submaps.keys())
+        aerial_y_max = max(aerial_key_to_tuple(key)[1] for key in aerial_submaps.keys())
 
         all_results = {}
         all_details = {}

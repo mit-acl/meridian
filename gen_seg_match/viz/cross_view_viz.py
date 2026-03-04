@@ -371,9 +371,7 @@ def viz_ground_segments(
     return fig, ax
 
 
-def viz_general_segments_plt(
-    ax: plt.Axes, general_segments: SegmentList
-) -> plt.Axes:
+def viz_general_segments_plt(ax: plt.Axes, general_segments: SegmentList) -> plt.Axes:
     for seg in general_segments.get_points():
         p = seg.get_point()
         ax.plot(

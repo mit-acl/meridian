@@ -88,9 +88,7 @@ class CrossViewMatchingPipeline:
         self._save_aerial_results(result, output_dir)
         return result.submaps
 
-    def _save_aerial_results(
-        self, result: AerialSegmentationResult, output_dir
-    ):
+    def _save_aerial_results(self, result: AerialSegmentationResult, output_dir):
         output_dir = pathlib.Path(output_dir)
         viz_output_dir = output_dir / "viz"
         segment_output_dir = output_dir / "segments"
@@ -181,9 +179,7 @@ class CrossViewMatchingPipeline:
         self._save_ground_results(result, output_dir)
         return result.submaps
 
-    def _save_ground_results(
-        self, result: GroundSegmentationResult, output_dir
-    ):
+    def _save_ground_results(self, result: GroundSegmentationResult, output_dir):
         output_dir = pathlib.Path(output_dir)
         viz_output_dir = output_dir / "viz"
         segment_output_dir = output_dir / "segments"
@@ -207,9 +203,7 @@ class CrossViewMatchingPipeline:
                     pts = aerial_seg.points
                     max_n = params.dense_points_max_n
                     if max_n is not None and len(pts) > max_n:
-                        idx = np.round(
-                            np.linspace(0, len(pts) - 1, max_n)
-                        ).astype(int)
+                        idx = np.round(np.linspace(0, len(pts) - 1, max_n)).astype(int)
                         pts = pts[idx]
                     with open(dense_path, "wb") as f:
                         pickle.dump(pts, f)
@@ -337,7 +331,6 @@ class CrossViewMatchingPipeline:
                 # Get ground submap's full segments for dense viz
                 ground_segments_all = None
                 if ground_key in ground_submaps:
-
                     ground_segments_all = ground_submaps[ground_key].segments
 
                 viz_cross_view_matches(
@@ -362,8 +355,7 @@ class CrossViewMatchingPipeline:
                     img_array, params.match_viz_target_size_kb
                 )
                 fname_viz = (
-                    ground_sub_dir
-                    / f"ground_{ground_key}_aerial_{aerial_key}.jpg"
+                    ground_sub_dir / f"ground_{ground_key}_aerial_{aerial_key}.jpg"
                 )
                 with open(fname_viz, "wb") as f:
                     f.write(viz_bytes)
@@ -395,8 +387,7 @@ class CrossViewMatchingPipeline:
 
                 # Save matched segments
                 fname_matches = (
-                    segments_output_dir
-                    / f"ground_{ground_key}_aerial_{aerial_key}.pkl"
+                    segments_output_dir / f"ground_{ground_key}_aerial_{aerial_key}.pkl"
                 )
                 with open(fname_matches, "wb") as f:
                     pickle.dump(
