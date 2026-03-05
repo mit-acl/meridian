@@ -5,9 +5,9 @@ from gen_seg_match.params.params_base import ParamsBase
 
 
 @dataclass
-class RomanConversionParams(ParamsBase):
+class DenseToSparseParams(ParamsBase):
     # class attribute
-    params_key: ClassVar[str] = "roman_conversion"
+    params_key: ClassVar[str] = "dense_to_sparse"
 
     # general parameters ———————————————
     copy_dense_points: bool = False  # Whether to copy dense points into segments
@@ -31,13 +31,17 @@ class RomanConversionParams(ParamsBase):
         1.0  # Maximum RMS distance from line to still be considered a line
     )
     line_separate_endpoints: bool = True  # Create separate points for endpoints
-    line_separate_center_point: bool = True  # Create separate point for center point
+    line_separate_center_point: bool = False  # Create separate point for center point
     line_inclusion: bool = True  # Include line objects
+    line_always_infinite: bool = False  # Always make lines infinite
 
     # joint parameters (need to see if these work) ——————————————
 
     non_point_min_extent: float = 1.0
     max_minor_axis_extent: float = 1.5
     max_eigval_ratio: float = 0.3
+
+    # occlusion params
+    occlusion_dist: float = 1.0
 
     # ——————————————————————————————————

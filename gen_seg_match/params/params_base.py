@@ -11,9 +11,9 @@ class ParamsBase:
     @classmethod
     def load(cls, source: str, run: str = None):
         if os.path.isdir(source):
-            return cls.from_yaml(f"{source}/{cls.params_key}.yaml")
+            return cls.from_yaml(f"{source}/{cls.params_key}.yaml", run=run)
         else:
-            return cls.from_yaml(source)
+            return cls.from_yaml(source, run=run)
 
     @classmethod
     def from_yaml(cls, yaml_file, run: str = None):
@@ -26,5 +26,8 @@ class ParamsBase:
 
         if run is not None and run in params:
             params = params[run]
+
+        if run is not None:
+            os.environ["RUN"] = run
 
         return cls(**params)

@@ -15,15 +15,11 @@ import shutil
 
 from gen_seg_match.segment.segment_types import SegmentList, DenseSegment
 from gen_seg_match.match.segment_matcher import SegmentMatcher
-from gen_seg_match.map3d.segments_from_img import (
-    get_segments_with_occlusion,
-    roman_segments_to_general_segments,
-)
 from gen_seg_match.map3d.segmenter import Segmenter
 from gen_seg_match.params import (
     SegmentMatchParams,
     RGBDPoseEstimationParams,
-    RomanConversionParams,
+    DenseToSparseParams,
     RGBDPoseEstimationDataParams,
     SegmenterParams,
     RegisterParams,
@@ -41,7 +37,7 @@ from gen_seg_match.pipeline.result import (
     PoseEstimationResultMatrix,
 )
 from gen_seg_match.utils import expandvars_recursive
-from gen_seg_match.map3d.segments_from_roman import GeneralSegmentConverter
+from gen_seg_match.map3d.dense_to_sparse_converter import DenseToSparseConverter
 from gen_seg_match.register.registerer import (
     Registerer,
     InsufficientAssociationsException,
@@ -57,6 +53,8 @@ class RGBDInput:
     gravity_direction: np.ndarray = None
     segments: SegmentList = None
     pose_gt: np.ndarray = None  # optional ground truth pose
+    pose_est: np.ndarray = None  # optional estimated pose (e.g., from VIO)
+    depth_scale: float = 1e-3  # Multiplier to convert depth image values to meters
 
     @property
     def bgr(self) -> np.ndarray:
@@ -66,17 +64,22 @@ class RGBDInput:
     def shape(self) -> np.ndarray:
         return self.rgb.shape
 
+    @property
+    def depth_m(self) -> np.ndarray:
+        """Depth image in meters."""
+        return self.depth * self.depth_scale
+
 
 @dataclass
 class RGBDPoseEstimation:
     pipeline_params: RGBDPoseEstimationParams
     matcher: SegmentMatcher
     registerer: Registerer
-    roman_conversion_params: RomanConversionParams = None
+    dense_to_sparse_params: DenseToSparseParams = None
 
     def __post_init__(self):
-        self.segment_converter = GeneralSegmentConverter(
-            params=self.roman_conversion_params
+        self.segment_converter = DenseToSparseConverter(
+            params=self.dense_to_sparse_params
         )
         for dir_path in [
             self.pipeline_params.output_directory,
@@ -130,29 +133,63 @@ class RGBDPoseEstimation:
     def batch_extract_segments(
         self, inputs: List[RGBDInput], segmenter: Segmenter, output_dir: str = None
     ) -> List[RGBDInput]:
+        # First pass: extract segments from each image
+        raw_observations_list = []
         for i, rgbd_input in enumerate(inputs):
             raw_observations, _ = segmenter.segment(
                 rgbd_input.bgr, rgbd_input.time, np.eye(4), rgbd_input.depth
             )
+            raw_observations_list.append(raw_observations)
             dense_segments = [
                 DenseSegment.from_observation(obs) for obs in raw_observations
             ]
-            general_segments = (
-                self.segment_converter.segment_with_occlusion_to_general_segments(
-                    dense_segments
-                )
-            )
+            general_segments = self.segment_converter.convert(dense_segments)
             general_segments = SegmentList(general_segments)
+            for seg in general_segments:
+                max_numeric_val = 2 ** self.pipeline_params.bits_per_semantic_dim - 1
+                max_descriptor_val = np.max(seg.cos_feature.flatten())
+                cos_feature = seg.cos_feature / max_descriptor_val * max_numeric_val
+                seg.cos_feature = cos_feature.astype(int).astype(np.float32)
             rgbd_input.segments = general_segments
-            if output_dir is not None:
+
+        # Second pass: add adjacent segments if enabled
+        if self.pipeline_params.use_multiple_imgs:
+            # Store original segments to avoid duplicating already-merged segments
+            original_segments = [inp.segments.copy() for inp in inputs]
+
+            for i, rgbd_input in enumerate(inputs):
+                if rgbd_input.pose_est is None:
+                    continue
+
+                T_world_center = rgbd_input.pose_est
+                for offset in self.pipeline_params.additional_adjacent_imgs_list:
+                    if offset == 0:
+                        continue
+                    adj_idx = i + offset
+                    if adj_idx < 0 or adj_idx >= len(inputs):
+                        continue
+                    adj_input = inputs[adj_idx]
+                    if adj_input.pose_est is None or original_segments[adj_idx] is None:
+                        continue
+
+                    # Transform from adjacent frame to center frame
+                    T_world_adjacent = adj_input.pose_est
+                    T_center_adjacent = np.linalg.inv(T_world_center) @ T_world_adjacent
+
+                    # Copy and transform adjacent segments (from original, not modified)
+                    adj_segments = original_segments[adj_idx].copy()
+                    adj_segments.transform(T_center_adjacent)
+                    rgbd_input.segments = (rgbd_input.segments + adj_segments).reindex()
+
+        # Visualization
+        if output_dir is not None:
+            for i, rgbd_input in enumerate(inputs):
                 self.draw_segments(
                     rgbd_input,
-                    raw_observations,
-                    general_segments,
+                    raw_observations_list[i],
+                    rgbd_input.segments,
                     output_file=f"{output_dir}/{i}.png",
                 )
-
-        if output_dir is not None:
             with open(f"{output_dir}/segments.pkl", "wb") as f:
                 pickle.dump(inputs, f)
 
@@ -217,7 +254,10 @@ class RGBDPoseEstimation:
                         matches2,
                         output_file=f"{output_file_prefix}_matches.png",
                     )
-                    if not np.any(np.isnan(result.T_i_j_hat)):
+                    if (
+                        not np.any(np.isnan(result.T_i_j_hat))
+                        and self.pipeline_params.viz_registration
+                    ):
                         self.draw_registration(
                             in1,
                             in2,
@@ -249,14 +289,18 @@ class RGBDPoseEstimation:
         segments2_matches: SegmentList,
         output_file: str = None,
     ):
-        assert input1.rgb.shape == input2.rgb.shape, (
-            "Only inputs of the same shape are currently supported"
-        )
         assert len(segments1_matches) == len(segments2_matches)
+
+        # Scale input2 to match input1 height
+        scale = input1.shape[0] / input2.shape[0]
+        input2_scaled_width = int(input2.shape[1] * scale)
+
         output = np.zeros(
             (
                 input1.shape[0] * 2 + self.pipeline_params.viz_img_pixel_sep,
-                input1.shape[1] * 2 + self.pipeline_params.viz_img_pixel_sep,
+                input1.shape[1]
+                + self.pipeline_params.viz_img_pixel_sep
+                + input2_scaled_width,
                 3,
             )
         )
@@ -269,15 +313,16 @@ class RGBDPoseEstimation:
             write_ids=self.pipeline_params.viz_write_ids,
         )
 
-        output[
-            : input2.shape[0],
-            input1.shape[1] + self.pipeline_params.viz_img_pixel_sep :,
-        ] = img_sparse_viz(
+        input2_viz = img_sparse_viz(
             input2.bgr,
             segments2,
             input2.camera_params.K,
             write_ids=self.pipeline_params.viz_write_ids,
         )
+        output[
+            : input1.shape[0],
+            input1.shape[1] + self.pipeline_params.viz_img_pixel_sep :,
+        ] = cv.resize(input2_viz, (input2_scaled_width, input1.shape[0]))
 
         colors = [
             color_from_seed(np.random.randint(int(1e9)), order="brg", num_type=int)
@@ -294,16 +339,17 @@ class RGBDPoseEstimation:
             write_ids=self.pipeline_params.viz_write_ids,
         )
 
-        output[
-            input1.shape[0] + self.pipeline_params.viz_img_pixel_sep :,
-            input1.shape[1] + self.pipeline_params.viz_img_pixel_sep :,
-        ] = img_sparse_viz(
+        input2_matches_viz = img_sparse_viz(
             input2.bgr,
             segments2_matches,
             input2.camera_params.K,
             colors=colors,
             write_ids=self.pipeline_params.viz_write_ids,
         )
+        output[
+            input1.shape[0] + self.pipeline_params.viz_img_pixel_sep :,
+            input1.shape[1] + self.pipeline_params.viz_img_pixel_sep :,
+        ] = cv.resize(input2_matches_viz, (input2_scaled_width, input1.shape[0]))
 
         if output_file is not None:
             cv.imwrite(output_file, output)
@@ -329,7 +375,7 @@ class RGBDPoseEstimation:
         o3d_segments, _ = viz_segments(
             segments1_matches + segments2_registered,
             offscreen=True,
-            show_dense=True,
+            show_dense=False,
             colors=colors,
         )
         output = render3d_on_img(o3d_segments, camera_params=input1.camera_params)
@@ -451,6 +497,11 @@ class RGBDPoseEstimation:
                 if data.camera_gt_pose_data is not None
                 else None
             )
+            pose_est = (
+                data.camera_est_pose_data.pose(t)
+                if data.camera_est_pose_data is not None
+                else None
+            )
             rgbd_inputs.append(
                 RGBDInput(
                     time=t,
@@ -459,6 +510,8 @@ class RGBDPoseEstimation:
                     camera_params=data.img_data.camera_params,
                     gravity_direction=gravity_direction,
                     pose_gt=pose_gt,
+                    pose_est=pose_est,
+                    depth_scale=data.depth_scale,
                 )
             )
         return rgbd_inputs
@@ -546,7 +599,7 @@ def rgbd_pose_estimation(
         pipeline_params=pipeline_params,
         matcher=SegmentMatcher(SegmentMatchParams.load(params)),
         registerer=Registerer(RegisterParams.load(params)),
-        roman_conversion_params=RomanConversionParams.load(params),
+        dense_to_sparse_params=DenseToSparseParams.load(params),
     )
 
     # copy params to output dir

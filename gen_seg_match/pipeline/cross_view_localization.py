@@ -30,6 +30,7 @@ from gen_seg_match.params import (
     SubmapParams,
     GroundSegmenterParams,
     RegisterParams,
+    DenseToSparseParams,
 )
 from gen_seg_match.viz.utils import color_from_seed
 from gen_seg_match.viz.img_sparse_viz import img_sparse_viz
@@ -44,11 +45,8 @@ from gen_seg_match.map2d.ground_segmenter import GroundSegmenter
 from gen_seg_match.map2d.map_processing import clean_up_line_map, split_long_lines
 from gen_seg_match.segment.aerial_segment import AerialSegment
 from gen_seg_match.segment.segment_types import SegmentPoint, SegmentLine
-from gen_seg_match.map3d.submap import (
-    Submap,
-    submaps_from_roman_map,
-    RomanConversionParams,
-)
+from gen_seg_match.map3d.submap import Submap
+from gen_seg_match.map3d.dense_to_sparse_converter import DenseToSparseConverter
 from gen_seg_match.viz.cross_view_viz import viz_cross_view_matches
 
 Crop = Tuple[int, int, int, int]
@@ -152,12 +150,71 @@ class CrossViewLocalization:
         return result
 
     def ground_map_to_submaps(self, ground_map: ROMANMap) -> List[Submap]:
-        conversion_params = RomanConversionParams(
+        conversion_params = DenseToSparseParams(
             copy_dense_points=True, force_points_only=True
         )
-        submaps = submaps_from_roman_map(
-            ground_map, self.ground_submap_params, conversion_params
-        )
+        converter = DenseToSparseConverter(conversion_params)
+        general_segments = converter.convert(ground_map.segments)
+
+        dist_m = self.pipeline_params.ground_submap_dist_m
+        rad_m = self.pipeline_params.ground_submap_rad_m
+        time_s = self.pipeline_params.ground_submap_time_s
+
+        # Sample poses along trajectory spaced ground_submap_dist_m apart
+        sampled_indices = []
+        last_position = None
+        for i, pose in enumerate(ground_map.trajectory):
+            position = pose[:3, 3]
+            if last_position is None or np.linalg.norm(position - last_position) >= dist_m:
+                sampled_indices.append(i)
+                last_position = position
+
+        # For each sampled pose, collect segments with dense points within radius
+        submaps = []
+        for k, idx in enumerate(sampled_indices):
+            pose = ground_map.trajectory[idx]
+            center = pose[:3, 3]
+            submap_segments = []
+
+            submap_time = ground_map.times[idx]
+
+            for seg in general_segments:
+                if seg.dense_points is None:
+                    continue
+                # Check temporal overlap: segment must have been seen
+                # within time_s of the submap time
+                if seg.first_seen is not None and seg.last_seen is not None:
+                    if seg.first_seen > submap_time + time_s:
+                        continue
+                    if seg.last_seen < submap_time - time_s:
+                        continue
+                dists = np.linalg.norm(seg.dense_points - center, axis=1)
+                mask = dists <= rad_m
+                if not np.any(mask):
+                    continue
+                seg_copy = seg.copy()
+                seg_copy.dense_points = seg.dense_points[mask].copy()
+                seg_copy.point = np.mean(seg_copy.dense_points, axis=0)
+                if len(seg_copy.dense_points) >= self.pipeline_params.segment_min_points:
+                    submap_segments.append(seg_copy)
+
+            if len(submap_segments) == 0:
+                continue
+
+            submap = Submap(
+                id=k,
+                time=ground_map.times[idx],
+                segments=SegmentList(submap_segments),
+                pose_flu=pose,
+            )
+
+            # Transform segments from odom frame to submap-local frame
+            T_center_odom = np.linalg.inv(submap.pose_gravity_aligned)
+            for seg in submap.segments:
+                seg.transform(T_center_odom)
+
+            submaps.append(submap)
+
         return submaps
 
     def load_submaps_from_dir(
@@ -477,7 +534,10 @@ class CrossViewLocalization:
             for aerial_key, aerial_sm_j in aerial_submaps_2d.items():
                 # check if the aerial crop is within range of the ground submap
                 if ground_pose_gt is not None:
-                    aerial_crop_position = aerial_sm_j.pose_flu[:2, 3].copy() + aerial_sm_j.metadata["crop_center_m"]
+                    aerial_crop_position = (
+                        aerial_sm_j.pose_flu[:2, 3].copy()
+                        + aerial_sm_j.metadata["crop_center_m"]
+                    )
                     if (
                         np.linalg.norm(
                             aerial_crop_position.flatten()[:2] - ground_pose_gt[:2, 3]
@@ -493,11 +553,13 @@ class CrossViewLocalization:
 
                 # split long lines before matching
                 ground_segs_i = ground_sm_i.segments.get_points() + split_long_lines(
-                    ground_sm_i.segments.get_lines(), max_length=self.pipeline_params.line_split_length_m
+                    ground_sm_i.segments.get_lines(),
+                    max_length=self.pipeline_params.line_split_length_m,
                 )
                 ground_segs_i.reindex()
                 aerial_segs_j = aerial_sm_j.segments.get_points() + split_long_lines(
-                    aerial_sm_j.segments.get_lines(), max_length=self.pipeline_params.line_split_length_m
+                    aerial_sm_j.segments.get_lines(),
+                    max_length=self.pipeline_params.line_split_length_m,
                 )
                 aerial_segs_j.reindex()
 

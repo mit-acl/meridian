@@ -343,9 +343,7 @@ class TestTwoPlanesOneLine:
     Total: 6 DOF fully constrained
     """
 
-    def test_two_planes_one_line_basic(
-        self, default_register_params, sample_transform
-    ):
+    def test_two_planes_one_line_basic(self, default_register_params, sample_transform):
         """
         Two non-parallel planes and a line not parallel to their intersection.
         """

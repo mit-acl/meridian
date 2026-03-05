@@ -18,9 +18,9 @@ STANDARD_YAW_DIFFS = {
 
 @dataclass
 class EvalParams:
-    angular_err_thresh_deg: float = 5.0
+    angular_err_thresh_deg: float = 10.0
     distance_err_thresh_m: float = 1.0
-    evaluation_distance_m: float = 10.0
+    evaluation_distance_m: float = 20.0
     robot_names: List[str] = None
     include_inter_robot: bool = False
 
@@ -50,12 +50,18 @@ class EvalInput:
     map_directory: str = None
     params_directory: str = None
 
+    def should_use_match_directory(self):
+        if os.path.isdir(f"{self.directory}/match"):
+            return True
+
     def get_directory(self):
         assert os.path.isdir(self.directory), (
             f"Directory {self.directory} does not exist."
         )
         if os.path.isdir(f"{self.directory}/align"):
             return f"{self.directory}/align"
+        if os.path.isdir(f"{self.directory}/match"):
+            return f"{self.directory}/match"
         return self.directory
 
     def get_name(self):
@@ -91,14 +97,18 @@ class SubmapAlignEvaluator:
         for eval_input in eval_inputs:
             result_paths = self._get_results_paths(eval_input)
             combined_results = []
-            for path, robots in zip(result_paths, self.params.robot_pairs):
-                combined_results.append(
-                    PoseEstimationResultMatrix.load(path).reshape(-1)
-                )
+            try:
+                for path, robots in zip(result_paths, self.params.robot_pairs):
+                    combined_results.append(
+                        PoseEstimationResultMatrix.load(path).reshape(-1)
+                    )
 
-            self.results[eval_input.get_name()] = (
-                PoseEstimationResultMatrix.concatenate(combined_results)
-            )
+                self.results[eval_input.get_name()] = (
+                    PoseEstimationResultMatrix.concatenate(combined_results)
+                )
+            except Exception as e:
+                print(f"Error loading results for {eval_input.get_name()}: {e}")
+                continue
 
     def evaluate_align_success_rate(
         self,
@@ -126,17 +136,20 @@ class SubmapAlignEvaluator:
             success_rates[name] = success_rate
         return success_rates
 
-    # def evaluate_timing(self) -> Dict[str, float]:
-    #     timing_results = {}
-    #     for name, results in self.results.items():
-    #         if results.timing_list is None:
-    #             timing_results[name] = float('nan')
-    #             continue
-    #         mean_time = np.nanmean(results.timing_list)
-    #         timing_results[name] = mean_time
-    #     return timing_results
+    def evaluate_timing(self) -> Dict[str, float]:
+        timing_results = {}
+        for name, results in self.results.items():
+            if results.runtime_s is None:
+                timing_results[name] = float("nan")
+                continue
+            mean_time = np.nanmean(results.runtime_s)
+            timing_results[name] = mean_time
+        return timing_results
 
     def _get_results_paths(self, eval_input: EvalInput) -> List[str]:
+        if eval_input.should_use_match_directory():
+            return [os.path.join(eval_input.get_directory(), "results.npz")]
+
         dir_path = eval_input.get_directory()
         result_files = []
         for robot_pair in self.params.robot_pairs_as_strings:
@@ -225,16 +238,16 @@ def main():
             yaw_diff_min_deg=min_deg, yaw_diff_max_deg=max_deg
         )
 
-    # timing_results = evaluator.evaluate_timing()
+    timing_results = evaluator.evaluate_timing()
 
     for yaw_diff_label, rates in success_rates.items():
         print(f"\n=== Alignment Success Rates for Yaw Diff: {yaw_diff_label} ===")
         for name, rate in rates.items():
             print(f"{name}: {rate:.3f}")
 
-    # print(f"\n=== Timing Results (ms) ===")
-    # for name, time in timing_results.items():
-    #     print(f"{name}: {time*1e3:.1f}")
+    print(f"\n=== Timing Results (ms) ===")
+    for name, time in timing_results.items():
+        print(f"{name}: {time * 1e3:.1f}")
 
 
 if __name__ == "__main__":

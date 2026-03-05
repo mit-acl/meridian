@@ -107,9 +107,7 @@ def draw_plane_on_img(
     ]
 
     if len(points_in_2d) == 0:
-        import ipdb
-
-        ipdb.set_trace()
+        return img
 
     # Eventually Draw lines between neighboring points to visualize the plane
     # for now, just draw the square lines (assume just one )

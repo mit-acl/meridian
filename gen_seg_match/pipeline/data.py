@@ -11,6 +11,7 @@ from roman.map.map import ROMANMap
 from gen_seg_match.params.data_params import (
     RGBDPoseEstimationDataParams,
     CrossViewLocalizationDataParams,
+    GroundToBEVDataParams,
 )
 
 
@@ -21,6 +22,7 @@ class RGBDPoseEstimationData:
     camera_est_pose_data: PoseData = None
     camera_gt_pose_data: PoseData = None
     gravity_direction: np.ndarray = (0.0, 0.0, -1.0)
+    depth_scale: float = 1e-3  # Multiplier to convert depth image values to meters
 
     @classmethod
     def from_params(cls, params: Union[str, RGBDPoseEstimationDataParams]):
@@ -46,6 +48,7 @@ class RGBDPoseEstimationData:
             camera_est_pose_data=camera_est_pose_data,
             camera_gt_pose_data=camera_gt_pose_data,
             gravity_direction=params.gravity_direction,
+            depth_scale=params.depth_scale,
         )
 
     def __post_init__(self):
@@ -88,3 +91,76 @@ class CrossViewLocalizationData:
             gt_pose_data=gt_pose_data,
             aerial_img_scale=params.aerial_img_scale,
         )
+
+
+@dataclass
+class GroundToBEVData:
+    img_data: ImgData
+    depth_data: ImgData
+    camera_pose_data: PoseData
+
+    @classmethod
+    def from_params(
+        cls,
+        params: Union[str, GroundToBEVDataParams],
+        time_range: tuple = None,
+    ):
+        """
+        Create GroundToBEVData from params.
+
+        Args:
+            params: Path to params file or GroundToBEVDataParams object.
+            time_range: Optional (t0, tf) tuple of absolute timestamps to load.
+                        If provided, only data within this range will be loaded,
+                        significantly reducing memory usage for large bags.
+        """
+        if type(params) is str:
+            params_file = params
+            params = GroundToBEVDataParams.from_yaml(params_file)
+
+        # Add time_range to data dicts if provided
+        img_data_dict = dict(params.img_data) if params.img_data else {}
+        depth_data_dict = dict(params.depth_data) if params.depth_data else {}
+        camera_pose_data_dict = (
+            dict(params.camera_pose_data) if params.camera_pose_data else {}
+        )
+
+        if time_range is not None:
+            img_data_dict["time_range"] = time_range
+            depth_data_dict["time_range"] = time_range
+
+        img_data = ImgData.from_dict(img_data_dict) if img_data_dict else None
+        depth_data = ImgData.from_dict(depth_data_dict) if depth_data_dict else None
+        camera_pose_data = (
+            PoseData.from_dict(camera_pose_data_dict) if camera_pose_data_dict else None
+        )
+
+        return cls(
+            img_data=img_data,
+            depth_data=depth_data,
+            camera_pose_data=camera_pose_data,
+        )
+
+    @staticmethod
+    def get_bag_time_range(params: Union[str, GroundToBEVDataParams]) -> tuple:
+        """
+        Get the time range of the bag without loading all data.
+
+        Uses the bag's chunk metadata for fast lookup rather than
+        iterating through all messages.
+
+        Args:
+            params: Path to params file or GroundToBEVDataParams object.
+
+        Returns:
+            Tuple of (t0, tf) absolute timestamps.
+        """
+        if type(params) is str:
+            params = GroundToBEVDataParams.from_yaml(params)
+
+        # Use bag_t_range for fast lookup from chunk metadata
+        bag_path = params.img_data.get("path")
+
+        if bag_path:
+            return ImgData.bag_t_range(bag_path)
+        return None
