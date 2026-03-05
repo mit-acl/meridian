@@ -206,8 +206,10 @@ def viz_aerial_segments(
     alpha_shape_max_n_pts: int = None,
     alpha_shape_ref_size_m: float = None,
     downsample_factor: int = 5,
+    line_width_m: float = 0.2,
 ) -> np.ndarray:
     aerial_viz = img.copy()
+    line_width_px = max(1, int(line_width_m / pixel_len_m))
     img_origin_m = (
         (0.0, 0.0)
         if crop is None
@@ -227,7 +229,9 @@ def viz_aerial_segments(
         )
         if alpha_shape_px is None:
             continue
-        cv.polylines(aerial_viz, [alpha_shape_px], True, seg.viz_color[::-1], 20)
+        cv.polylines(
+            aerial_viz, [alpha_shape_px], True, seg.viz_color[::-1], line_width_px
+        )
 
     return downsample_aerial_viz(aerial_viz, downsample_factor)
 
@@ -238,9 +242,12 @@ def viz_general_segments_img(
     crop,
     px_per_m: float,
     downsample_factor: int = 5,
+    line_width_m: float = 0.2,
 ) -> np.ndarray:
     general_viz = img.copy()
     x1, y1, x2, y2 = crop
+    pixel_len_m = 1.0 / px_per_m
+    line_width_px = max(1, int(line_width_m / pixel_len_m))
 
     # draw points
     for seg in segments.get_points():
@@ -248,9 +255,9 @@ def viz_general_segments_img(
         cv.circle(
             general_viz,
             (int(p[0] * px_per_m - x1), int(p[1] * px_per_m - y1)),
-            10,
+            line_width_px * 2,
             seg.color_from_id(order="bgr"),
-            10,
+            line_width_px,
         )
 
     # draw lines
@@ -277,7 +284,7 @@ def viz_general_segments_img(
             pt0,
             pt1,
             seg.color_from_id(order="bgr"),
-            20,
+            line_width_px,
         )
     return downsample_aerial_viz(general_viz, downsample_factor)
 

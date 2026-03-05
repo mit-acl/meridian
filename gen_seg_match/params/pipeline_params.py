@@ -95,6 +95,7 @@ class CrossViewMatchingParams(ParamsBase):
     line_pt_dist_check_m: float = 1.0
 
     aerial_viz_downsample: int = 5
+    aerial_viz_line_width_m: float = 0.2
     ground_dist_from_aerial_patch_center_m: float = 75.0
 
     aerial_viz_target_size_kb: int = 200

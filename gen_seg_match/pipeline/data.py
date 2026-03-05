@@ -5,7 +5,9 @@ from typing import Union
 from robotdatapy.data import PoseData, ImgData
 import cv2 as cv
 import rasterio
+from rasterio.crs import CRS
 from rasterio.transform import xy
+from rasterio.warp import transform as warp_transform
 
 from roman.map.map import ROMANMap
 
@@ -85,7 +87,7 @@ class CrossViewLocalizationData:
         with rasterio.open(params.aerial_img_path) as ds:
             transform = ds.transform
             x_utm, y_utm = xy(transform, 0, 0)  # row, col
-            geotiff_pixel_size = ds.res[0]  # (x_res, y_res) in CRS units
+            geotiff_pixel_size = cls._ground_pixel_size(ds)
 
         aerial_img_scale = params.aerial_img_scale
         if aerial_img_scale is None:
@@ -106,6 +108,24 @@ class CrossViewLocalizationData:
             aerial_img_scale=aerial_img_scale,
             T_camera_flu=params.T_camera_flu,
         )
+
+    @staticmethod
+    def _ground_pixel_size(ds) -> float:
+        """Return the ground-truth pixel size in metres.
+
+        For UTM or other conformal metric CRSs, ``ds.res`` already gives
+        metres-per-pixel.  For Web Mercator (EPSG:3857) the projected
+        metre is stretched by 1/cos(latitude), so we correct for that.
+        """
+        pixel_size = ds.res[0]
+        crs = ds.crs
+        if crs is not None and crs.to_epsg() == 3857:
+            # Convert image centre to WGS-84 latitude
+            cx = (ds.bounds.left + ds.bounds.right) / 2
+            cy = (ds.bounds.bottom + ds.bounds.top) / 2
+            _, lat = warp_transform(crs, CRS.from_epsg(4326), [cx], [cy])
+            pixel_size *= np.cos(np.radians(lat[0]))
+        return pixel_size
 
     @staticmethod
     def _load_ground_map(path: str) -> Union[ROMANMap, SegmentMap]:
@@ -241,6 +261,16 @@ class SegmentMappingData:
             params = SegmentMappingDataParams.from_yaml(params)
 
         bag_path = params.img_data.get("path")
-        if bag_path:
-            return ImgData.bag_t_range(bag_path)
-        return None
+        if not bag_path:
+            return None
+
+        topic = params.img_data.get("topic")
+        ignore_ros_time = params.img_data.get("ignore_ros_time", False)
+        if ignore_ros_time and topic:
+            # bag_t_range reads ROS recording timestamps from bag metadata, which
+            # differ from header timestamps when ignore_ros_time=True. Use the
+            # actual header timestamps from the first/last messages instead.
+            t0 = ImgData.topic_t0(bag_path, topic)
+            tf = ImgData.topic_tf(bag_path, topic)
+            return (t0, tf)
+        return ImgData.bag_t_range(bag_path)

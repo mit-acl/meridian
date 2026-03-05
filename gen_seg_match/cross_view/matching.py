@@ -453,6 +453,11 @@ class CrossViewMatching:
         if stride <= 0:
             raise ValueError("Patch overlap too large; stride becomes non-positive.")
 
+        logger.info(
+            f"Aerial batch: img={w}x{h}px, pixel_len_m={self.aerial_segmenter.params.pixel_len_m:.6f}, "
+            f"patch={patch_size_px}px ({patch_size_m}m), stride={stride}px, overlap={overlap}"
+        )
+
         pose_flu = np.eye(4)
         pose_flu[:3, :3] = np.array(
             [

@@ -126,6 +126,7 @@ class CrossViewMatchingPipeline:
                     params.alpha_shape_max_n_pts,
                     params.alpha_shape_ref_size_m,
                     params.aerial_viz_downsample,
+                    line_width_m=params.aerial_viz_line_width_m,
                 )
                 viz_bytes = downsample_to_target_size(
                     aerial_viz, params.aerial_viz_target_size_kb
@@ -141,6 +142,7 @@ class CrossViewMatchingPipeline:
                     crop=crop,
                     px_per_m=px_per_m,
                     downsample_factor=params.aerial_viz_downsample,
+                    line_width_m=params.aerial_viz_line_width_m,
                 )
                 viz_bytes = downsample_to_target_size(
                     general_viz, params.aerial_viz_target_size_kb
@@ -156,6 +158,7 @@ class CrossViewMatchingPipeline:
                     crop=crop,
                     px_per_m=px_per_m,
                     downsample_factor=params.aerial_viz_downsample,
+                    line_width_m=params.aerial_viz_line_width_m,
                 )
                 viz_bytes = downsample_to_target_size(
                     sparse_general_viz, params.aerial_viz_target_size_kb
