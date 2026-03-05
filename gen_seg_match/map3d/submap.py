@@ -5,6 +5,7 @@ from copy import deepcopy
 from robotdatapy.transform import transform
 from roman.utils import transform_rm_roll_pitch
 import pickle
+from enum import Enum
 
 from gen_seg_match.segment.segment_types import SegmentList
 from gen_seg_match.params.submap_params import SubmapParams
@@ -14,30 +15,35 @@ from gen_seg_match.utils import sort_time_intervals
 from roman.map.map import ROMANMap
 
 
+class FrameType(Enum):
+    BASE_LINK = "base_link"
+    CAMERA = "camera"
+    GRAVITY_ALIGNED_FLU = "gravity_aligned_flu"
+    UTM = "utm"
+    ODOMETRY = "odometry"
+
+
 @dataclass
 class Submap:
     id: int
     time: float
     segments: SegmentList
-    pose_flu: np.ndarray
-    segment_frame: str = "submap_gravity_aligned"
+    pose: np.ndarray
+    segment_frame: FrameType
+    gravity_dir: np.ndarray = None
     descriptor: np.ndarray = None
     metadata: dict = None
 
     @property
-    def pose_gravity_aligned(self):
-        return transform_rm_roll_pitch(self.pose_flu)
-
-    @property
     def position(self):
-        return self.pose_flu[:3, 3]
+        return self.pose[:3, 3]
 
     @property
     def segments_as_global_points(self):
-        # self.pose_gravity_aligned returns T_odom_center
+        # self.pose returns T_odom_submap
         # which is transformation from submap center frame to odom frame
         # so this transforms segments back to the global (odom) frame
-        T_odom_center = self.pose_gravity_aligned
+        T_odom_center = self.pose
         return transform(
             T_odom_center, np.vstack([seg.center.T for seg in self.segments])
         )  # (1, 3) -> (N, 3)

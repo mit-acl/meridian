@@ -4,13 +4,17 @@ build-backend = "hatchling.build"
 
 [project]
 name = "gen_seg_match"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
     "numpy",
     "alphashape",
     "trimesh",
     "manifold3d",
     "rasterio<1.5",
+    "circle-fit",
+    # for dinov3
+    #"torchmetrics",
+    #"termcolor",
     #"segment_anything @ git+https://github.com/facebookresearch/segment-anything.git"
 ]
 requires-python = ">=3.8"

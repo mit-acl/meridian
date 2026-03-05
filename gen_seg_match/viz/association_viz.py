@@ -155,10 +155,31 @@ class AssociationViz:
                     self.params.line_width,
                 )
             elif type(seg) is SegmentLine:
-                points = (
-                    (np.array(seg.endpoints)[:, :2] - self.params.aerial_crop_origin_m)
-                    / self.params.cropped_img_pixel_scale
-                ).astype(np.int32)
+                if seg.num_endpoints == 2:
+                    points = (
+                        (
+                            np.array(seg.endpoints)[:, :2]
+                            - self.params.aerial_crop_origin_m
+                        )
+                        / self.params.cropped_img_pixel_scale
+                    ).astype(np.int32)
+                else:
+                    pt = seg.get_point().flatten()[:2]
+                    d = seg.get_direction().flatten()[:2]
+                    far = 1e4
+                    p1 = (
+                        (pt - d * far) - self.params.aerial_crop_origin_m
+                    ) / self.params.cropped_img_pixel_scale
+                    p2 = (
+                        (pt + d * far) - self.params.aerial_crop_origin_m
+                    ) / self.params.cropped_img_pixel_scale
+                    h, w = aerial_img.shape[:2]
+                    ret, cp1, cp2 = cv.clipLine(
+                        (0, 0, w, h), tuple(p1.astype(int)), tuple(p2.astype(int))
+                    )
+                    if not ret:
+                        continue
+                    points = np.array([cp1, cp2])
                 aerial_outlines.append(points)
                 aerial_img = cv.line(
                     aerial_img,

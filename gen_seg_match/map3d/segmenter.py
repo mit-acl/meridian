@@ -28,6 +28,8 @@ import clip
 from transformers import AutoImageProcessor, AutoModel
 from typing import List
 from segment_anything import sam_model_registry, SamAutomaticMaskGenerator
+from scipy.spatial import cKDTree
+
 
 from robotdatapy.camera import CameraParams, pixel_depth_2_xyz
 from robotdatapy.transform import transform
@@ -99,21 +101,70 @@ class Segmenter:
                 clip_model, device=self.params.device
             )
         elif self.params.semantics.lower() == "dino":
+            dino_model_name = f"facebook/dinov2-{self.params.semantics_size}"
             self.semantics_preprocess = AutoImageProcessor.from_pretrained(
-                "facebook/dinov2-base", do_center_crop=False
+                dino_model_name, do_center_crop=False
             )
-            self.semantics_model = AutoModel.from_pretrained("facebook/dinov2-base")
+            self.semantics_model = AutoModel.from_pretrained(dino_model_name)
             self.semantics_model.eval()
             self.semantics_model.to(self.params.device)
+            self._num_register_tokens = 0
+        elif self.params.semantics.lower() == "dinov3-hf":
+            size_to_hf_name = {
+                "small": "facebook/dinov3-vits16-pretrain-lvd1689m",
+                "base": "facebook/dinov3-vitb16-pretrain-lvd1689m",
+                "large": "facebook/dinov3-vitl16-pretrain-lvd1689m",
+            }
+            hf_name = size_to_hf_name.get(self.params.semantics_size)
+            if hf_name is None:
+                raise ValueError(
+                    f"Invalid semantics_size for dinov3-hf: {self.params.semantics_size}. "
+                    f"Choose from {list(size_to_hf_name.keys())}."
+                )
+            self.semantics_preprocess = AutoImageProcessor.from_pretrained(
+                hf_name, do_center_crop=False
+            )
+            self.semantics_model = AutoModel.from_pretrained(hf_name)
+            self.semantics_model.eval()
+            self.semantics_model.to(self.params.device)
+            self._num_register_tokens = self.semantics_model.config.num_register_tokens
+        elif self.params.semantics.lower() == "dinov3":
+            import torchvision.transforms as T
+
+            size_to_hub_fn = {
+                "small": "dinov3_vits16",
+                "base": "dinov3_vitb16",
+                "large": "dinov3_vitl16",
+            }
+            hub_fn = size_to_hub_fn.get(self.params.semantics_size)
+            if hub_fn is None:
+                raise ValueError(
+                    f"Invalid semantics_size for dinov3: {self.params.semantics_size}. "
+                    f"Choose from {list(size_to_hub_fn.keys())}."
+                )
+            hub_kwargs = {}
+            if self.params.dinov3_weights is not None:
+                hub_kwargs["weights"] = self.params.dinov3_weights
+            self.semantics_model = torch.hub.load(
+                self.params.dinov3_path, hub_fn, source="local", **hub_kwargs
+            )
+            self.semantics_model.eval()
+            self.semantics_model.to(self.params.device)
+            self.dinov3_transform = T.Compose(
+                [
+                    T.ToTensor(),
+                    T.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+                ]
+            )
         else:
             raise ValueError(
-                f"Invalid semantics option: {self.params.semantics}. Choose from 'clip', 'dino', or 'none'."
+                f"Invalid semantics option: {self.params.semantics}. Choose from 'clip', 'dino', 'dinov3', 'dinov3-hf', or 'none'."
             )
         self.semantic_patches_shape = None
         self.frame_descriptor_type = self.params.frame_descriptor
         if self.params.frame_descriptor is not None:
-            assert self.params.semantics == "dino", (
-                "Frame descriptor only supported with DINO semantics."
+            assert self.params.semantics in ("dino", "dinov3", "dinov3-hf"), (
+                "Frame descriptor only supported with DINO, DINOv3, or DINOv3-HF semantics."
             )
 
         # Set up ignore mask from triangle ignore masks
@@ -207,8 +258,8 @@ class Segmenter:
         # run segmentation
         masks = self._process_img(img_bgr, ignore_mask=ignore_mask, keep_mask=keep_mask)
 
-        if self.params.semantics == "dino":
-            # Process the image for DINO
+        if self.params.semantics in ("dino", "dinov3-hf"):
+            # Process the image for DINO / DINOv3-HF
             img_rgb = cv.cvtColor(img_bgr, cv.COLOR_BGR2RGB)
             preprocessed = self.semantics_preprocess(
                 images=img_rgb, return_tensors="pt"
@@ -222,6 +273,22 @@ class Segmenter:
             dino_features = self.get_per_pixel_features(
                 model_output_patches=dino_output_patches, img_shape=img_bgr.shape
             )
+            dino_features = self.unapply_rotation(dino_features)
+        elif self.params.semantics == "dinov3":
+            img_rgb = cv.cvtColor(img_bgr, cv.COLOR_BGR2RGB)
+            img_tensor = (
+                self.dinov3_transform(img_rgb).unsqueeze(0).to(self.params.device)
+            )
+            with torch.no_grad():
+                features = self.semantics_model.get_intermediate_layers(
+                    img_tensor, n=1, reshape=True, return_class_token=False, norm=True
+                )[0]  # (B, C, H_patches, W_patches)
+            dino_output_patches = features.permute(0, 2, 3, 1)  # (1, H, W, C)
+            dino_features = torch.nn.functional.interpolate(
+                features,
+                size=(img_bgr.shape[0], img_bgr.shape[1]),
+                mode="bilinear",
+            )[0].permute(1, 2, 0)  # (H, W, C)
             dino_features = self.unapply_rotation(dino_features)
 
         frame_descriptor = None
@@ -313,7 +380,7 @@ class Segmenter:
                 )
                 clip_embedding = clip_embedding.squeeze().cpu().detach().numpy()
                 semantic_descriptor = clip_embedding
-            elif self.params.semantics == "dino":
+            elif self.params.semantics in ("dino", "dinov3", "dinov3-hf"):
                 assert (
                     mask.shape[0] == dino_features.shape[0]
                     and mask.shape[1] == dino_features.shape[1]
@@ -339,11 +406,26 @@ class Segmenter:
                     original_points[:, 2] > self.params.max_depth
                 ]
                 new_observation.occluded_points = self._compute_occlusion_points(
-                    points=original_points,
+                    points=points,
                     mask=mask,
                     depth_img=depth_data,
                     occlusion_edge_mask=occlusion_edge_mask,
                 )
+
+                # Remove non-occluded points too close to occluded points
+                if (
+                    new_observation.occluded_points is not None
+                    and new_observation.occluded_points.shape[0] > 0
+                    and new_observation.point_cloud is not None
+                    and new_observation.point_cloud.shape[0] > 0
+                ):
+                    occ_tree = cKDTree(new_observation.occluded_points)
+                    dists, _ = occ_tree.query(new_observation.point_cloud)
+                    keep = dists > self.params.min_occluded_unoccluded_dist_m
+                    new_observation.point_cloud = new_observation.point_cloud[keep]
+
+                if len(new_observation.point_cloud) == 0:
+                    continue
 
             self.observations.append(new_observation)
 
@@ -562,7 +644,7 @@ class Segmenter:
         Returns:
             ArrayLike: Reshaped (Dino) output
         """
-        model_output_flat_patches = model_output[:, 1:, :]
+        model_output_flat_patches = model_output[:, 1 + self._num_register_tokens :, :]
         if self.semantic_patches_shape is None:
             ratio = img_shape[1] / img_shape[0]  # width / height
             num_patches = model_output_flat_patches.shape[1]
@@ -643,6 +725,9 @@ class Segmenter:
         # Compute edge pixels from fraction of max image dimension
         max_dim = max(depth_img.shape[0], depth_img.shape[1])
         occlusion_edge_pixels = int(self.params.occlusion_edge_img_frac * max_dim)
+        occlusion_edge_max_pixels = int(
+            self.params.occlusion_edge_max_img_frac * max_dim
+        )
 
         # Valid depth mask: non-zero and finite (handles both d455 zeros and ZED NaNs)
         valid_depth = (depth_img > 0) & np.isfinite(depth_img)
@@ -651,15 +736,29 @@ class Segmenter:
         xmax_valid = depth_img.shape[1] - np.argmax(valid_depth[:, ::-1], axis=1) - 1
 
         for i in range(depth_img.shape[0]):
-            occlusion_edge_mask[i, : xmin_valid[i] + occlusion_edge_pixels] = True
-            occlusion_edge_mask[i, xmax_valid[i] - occlusion_edge_pixels :] = True
+            left_edge = min(
+                xmin_valid[i] + occlusion_edge_pixels, occlusion_edge_max_pixels
+            )
+            right_edge = max(
+                xmax_valid[i] - occlusion_edge_pixels,
+                depth_img.shape[1] - occlusion_edge_max_pixels,
+            )
+            occlusion_edge_mask[i, :left_edge] = True
+            occlusion_edge_mask[i, right_edge:] = True
 
         ymin_valid = np.argmax(valid_depth, axis=0)
         ymax_valid = depth_img.shape[0] - np.argmax(valid_depth[::-1, :], axis=0) - 1
 
         for j in range(depth_img.shape[1]):
-            occlusion_edge_mask[: ymin_valid[j] + occlusion_edge_pixels, j] = True
-            occlusion_edge_mask[ymax_valid[j] - occlusion_edge_pixels :, j] = True
+            top_edge = min(
+                ymin_valid[j] + occlusion_edge_pixels, occlusion_edge_max_pixels
+            )
+            bottom_edge = max(
+                ymax_valid[j] - occlusion_edge_pixels,
+                depth_img.shape[0] - occlusion_edge_max_pixels,
+            )
+            occlusion_edge_mask[:top_edge, j] = True
+            occlusion_edge_mask[bottom_edge:, j] = True
 
         return occlusion_edge_mask
 
@@ -669,37 +768,51 @@ class Segmenter:
         if occlusion_edge_mask is None:
             occlusion_edge_mask = self._get_occlusion_edge_mask(depth_img)
 
-        occluded_points = points[points[:, 2] > self.params.max_depth]
+        occluded_points = points[
+            (points[:, 2] < self.params.max_depth)
+            & (points[:, 2] > self.params.occlusion_max_depth)
+        ]
 
         # TODO: support occlusion points for point cloud case
 
-        occluded_pixels = np.array(
-            np.where(np.bitwise_and(mask.astype(bool), occlusion_edge_mask))
-        ).T  # (y, x)
-        occluded_pixels_depths = (
-            depth_img[occluded_pixels[:, 0], occluded_pixels[:, 1]]
-            / self.params.depth_scale
-        )
+        if occlusion_edge_mask.size > 0:
+            occluded_pixels = np.array(
+                np.where(np.bitwise_and(mask.astype(bool), occlusion_edge_mask))
+            ).T  # (y, x)
+            occluded_pixels_depths = (
+                depth_img[occluded_pixels[:, 0], occluded_pixels[:, 1]]
+                / self.params.depth_scale
+            )
 
-        # Filter out invalid depth values (0, NaN, inf)
-        valid_depth_mask = (occluded_pixels_depths > 0) & np.isfinite(
-            occluded_pixels_depths
-        )
-        occluded_pixels = occluded_pixels[valid_depth_mask]
-        occluded_pixels_depths = occluded_pixels_depths[valid_depth_mask]
+            # Filter out invalid depth values (0, NaN, inf)
+            valid_depth_mask = (occluded_pixels_depths > 0) & np.isfinite(
+                occluded_pixels_depths
+            )
+            occluded_pixels = occluded_pixels[valid_depth_mask]
+            occluded_pixels_depths = occluded_pixels_depths[valid_depth_mask]
 
-        occluded_pixels_3d_cam = pixel_depth_2_xyz(
-            occluded_pixels[:, 1],
-            occluded_pixels[:, 0],
-            occluded_pixels_depths,
-            self.depth_cam_params.K,
-        ).T
+            occluded_pixels_3d_cam = pixel_depth_2_xyz(
+                occluded_pixels[:, 1],
+                occluded_pixels[:, 0],
+                occluded_pixels_depths,
+                self.depth_cam_params.K,
+            ).T
 
-        occluded_points = (
-            np.vstack([occluded_points, occluded_pixels_3d_cam])
-            if occluded_points.shape[0] > 0
-            else occluded_pixels_3d_cam
-        )
+            # Voxel-downsample to sparsify dense border-based occluded points
+            if occluded_pixels_3d_cam.shape[0] > 0:
+                pcd = o3d.geometry.PointCloud()
+                pcd.points = o3d.utility.Vector3dVector(occluded_pixels_3d_cam)
+                pcd = pcd.voxel_down_sample(voxel_size=self.params.voxel_size)
+                occluded_pixels_3d_cam = np.asarray(pcd.points)
+            occluded_pixels_3d_cam = occluded_pixels_3d_cam[
+                (occluded_pixels_3d_cam[:, 2] < self.params.max_depth)
+            ]
+
+            occluded_points = (
+                np.vstack([occluded_points, occluded_pixels_3d_cam])
+                if occluded_points.shape[0] > 0
+                else occluded_pixels_3d_cam
+            )
         return occluded_points
 
     def _remove_point_cloud_outliers(self, pcd: o3d.geometry.PointCloud) -> np.ndarray:

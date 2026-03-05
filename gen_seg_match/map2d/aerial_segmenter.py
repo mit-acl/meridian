@@ -42,17 +42,124 @@ class AerialSegmenter:
             self.semantics_model = None
             self.semantics_preprocess = None
         elif params.semantics.lower() == "dino":
+            dino_model_name = f"facebook/dinov2-{params.semantics_size}"
             self.semantics_preprocess = AutoImageProcessor.from_pretrained(
-                "facebook/dinov2-base", do_center_crop=False
+                dino_model_name, do_center_crop=False
             )
-            self.semantics_model = AutoModel.from_pretrained("facebook/dinov2-base")
+            self.semantics_model = AutoModel.from_pretrained(dino_model_name)
             self.semantics_model.eval()
             self.semantics_model.to(self.params.device)
+            self._num_register_tokens = 0
+        elif params.semantics.lower() == "dinov3-hf":
+            size_to_hf_name = {
+                "small": "facebook/dinov3-vits16-pretrain-lvd1689m",
+                "base": "facebook/dinov3-vitb16-pretrain-lvd1689m",
+                "large": "facebook/dinov3-vitl16-pretrain-lvd1689m",
+            }
+            hf_name = size_to_hf_name.get(params.semantics_size)
+            if hf_name is None:
+                raise ValueError(
+                    f"Invalid semantics_size for dinov3-hf: {params.semantics_size}. "
+                    f"Choose from {list(size_to_hf_name.keys())}."
+                )
+            self.semantics_preprocess = AutoImageProcessor.from_pretrained(
+                hf_name, do_center_crop=False
+            )
+            self.semantics_model = AutoModel.from_pretrained(hf_name)
+            self.semantics_model.eval()
+            self.semantics_model.to(self.params.device)
+            self._num_register_tokens = self.semantics_model.config.num_register_tokens
+        elif params.semantics.lower() == "dinov3":
+            import torchvision.transforms as T
+
+            size_to_hub_fn = {
+                "small": "dinov3_vits16",
+                "base": "dinov3_vitb16",
+                "large": "dinov3_vitl16",
+            }
+            hub_fn = size_to_hub_fn.get(params.semantics_size)
+            if hub_fn is None:
+                raise ValueError(
+                    f"Invalid semantics_size for dinov3: {params.semantics_size}. "
+                    f"Choose from {list(size_to_hub_fn.keys())}."
+                )
+            hub_kwargs = {}
+            if params.dinov3_weights is not None:
+                hub_kwargs["weights"] = params.dinov3_weights
+            self.semantics_model = torch.hub.load(
+                params.dinov3_path, hub_fn, source="local", **hub_kwargs
+            )
+            self.semantics_model.eval()
+            self.semantics_model.to(self.params.device)
+            self.dinov3_transform = T.Compose(
+                [
+                    T.ToTensor(),
+                    T.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+                ]
+            )
         else:
             raise ValueError(
-                f"Invalid semantics option: {params.semantics}. Choose from 'dino' or 'none'."
+                f"Invalid semantics option: {params.semantics}. Choose from 'dino', 'dinov3', 'dinov3-hf', or 'none'."
             )
         self.semantic_patches_shape = None
+
+    def get_crop_descriptor(self, img_bgr, crop=None) -> np.ndarray:
+        """Compute a DINO-GeM global descriptor for an image crop.
+
+        Args:
+            img_bgr: BGR image (full aerial image).
+            crop: Optional (x1, y1, x2, y2) pixel crop.
+
+        Returns:
+            Normalized 1-D numpy array of shape (semantics_dim,), or None if
+            semantics is disabled.
+        """
+        if self.semantics_model is None:
+            return None
+
+        if crop is not None:
+            img_bgr = img_bgr[crop[1] : crop[3], crop[0] : crop[2]]
+        image_rgb = cv.cvtColor(img_bgr, cv.COLOR_BGR2RGB)
+
+        if self.params.downsample_factor > 1:
+            image_rgb = cv.resize(
+                image_rgb,
+                (
+                    image_rgb.shape[1] // self.params.downsample_factor,
+                    image_rgb.shape[0] // self.params.downsample_factor,
+                ),
+                interpolation=cv.INTER_LINEAR,
+            )
+
+        with torch.no_grad():
+            if self.params.semantics in ("dino", "dinov3-hf"):
+                preprocessed = self.semantics_preprocess(
+                    images=image_rgb, return_tensors="pt"
+                ).to(self.params.device)
+                dino_output = self.semantics_model(**preprocessed)
+                features = dino_output.last_hidden_state[
+                    :, 1 + self._num_register_tokens :, :
+                ]
+            elif self.params.semantics == "dinov3":
+                img_tensor = (
+                    self.dinov3_transform(image_rgb).unsqueeze(0).to(self.params.device)
+                )
+                features = self.semantics_model.get_intermediate_layers(
+                    img_tensor, n=1, reshape=False, return_class_token=False, norm=True
+                )[0]  # (1, N_patches, C)
+            else:
+                return None
+
+            features_flat = features.reshape(-1, features.shape[-1])
+
+            # GeM pooling
+            cubed = torch.mean(features_flat**3, dim=0)
+            descriptor = torch.sign(cubed) * (
+                torch.abs(cubed).clamp(min=1e-12) ** (1.0 / 3)
+            )
+            descriptor = descriptor / torch.norm(descriptor)
+
+        return descriptor.cpu().numpy()
 
     def run(self, img_bgr, crop=None) -> List[AerialSegment]:
         """
@@ -104,8 +211,8 @@ class AerialSegmenter:
         else:
             return []
 
-        if self.params.semantics == "dino":
-            # Process the image for DINO
+        if self.params.semantics in ("dino", "dinov3-hf"):
+            # Process the image for DINO / DINOv3-HF
             preprocessed = self.semantics_preprocess(
                 images=image_rgb, return_tensors="pt"
             ).to(self.params.device)
@@ -115,6 +222,19 @@ class AerialSegmenter:
                 img_shape=image_rgb.shape,
                 feature_dim=self.params.semantics_dim,
             )
+        elif self.params.semantics == "dinov3":
+            img_tensor = (
+                self.dinov3_transform(image_rgb).unsqueeze(0).to(self.params.device)
+            )
+            with torch.no_grad():
+                features = self.semantics_model.get_intermediate_layers(
+                    img_tensor, n=1, reshape=True, return_class_token=False, norm=True
+                )[0]  # (B, C, H_patches, W_patches)
+            dino_features = torch.nn.functional.interpolate(
+                features,
+                size=(image_rgb.shape[0], image_rgb.shape[1]),
+                mode="bilinear",
+            )[0].permute(1, 2, 0)  # (H, W, C)
 
         aerial_segments = []
         for i, mask in enumerate(masks):
@@ -137,7 +257,7 @@ class AerialSegmenter:
             )
             # convex_hull = shapely.convex_hull(shapely.MultiPoint(points))
             semantic_descriptor = None
-            if self.params.semantics == "dino":
+            if self.params.semantics in ("dino", "dinov3", "dinov3-hf"):
                 assert (
                     mask.shape[0] == dino_features.shape[0]
                     and mask.shape[1] == dino_features.shape[1]
@@ -172,7 +292,7 @@ class AerialSegmenter:
         Returns:
             ArrayLike: Reshaped (Dino) output
         """
-        model_output_flat_patches = model_output[:, 1:, :]
+        model_output_flat_patches = model_output[:, 1 + self._num_register_tokens :, :]
         if self.semantic_patches_shape is None:
             ratio = img_shape[1] / img_shape[0]  # width / height
             num_patches = model_output_flat_patches.shape[1]

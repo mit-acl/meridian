@@ -1,3 +1,4 @@
+import os
 import numpy as np
 from dataclasses import dataclass
 from typing import ClassVar, List, Tuple
@@ -31,6 +32,9 @@ class SegmenterParams(ParamsBase):
     keep_mask_minimal_intersection: float = 0.3
     rotate_img: str = None
     semantics: str = "dino"
+    semantics_size: str = "base"
+    dinov3_path: str = "~/code/dinov3"
+    dinov3_weights: str = None
     frame_descriptor: str = "dino-gem"
     yolo_imgsz: Tuple[int, int] = None
     use_point_cloud: bool = False
@@ -44,10 +48,12 @@ class SegmenterParams(ParamsBase):
         Tuple[Tuple[int, int], Tuple[int, int], Tuple[int, int]]
     ] = None
     occlusion_edge_img_frac: float = 0.02
+    occlusion_edge_max_img_frac: float = 0.15
     occlusion_max_depth: float = 7.0
     outlier_removal_std: float = None
-    outlier_removal_dbscan_eps: float = 0.25
+    outlier_removal_dbscan_eps: float = 0.5
     outlier_removal_dbscan_min_points: int = 10
+    min_occluded_unoccluded_dist_m: float = 0.1
 
     def get_model_type(self):
         return self.model_type.lower()
@@ -59,5 +65,8 @@ class SegmenterParams(ParamsBase):
             self.frame_descriptor = None
         self.weights_path = expandvars_recursive(self.weights_path)
         self.yolo_weights_path = expandvars_recursive(self.yolo_weights_path)
+        self.dinov3_path = os.path.expanduser(self.dinov3_path)
+        if self.dinov3_weights is not None:
+            self.dinov3_weights = os.path.expanduser(self.dinov3_weights)
         if self.yolo_imgsz is None:
             self.yolo_imgsz = self.imgsz

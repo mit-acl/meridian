@@ -21,6 +21,11 @@ class GroundSegmenter:
         to_rm = []
         for seg in map_2d.segments:
             seg.dense_points[:, 2] = 0.0
+            if (
+                getattr(seg, "occluded_points", None) is not None
+                and len(seg.occluded_points) > 0
+            ):
+                seg.occluded_points[:, 2] = 0.0
             try:
                 self.cleanup_points(seg)
             except Exception as e:

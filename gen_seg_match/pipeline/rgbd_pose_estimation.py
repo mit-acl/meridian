@@ -15,6 +15,7 @@ import shutil
 
 from gen_seg_match.segment.segment_types import SegmentList, DenseSegment
 from gen_seg_match.match.segment_matcher import SegmentMatcher
+from gen_seg_match.map3d.segment_mapper import SegmentMapper
 from gen_seg_match.map3d.segmenter import Segmenter
 from gen_seg_match.params import (
     SegmentMatchParams,
@@ -23,6 +24,7 @@ from gen_seg_match.params import (
     RGBDPoseEstimationDataParams,
     SegmenterParams,
     RegisterParams,
+    SegmentMappingParams,
 )
 from gen_seg_match.viz.utils import color_from_seed
 from gen_seg_match.viz.img_sparse_viz import img_sparse_viz
@@ -42,6 +44,7 @@ from gen_seg_match.register.registerer import (
     Registerer,
     InsufficientAssociationsException,
 )
+from gen_seg_match.map3d.observation import Observation
 
 
 @dataclass
@@ -76,6 +79,7 @@ class RGBDPoseEstimation:
     matcher: SegmentMatcher
     registerer: Registerer
     dense_to_sparse_params: DenseToSparseParams = None
+    segment_mapping_params: SegmentMappingParams = None
 
     def __post_init__(self):
         self.segment_converter = DenseToSparseConverter(
@@ -91,6 +95,13 @@ class RGBDPoseEstimation:
             if not os.path.isdir(expandvars_recursive(dir_path)):
                 os.mkdir(expandvars_recursive(dir_path))
 
+        if self.segment_mapping_params is None:
+            self.segment_mapping_params = SegmentMappingParams(
+                min_sightings=1,
+                max_t_no_sightings=np.inf,
+                segment_voxel_size=0.1,
+            )
+
     @property
     def segment_directory(self):
         return os.path.join(self.pipeline_params.output_directory, "segment")
@@ -104,8 +115,8 @@ class RGBDPoseEstimation:
         associated_ids = self.matcher.match(
             input1.segments,
             input2.segments,
-            input1.gravity_direction,
-            input2.gravity_direction,
+            global_z_dir1=input1.gravity_direction,
+            global_z_dir2=input2.gravity_direction,
         )
         try:
             transformation = self.registerer.register(
@@ -157,14 +168,23 @@ class RGBDPoseEstimation:
             # Store original segments to avoid duplicating already-merged segments
             original_segments = [inp.segments.copy() for inp in inputs]
 
-            for i, rgbd_input in enumerate(inputs):
+            mapped_dense_segments = []
+            for i, (rgbd_input, raw_observations) in enumerate(
+                zip(inputs, raw_observations_list)
+            ):
+                if self.pipeline_params.mini_maps:
+                    segment_mapper = SegmentMapper(
+                        params=self.segment_mapping_params,
+                        camera_params=inputs[0].camera_params,
+                    )
+
                 if rgbd_input.pose_est is None:
                     continue
 
                 T_world_center = rgbd_input.pose_est
+
+                aggregated_segments = SegmentList([])
                 for offset in self.pipeline_params.additional_adjacent_imgs_list:
-                    if offset == 0:
-                        continue
                     adj_idx = i + offset
                     if adj_idx < 0 or adj_idx >= len(inputs):
                         continue
@@ -172,23 +192,59 @@ class RGBDPoseEstimation:
                     if adj_input.pose_est is None or original_segments[adj_idx] is None:
                         continue
 
-                    # Transform from adjacent frame to center frame
-                    T_world_adjacent = adj_input.pose_est
-                    T_center_adjacent = np.linalg.inv(T_world_center) @ T_world_adjacent
+                    if self.pipeline_params.mini_maps:
+                        transformed_obs = raw_observations_list[adj_idx].copy()
 
-                    # Copy and transform adjacent segments (from original, not modified)
-                    adj_segments = original_segments[adj_idx].copy()
-                    adj_segments.transform(T_center_adjacent)
-                    rgbd_input.segments = (rgbd_input.segments + adj_segments).reindex()
+                        # transform observation into pose relative to the center frame
+                        T_world_adjacent = adj_input.pose_est
+                        T_center_adjacent = (
+                            np.linalg.inv(T_world_center) @ T_world_adjacent
+                        )
+                        for obs in transformed_obs:
+                            obs.pose = T_center_adjacent
+
+                        segment_mapper.update(
+                            t=adj_input.time,
+                            pose=T_center_adjacent,
+                            observations=transformed_obs,
+                            frame_descriptor=None,
+                        )
+
+                    else:
+                        # Transform from adjacent frame to center frame
+                        T_world_adjacent = adj_input.pose_est
+                        T_center_adjacent = (
+                            np.linalg.inv(T_world_center) @ T_world_adjacent
+                        )
+
+                        # Copy and transform adjacent segments (from original, not modified)
+                        adj_segments = original_segments[adj_idx].copy()
+                        adj_segments.transform(T_center_adjacent)
+                        aggregated_segments = (
+                            aggregated_segments + adj_segments
+                        ).reindex()
+
+                if self.pipeline_params.mini_maps:
+                    mapped_dense_segments.append(segment_mapper.get_segment_map())
+                    aggregated_segments = self.segment_converter.convert(
+                        mapped_dense_segments[-1]
+                    )
+                    # TODO descriptor bit handling for mini maps
+
+                rgbd_input.segments = aggregated_segments
 
         # Visualization
         if output_dir is not None:
             for i, rgbd_input in enumerate(inputs):
                 self.draw_segments(
                     rgbd_input,
-                    raw_observations_list[i],
                     rgbd_input.segments,
+                    raw_observations_list[i],
+                    None
+                    if not self.pipeline_params.mini_maps
+                    else mapped_dense_segments[i],
                     output_file=f"{output_dir}/{i}.png",
+                    draw_observations=not self.pipeline_params.mini_maps,
                 )
             with open(f"{output_dir}/segments.pkl", "wb") as f:
                 pickle.dump(inputs, f)
@@ -395,10 +451,19 @@ class RGBDPoseEstimation:
     def draw_segments(
         self,
         rgbd_input: RGBDInput,
-        observations,
         segments: SegmentList,
+        observations: List[Observation] = None,
+        dense_segments: List[DenseSegment] = None,
         output_file: str = None,
+        draw_observations: bool = True,
     ):
+        assert not (draw_observations and observations is None), (
+            "Observations must be provided if draw_observations is True."
+        )
+        assert not (not draw_observations and dense_segments is None), (
+            "Dense segments must be provided if draw_observations is False."
+        )
+
         if self.pipeline_params.viz_observations_3d:
             width = 3 * rgbd_input.shape[1] + 2 * self.pipeline_params.viz_img_pixel_sep
         else:
@@ -411,20 +476,33 @@ class RGBDPoseEstimation:
             )
         )
 
-        # draw raw observations
-        colors = [color_from_seed(obs.id) for obs in observations]
-        output[:, : rgbd_input.shape[1]] = viz_masks_on_img(
-            rgbd_input.bgr,
-            observations,
-            alpha=0.5,
-            colors=colors,
-            draw_points=True,
-            draw_occluded_points=True,
-            cam_params=rgbd_input.camera_params,
-        )
+        if not draw_observations:
+            output[:, : rgbd_input.shape[1]] = viz_masks_on_img(
+                rgbd_input.bgr,
+                dense_segments,
+                cam_params=rgbd_input.camera_params,
+                draw_masks=False,
+                draw_points=True,
+                draw_occluded_points=True,
+            )
+        else:
+            # draw raw observations
+            colors = [color_from_seed(obs.id) for obs in observations]
+            output[:, : rgbd_input.shape[1]] = viz_masks_on_img(
+                rgbd_input.bgr,
+                observations,
+                alpha=0.5,
+                colors=colors,
+                draw_points=True,
+                draw_occluded_points=True,
+                cam_params=rgbd_input.camera_params,
+            )
 
         # draw segments
-        colors = [color_from_seed(seg.history[0]) for seg in segments]
+        colors = [
+            color_from_seed(seg.history[0] if len(seg.history) > 0 else seg.id)
+            for seg in segments
+        ]
         output[
             :,
             rgbd_input.shape[1]

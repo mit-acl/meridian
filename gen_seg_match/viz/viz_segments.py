@@ -15,6 +15,7 @@ from gen_seg_match.segment.segment_types import (
     SegmentPlane,
     GeneralSegment,
 )
+from gen_seg_match.segment.map_segment import MapSegment
 from gen_seg_match.viz.utils import color_from_seed
 
 
@@ -303,6 +304,7 @@ def viz_masks_on_img(
     colors=None,
     draw_points=False,
     draw_occluded_points=False,
+    draw_masks=True,
     cam_params=None,
 ) -> np.ndarray:
     assert not (draw_points and cam_params is None), (
@@ -311,23 +313,29 @@ def viz_masks_on_img(
 
     viz_img = np.array(img_bgr).copy().astype(np.float32)
     for obs in observations:
-        mask = obs.mask.astype(bool)
-        if colors is not None:
-            color = np.array(colors[obs.id % len(colors)], dtype=np.float32)
-        else:
-            color = np.array(
-                color_from_seed(np.random.randint(0, 1000)), dtype=np.float32
-            )
+        if draw_masks:
+            mask = obs.mask.astype(bool)
+            if colors is not None:
+                color = np.array(colors[obs.id % len(colors)], dtype=np.float32)
+            else:
+                color = np.array(
+                    color_from_seed(np.random.randint(0, 1000)), dtype=np.float32
+                )
 
-        viz_img[mask] = (1 - alpha) * viz_img[mask] + alpha * color
-        edges = ndimage.binary_dilation(mask) ^ mask
-        viz_img[edges] = 0
+            viz_img[mask] = (1 - alpha) * viz_img[mask] + alpha * color
+            edges = ndimage.binary_dilation(mask) ^ mask
+            viz_img[edges] = 0
 
         point_collections_to_draw = []
         point_collections_color = []
-        if draw_points and obs.point_cloud is not None:
+        # TODO should fix this but right now this is handling both Observation or MapSegments
+        if draw_points and isinstance(obs, Observation) and obs.point_cloud is not None:
             point_collections_to_draw.append(obs.point_cloud)
             point_collections_color.append([0, 0, 0])
+
+        if draw_points and isinstance(obs, MapSegment) and obs.points is not None:
+            point_collections_to_draw.append(obs.points)
+            point_collections_color.append(color_from_seed(obs.id, num_type="int"))
 
         if draw_occluded_points and obs.occluded_points is not None:
             point_collections_to_draw.append(obs.occluded_points)

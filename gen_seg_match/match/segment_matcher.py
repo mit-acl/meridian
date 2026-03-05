@@ -3,6 +3,7 @@ from typing import List, Tuple
 import matplotlib.pyplot as plt
 import clipperpy
 from copy import deepcopy
+from sklearn.neighbors import NearestNeighbors
 
 from gen_seg_match.segment.segment_types import (
     SegmentPoint,
@@ -31,8 +32,12 @@ class SegmentMatcher:
         self,
         map1: List[GeneralSegment],
         map2: List[GeneralSegment],
-        gravity_dir1: np.ndarray = None,
-        gravity_dir2: np.ndarray = None,
+        global_x_dir1: np.ndarray = None,
+        global_y_dir1: np.ndarray = None,
+        global_z_dir1: np.ndarray = None,
+        global_x_dir2: np.ndarray = None,
+        global_y_dir2: np.ndarray = None,
+        global_z_dir2: np.ndarray = None,
         bidirectional: bool = True,
         putative_match_matrix: np.ndarray = None,
     ):
@@ -45,14 +50,42 @@ class SegmentMatcher:
         if len(map1) == 0 or len(map2) == 0:
             return np.array([])
 
-        # transform into gravity aligned frame
-        if self.params.gravity_guided:
-            for map_i, gravity_dir_i in zip([map1, map2], [gravity_dir1, gravity_dir2]):
-                assert gravity_dir_i is not None, (
-                    "Must supply gravity direction if using gravity guided"
+        # transform into direction-aligned frame
+        if self.params.z_dir_constrained:
+            for map_i, z_dir_i in zip([map1, map2], [global_z_dir1, global_z_dir2]):
+                assert z_dir_i is not None, (
+                    "Must supply z direction if using z_dir_constrained"
                 )
-                T_world_gravity = self._construct_gravity_aligned_frame(gravity_dir_i)
-                map_i.transform(np.linalg.inv(T_world_gravity))
+                T_world_aligned = self._construct_z_aligned_frame(z_dir_i)
+                map_i.transform(np.linalg.inv(T_world_aligned))
+        elif self.params.xyz_dir_constrained:
+            for map_i, (x_dir_i, y_dir_i, z_dir_i) in zip(
+                [map1, map2],
+                [
+                    (global_x_dir1, global_y_dir1, global_z_dir1),
+                    (global_x_dir2, global_y_dir2, global_z_dir2),
+                ],
+            ):
+                assert (
+                    x_dir_i is not None and y_dir_i is not None and z_dir_i is not None
+                ), "Must supply x, y, and z directions if using xyz_dir_constrained"
+                T_world_aligned = self._construct_xyz_aligned_frame(
+                    x_dir_i, y_dir_i, z_dir_i
+                )
+                map_i.transform(np.linalg.inv(T_world_aligned))
+        elif self.params.xy_dir_constrained_2d:
+            for map_i, (x_dir_i, y_dir_i) in zip(
+                [map1, map2],
+                [
+                    (global_x_dir1, global_y_dir1),
+                    (global_x_dir2, global_y_dir2),
+                ],
+            ):
+                assert x_dir_i is not None and y_dir_i is not None, (
+                    "Must supply x and y directions if using xy_dir_constrained_2d"
+                )
+                T_world_aligned = self._construct_xy_aligned_frame_2d(x_dir_i, y_dir_i)
+                map_i.transform(np.linalg.inv(T_world_aligned))
 
         clipper = self._setup_solver(bidirectional=bidirectional)
 
@@ -140,8 +173,12 @@ class SegmentMatcher:
         self,
         map1: List[GeneralSegment],
         map2: List[GeneralSegment],
-        gravity_dir1: np.ndarray = None,
-        gravity_dir2: np.ndarray = None,
+        global_x_dir1: np.ndarray = None,
+        global_y_dir1: np.ndarray = None,
+        global_z_dir1: np.ndarray = None,
+        global_x_dir2: np.ndarray = None,
+        global_y_dir2: np.ndarray = None,
+        global_z_dir2: np.ndarray = None,
         correspondences: np.array = None,
     ):
         """
@@ -160,7 +197,16 @@ class SegmentMatcher:
             raise InsufficientAssociationsException(len(map1), len(map2))
 
         if correspondences is None:
-            correspondences = self.match(map1, map2, gravity_dir1, gravity_dir2)
+            correspondences = self.match(
+                map1,
+                map2,
+                global_x_dir1=global_x_dir1,
+                global_y_dir1=global_y_dir1,
+                global_z_dir1=global_z_dir1,
+                global_x_dir2=global_x_dir2,
+                global_y_dir2=global_y_dir2,
+                global_z_dir2=global_z_dir2,
+            )
         if len(correspondences) == 0:
             raise InsufficientAssociationsException(len(map1), len(map2))
 
@@ -306,10 +352,26 @@ class SegmentMatcher:
         lines2 = map2.get_lines()
         planes2 = map2.get_planes()
 
-        # set up all to all matching between points and lines separately
-        A_init_points = clipperpy.utils.create_all_to_all(len(points1), len(points2))
-        A_init_lines = clipperpy.utils.create_all_to_all(len(lines1), len(lines2))
-        A_init_planes = clipperpy.utils.create_all_to_all(len(planes1), len(planes2))
+        # set up putative associations between points, lines, and planes separately
+        k = self.params.k_nearest_neighbors
+        use_knn = k is not None and self.params.cos_feature_dim > 0
+
+        if use_knn and len(points1) > 0 and len(points2) > 0:
+            A_init_points = self._knn_filter_associations(points1, points2, k)
+        else:
+            A_init_points = clipperpy.utils.create_all_to_all(
+                len(points1), len(points2)
+            )
+        if use_knn and len(lines1) > 0 and len(lines2) > 0:
+            A_init_lines = self._knn_filter_associations(lines1, lines2, k)
+        else:
+            A_init_lines = clipperpy.utils.create_all_to_all(len(lines1), len(lines2))
+        if use_knn and len(planes1) > 0 and len(planes2) > 0:
+            A_init_planes = self._knn_filter_associations(planes1, planes2, k)
+        else:
+            A_init_planes = clipperpy.utils.create_all_to_all(
+                len(planes1), len(planes2)
+            )
         A_init_lines[:, 0] += len(points1)
         A_init_lines[:, 1] += len(points2)
         A_init_planes[:, 0] += len(points1) + len(lines1)
@@ -330,6 +392,39 @@ class SegmentMatcher:
 
         clipper.score_pairwise_and_single_consistency(map1_cl.T, map2_cl.T, A_init)
         return clipper, A_init
+
+    def _knn_filter_associations(self, segs1, segs2, k):
+        """Return putative associations filtered by k-nearest cos_feature neighbors.
+
+        Bidirectional: for each seg in segs1, find k nearest in segs2 by cosine
+        similarity, and vice versa. Returns union of both directions.
+        """
+        feats1 = np.array([seg.cos_feature.flatten() for seg in segs1])
+        feats2 = np.array([seg.cos_feature.flatten() for seg in segs2])
+
+        pairs = set()
+
+        # segs1 -> segs2
+        k1 = min(k, len(segs2))
+        nn1 = NearestNeighbors(n_neighbors=k1, metric="cosine", algorithm="brute")
+        nn1.fit(feats2)
+        indices1 = nn1.kneighbors(feats1, return_distance=False)
+        for i, neighbors in enumerate(indices1):
+            for j in neighbors:
+                pairs.add((i, j))
+
+        # segs2 -> segs1
+        k2 = min(k, len(segs1))
+        nn2 = NearestNeighbors(n_neighbors=k2, metric="cosine", algorithm="brute")
+        nn2.fit(feats1)
+        indices2 = nn2.kneighbors(feats2, return_distance=False)
+        for j, neighbors in enumerate(indices2):
+            for i in neighbors:
+                pairs.add((i, j))
+
+        if len(pairs) == 0:
+            return np.zeros((0, 2), dtype=np.int32)
+        return np.array(sorted(pairs), dtype=np.int32)
 
     def _create_padded_map_arrays(self, map1_lists, map2_lists):
         max_d = max([arr.shape[0] for arr in map1_lists + map2_lists])
@@ -362,11 +457,11 @@ class SegmentMatcher:
             include_cos=self.params.cos_feature_dim > 0,
         )
 
-    def _construct_gravity_aligned_frame(self, gravity_dir: np.ndarray):
-        e2 = gravity_dir.reshape((3, 1))
+    def _construct_z_aligned_frame(self, z_dir: np.ndarray):
+        e2 = z_dir.reshape((3, 1))
 
         # find a vector, v0, that is non-parallel to e2
-        smallest_component_ax = np.argmin(np.abs(gravity_dir))
+        smallest_component_ax = np.argmin(np.abs(z_dir))
         v0 = np.zeros((3, 1))
         v0[smallest_component_ax] = 1.0
 
@@ -383,4 +478,21 @@ class SegmentMatcher:
 
         transform = np.eye(4)
         transform[:3, :3] = np.hstack([e0, e1, e2])
+        return transform
+
+    def _construct_xyz_aligned_frame(
+        self, x_dir: np.ndarray, y_dir: np.ndarray, z_dir: np.ndarray
+    ):
+        transform = np.eye(4)
+        transform[:3, 0] = x_dir.flatten()
+        transform[:3, 1] = y_dir.flatten()
+        transform[:3, 2] = z_dir.flatten()
+        return transform
+
+    def _construct_xy_aligned_frame_2d(self, x_dir: np.ndarray, y_dir: np.ndarray):
+        transform = np.eye(4)
+        transform[0, 0] = x_dir[0]
+        transform[1, 0] = x_dir[1]
+        transform[0, 1] = y_dir[0]
+        transform[1, 1] = y_dir[1]
         return transform

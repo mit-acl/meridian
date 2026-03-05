@@ -33,8 +33,10 @@ class SegmentMatchParams(ParamsBase):
             similarity score.
         cosine_max (float = 0.7): cosine similarity scaled so that cosine_max maps to 1.0
             similarity score.
-        gravity_guided (bool = False): whether to use gravity-guided prior.
-        gravity_unc_ang_rad (float = 0.0): uncertainty adjustment for gravity direction in radians.
+        z_dir_constrained (bool = False): whether to use z-direction (gravity) constrained prior.
+        xyz_dir_constrained (bool = False): whether to use rotation prior in all directions (3D only).
+        xy_dir_constrained_2d (bool = False): whether to use rotation prior in all directions (2D only).
+        rot_unc_ang_rad (float = 0.0): uncertainty adjustment for known rotation direction in radians.
     """
 
     # class attribute
@@ -56,8 +58,11 @@ class SegmentMatchParams(ParamsBase):
     ratio_epsilon: np.ndarray = field(default_factory=lambda: np.zeros(0))
     cosine_min: float = 0.5
     cosine_max: float = 0.7
-    gravity_guided: bool = False
-    gravity_unc_ang_rad: float = 0.0
+    z_dir_constrained: bool = False
+    xyz_dir_constrained: bool = False
+    xy_dir_constrained_2d: bool = False
+    rot_unc_ang_rad: float = 0.0
+    k_nearest_neighbors: int = None  # None = all-to-all (current behavior)
 
     def to_clipper(
         self,
@@ -78,6 +83,8 @@ class SegmentMatchParams(ParamsBase):
         iparams.ratio_epsilon = self.ratio_epsilon
         iparams.cosine_min = self.cosine_min
         iparams.cosine_max = self.cosine_max
-        iparams.gravity_guided = self.gravity_guided
-        iparams.gravity_unc_ang_rad = self.gravity_unc_ang_rad
+        iparams.z_dir_constrained = self.z_dir_constrained
+        iparams.xyz_dir_constrained = self.xyz_dir_constrained
+        iparams.xy_dir_constrained_2d = self.xy_dir_constrained_2d
+        iparams.rot_unc_ang_rad = self.rot_unc_ang_rad
         return iparams

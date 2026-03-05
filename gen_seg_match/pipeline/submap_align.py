@@ -81,8 +81,8 @@ def register_submaps(
         associations = matcher.match(
             submap_1.segments,
             submap_2.segments,
-            GRAVITY_DIR_NEG_Z,
-            GRAVITY_DIR_NEG_Z,
+            global_z_dir1=GRAVITY_DIR_NEG_Z,
+            global_z_dir2=GRAVITY_DIR_NEG_Z,
         )
         association_types = []
         # track association types

@@ -1,18 +1,25 @@
+import logging
 import numpy as np
 from dataclasses import dataclass
 from typing import Union
 from robotdatapy.data import PoseData, ImgData
 import cv2 as cv
 import rasterio
+from rasterio.crs import CRS
 from rasterio.transform import xy
+from rasterio.warp import transform as warp_transform
 
 from roman.map.map import ROMANMap
 
+from gen_seg_match.map3d.map import SegmentMap
 from gen_seg_match.params.data_params import (
     RGBDPoseEstimationDataParams,
     CrossViewLocalizationDataParams,
     GroundToBEVDataParams,
+    SegmentMappingDataParams,
 )
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -65,10 +72,11 @@ class RGBDPoseEstimationData:
 class CrossViewLocalizationData:
     aerial_img: np.ndarray
     aerial_img_origin: np.ndarray
-    ground_map: ROMANMap
+    ground_map: Union[ROMANMap, SegmentMap]
     gt_pose_data: PoseData = None
 
     aerial_img_scale: float = 0.01
+    T_camera_flu: np.ndarray = None
 
     @classmethod
     def from_params(cls, params: Union[str, CrossViewLocalizationDataParams]):
@@ -79,18 +87,59 @@ class CrossViewLocalizationData:
         with rasterio.open(params.aerial_img_path) as ds:
             transform = ds.transform
             x_utm, y_utm = xy(transform, 0, 0)  # row, col
+            geotiff_pixel_size = cls._ground_pixel_size(ds)
+
+        aerial_img_scale = params.aerial_img_scale
+        if aerial_img_scale is None:
+            aerial_img_scale = geotiff_pixel_size
+            logger.info(f"Auto-detected aerial pixel size: {aerial_img_scale:.6f} m/px")
 
         gt_pose_data = (
             PoseData.from_dict(params.gt_pose_data) if params.gt_pose_data else None
         )
 
+        ground_map = cls._load_ground_map(params.ground_map_path)
+
         return cls(
             aerial_img=cv.imread(params.aerial_img_path),
             aerial_img_origin=np.array([x_utm, y_utm]),
-            ground_map=ROMANMap.from_pickle(params.ground_map_path),
+            ground_map=ground_map,
             gt_pose_data=gt_pose_data,
-            aerial_img_scale=params.aerial_img_scale,
+            aerial_img_scale=aerial_img_scale,
+            T_camera_flu=params.T_camera_flu,
         )
+
+    @staticmethod
+    def _ground_pixel_size(ds) -> float:
+        """Return the ground-truth pixel size in metres.
+
+        For UTM or other conformal metric CRSs, ``ds.res`` already gives
+        metres-per-pixel.  For Web Mercator (EPSG:3857) the projected
+        metre is stretched by 1/cos(latitude), so we correct for that.
+        """
+        pixel_size = ds.res[0]
+        crs = ds.crs
+        if crs is not None and crs.to_epsg() == 3857:
+            # Convert image centre to WGS-84 latitude
+            cx = (ds.bounds.left + ds.bounds.right) / 2
+            cy = (ds.bounds.bottom + ds.bounds.top) / 2
+            _, lat = warp_transform(crs, CRS.from_epsg(4326), [cx], [cy])
+            pixel_size *= np.cos(np.radians(lat[0]))
+        return pixel_size
+
+    @staticmethod
+    def _load_ground_map(path: str) -> Union[ROMANMap, SegmentMap]:
+        import pickle
+        import os
+
+        with open(os.path.expanduser(path), "rb") as f:
+            ground_map = pickle.load(f)
+        if isinstance(ground_map, SegmentMap):
+            return ground_map
+        elif isinstance(ground_map, ROMANMap):
+            return ground_map
+        else:
+            raise TypeError(f"Expected SegmentMap or ROMANMap, got {type(ground_map)}")
 
 
 @dataclass
@@ -164,3 +213,64 @@ class GroundToBEVData:
         if bag_path:
             return ImgData.bag_t_range(bag_path)
         return None
+
+
+@dataclass
+class SegmentMappingData:
+    img_data: ImgData
+    depth_data: ImgData
+    camera_pose_data: PoseData
+    depth_scale: float = 1e-3
+
+    @classmethod
+    def from_params(
+        cls,
+        params: Union[str, SegmentMappingDataParams],
+        time_range: tuple = None,
+    ):
+        if type(params) is str:
+            params_file = params
+            params = SegmentMappingDataParams.from_yaml(params_file)
+
+        img_data_dict = dict(params.img_data) if params.img_data else {}
+        depth_data_dict = dict(params.depth_data) if params.depth_data else {}
+        camera_pose_data_dict = (
+            dict(params.camera_pose_data) if params.camera_pose_data else {}
+        )
+
+        if time_range is not None:
+            img_data_dict["time_range"] = time_range
+            depth_data_dict["time_range"] = time_range
+
+        img_data = ImgData.from_dict(img_data_dict) if img_data_dict else None
+        depth_data = ImgData.from_dict(depth_data_dict) if depth_data_dict else None
+        camera_pose_data = (
+            PoseData.from_dict(camera_pose_data_dict) if camera_pose_data_dict else None
+        )
+
+        return cls(
+            img_data=img_data,
+            depth_data=depth_data,
+            camera_pose_data=camera_pose_data,
+            depth_scale=params.depth_scale,
+        )
+
+    @staticmethod
+    def get_bag_time_range(params: Union[str, SegmentMappingDataParams]) -> tuple:
+        if type(params) is str:
+            params = SegmentMappingDataParams.from_yaml(params)
+
+        bag_path = params.img_data.get("path")
+        if not bag_path:
+            return None
+
+        topic = params.img_data.get("topic")
+        ignore_ros_time = params.img_data.get("ignore_ros_time", False)
+        if ignore_ros_time and topic:
+            # bag_t_range reads ROS recording timestamps from bag metadata, which
+            # differ from header timestamps when ignore_ros_time=True. Use the
+            # actual header timestamps from the first/last messages instead.
+            t0 = ImgData.topic_t0(bag_path, topic)
+            tf = ImgData.topic_tf(bag_path, topic)
+            return (t0, tf)
+        return ImgData.bag_t_range(bag_path)

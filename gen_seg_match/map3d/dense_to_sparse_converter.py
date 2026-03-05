@@ -11,8 +11,9 @@ from gen_seg_match.segment.segment_types import (
     SegmentList,
     DenseSegment,
 )
+from gen_seg_match.segment.map_segment import MapSegment
 
-DenseSegment = Union[DenseSegment, RomanSegment]
+DenseSegment = Union[DenseSegment, RomanSegment, MapSegment]
 from gen_seg_match.params import DenseToSparseParams
 
 
@@ -274,7 +275,8 @@ class DenseToSparseConverter:
 
         return sparse_segments
 
-    def get_roman_ratio_feature(self, roman_segment: RomanSegment) -> np.ndarray:
+    @classmethod
+    def get_roman_ratio_feature(cls, roman_segment: RomanSegment) -> np.ndarray:
         # volume computation may fail for flat segments
         try:
             volume = roman_segment.volume
