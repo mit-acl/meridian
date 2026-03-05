@@ -146,7 +146,7 @@ class RGBDPoseEstimation:
             general_segments = self.segment_converter.convert(dense_segments)
             general_segments = SegmentList(general_segments)
             for seg in general_segments:
-                max_numeric_val = 2 ** self.pipeline_params.bits_per_semantic_dim - 1
+                max_numeric_val = 2**self.pipeline_params.bits_per_semantic_dim - 1
                 max_descriptor_val = np.max(seg.cos_feature.flatten())
                 cos_feature = seg.cos_feature / max_descriptor_val * max_numeric_val
                 seg.cos_feature = cos_feature.astype(int).astype(np.float32)
@@ -372,13 +372,20 @@ class RGBDPoseEstimation:
             (0.0, 0.0, 1.0) for _ in range(len(segments2_matches))
         ]
 
-        o3d_segments, _ = viz_segments(
+        o3d_segments, labels = viz_segments(
             segments1_matches + segments2_registered,
             offscreen=True,
-            show_dense=False,
+            show_dense=self.pipeline_params.viz_show_dense,
+            show_labels=True,
             colors=colors,
         )
-        output = render3d_on_img(o3d_segments, camera_params=input1.camera_params)
+
+        output = render3d_on_img(
+            o3d_segments,
+            camera_params=input1.camera_params,
+            camera_offset=self.pipeline_params.viz_camera_offset,
+            label_list=labels,
+        )
 
         if output_file is not None:
             cv.imwrite(output_file, output)

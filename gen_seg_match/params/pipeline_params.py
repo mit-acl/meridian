@@ -1,5 +1,5 @@
 import numpy as np
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import ClassVar, Union, List
 from gen_seg_match.params.params_base import ParamsBase
 
@@ -25,6 +25,8 @@ class RGBDPoseEstimationParams(ParamsBase):
     viz_write_ids: bool = False
     viz_observations_3d: bool = False
     viz_registration: bool = False
+    viz_show_dense: bool = True
+    viz_camera_offset: List[float] = field(default_factory=lambda: [0.0, 0.0, -3.0])
 
     @property
     def use_multiple_imgs(self) -> bool:

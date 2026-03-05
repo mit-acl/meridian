@@ -165,7 +165,10 @@ class CrossViewLocalization:
         last_position = None
         for i, pose in enumerate(ground_map.trajectory):
             position = pose[:3, 3]
-            if last_position is None or np.linalg.norm(position - last_position) >= dist_m:
+            if (
+                last_position is None
+                or np.linalg.norm(position - last_position) >= dist_m
+            ):
                 sampled_indices.append(i)
                 last_position = position
 
@@ -195,7 +198,10 @@ class CrossViewLocalization:
                 seg_copy = seg.copy()
                 seg_copy.dense_points = seg.dense_points[mask].copy()
                 seg_copy.point = np.mean(seg_copy.dense_points, axis=0)
-                if len(seg_copy.dense_points) >= self.pipeline_params.segment_min_points:
+                if (
+                    len(seg_copy.dense_points)
+                    >= self.pipeline_params.segment_min_points
+                ):
                     submap_segments.append(seg_copy)
 
             if len(submap_segments) == 0:
