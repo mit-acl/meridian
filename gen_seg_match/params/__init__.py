@@ -9,6 +9,7 @@ from gen_seg_match.params.register_params import RegisterParams
 
 from gen_seg_match.params.pipeline_params import RGBDPoseEstimationParams
 from gen_seg_match.params.pipeline_params import CrossViewMatchingParams
+from gen_seg_match.params.pipeline_params import LandmarkPoseEstimationParams
 from gen_seg_match.params.cross_view_params import CrossViewPlaceRecognitionParams
 from gen_seg_match.params.cross_view_params import CrossViewRPGOParams
 from gen_seg_match.params.pipeline_params import GroundToBEVParams
@@ -16,5 +17,6 @@ from gen_seg_match.params.data_params import RGBDPoseEstimationDataParams
 from gen_seg_match.params.data_params import CrossViewLocalizationDataParams
 from gen_seg_match.params.data_params import GroundToBEVDataParams
 from gen_seg_match.params.data_params import SegmentMappingDataParams
+from gen_seg_match.params.data_params import LandmarkPoseEstimationDataParams
 from gen_seg_match.params.segment_mapping_params import SegmentMappingParams
 from gen_seg_match.params.segmenter_params import SegmenterParams

@@ -113,6 +113,46 @@ class GroundToBEVDataParams(ParamsBase):
 
 
 @dataclass
+class LandmarkPoseEstimationDataParams(ParamsBase):
+    # class attribute
+    params_key: ClassVar[str] = "landmark_pose_estimation_data"
+
+    ##################
+
+    aerial_img_path: str = None
+    img_data: dict = None
+    depth_data: dict = None
+    camera_pose_data: dict = None
+    depth_scale: float = 1e-3
+
+    def __post_init__(self):
+        if self.img_data is None:
+            self.img_data = {}
+        else:
+            self.img_data = expandvars_recursive(self.img_data)
+
+        if self.depth_data is None:
+            self.depth_data = {}
+        else:
+            self.depth_data = expandvars_recursive(self.depth_data)
+
+        if self.camera_pose_data is None:
+            self.camera_pose_data = {}
+        else:
+            self.camera_pose_data = expandvars_recursive(self.camera_pose_data)
+
+        if "T_premultiply" in self.camera_pose_data:
+            self.camera_pose_data["T_premultiply"] = np.array(
+                self.camera_pose_data["T_premultiply"]
+            ).reshape((4, 4))
+
+        if "T_postmultiply" in self.camera_pose_data:
+            self.camera_pose_data["T_postmultiply"] = np.array(
+                self.camera_pose_data["T_postmultiply"]
+            ).reshape((4, 4))
+
+
+@dataclass
 class SegmentMappingDataParams(ParamsBase):
     # class attribute
     params_key: ClassVar[str] = "segment_mapping_data"
