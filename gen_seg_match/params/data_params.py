@@ -1,3 +1,4 @@
+import os
 import numpy as np
 from dataclasses import dataclass
 from typing import ClassVar
@@ -110,6 +111,23 @@ class GroundToBEVDataParams(ParamsBase):
             self.camera_pose_data["T_postmultiply"] = np.array(
                 self.camera_pose_data["T_postmultiply"]
             ).reshape((4, 4))
+
+
+@dataclass
+class SemanticMatchEvaluationDataParams(ParamsBase):
+    params_key: ClassVar[str] = "semantic_match_evaluation_data"
+
+    ground_submap_dir: str = None
+    aerial_submap_dir: str = None
+    gt_pose_data: dict = None
+
+    def __post_init__(self):
+        if self.ground_submap_dir:
+            self.ground_submap_dir = os.path.expandvars(self.ground_submap_dir)
+        if self.aerial_submap_dir:
+            self.aerial_submap_dir = os.path.expandvars(self.aerial_submap_dir)
+        if self.gt_pose_data:
+            self.gt_pose_data = expandvars_recursive(self.gt_pose_data)
 
 
 @dataclass

@@ -139,3 +139,17 @@ class GroundToBEVParams(ParamsBase):
     color_aggregation_k: int = 5  # k value for "top-k" aggregation method
     hole_fill_method: str = None  # None, "inpaint", "nearest", or "dilate"
     hole_fill_radius: int = 5  # Radius for hole filling (pixels)
+
+
+@dataclass
+class SemanticMatchEvaluationParams(ParamsBase):
+    params_key: ClassVar[str] = "semantic_match_evaluation"
+
+    num_point_matches: int = 50
+    num_line_matches: int = 25
+    point_match_max_dist_m: float = 0.5
+    point_other_min_dist_m: float = 1.0
+    line_match_max_dist_m: float = 0.5
+    line_match_max_ang_diff_deg: float = 10.0
+    line_other_min_dist_m: float = 1.0
+    line_other_min_ang_diff_deg: float = 10.0
