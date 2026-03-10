@@ -16,7 +16,9 @@ from typing import List, Optional
 import cv2 as cv
 import numpy as np
 import rasterio
+from rasterio.crs import CRS as RastCRS
 from rasterio.transform import xy as rasterio_xy
+from rasterio.warp import transform as warp_transform
 from robotdatapy.camera import pixel_depth_2_xyz
 from robotdatapy.data import ImgData, PoseData
 from robotdatapy.transform import aruns, transform_to_gtsam
@@ -65,6 +67,48 @@ class LandmarkMatch:
 
 
 # ---------------------------------------------------------------------------
+# CRS helpers: ensure landmark UTM coordinates are in true metric UTM
+# ---------------------------------------------------------------------------
+
+
+def _get_utm_crs(native_crs, bounds):
+    """Return the metric UTM CRS appropriate for the GeoTIFF's bounding box.
+
+    If the native CRS is already a UTM projection (EPSG:326xx/327xx), it is
+    returned unchanged.  For non-metric CRSes (e.g. EPSG:3857 Web Mercator)
+    we find the appropriate UTM zone from the image centre.
+    """
+    if native_crs is None:
+        return None
+    epsg = native_crs.to_epsg()
+    if epsg is not None and (32601 <= epsg <= 32660 or 32701 <= epsg <= 32760):
+        return native_crs  # already metric UTM
+    # Derive UTM zone from the image centre
+    cx = (bounds.left + bounds.right) / 2
+    cy = (bounds.bottom + bounds.top) / 2
+    lons, lats = warp_transform(native_crs, RastCRS.from_epsg(4326), [cx], [cy])
+    zone = int((lons[0] + 180) / 6) + 1
+    utm_epsg = 32600 + zone if lats[0] >= 0 else 32700 + zone
+    return RastCRS.from_epsg(utm_epsg)
+
+
+def _native_xy_to_utm(x, y, native_crs, utm_crs):
+    """Reproject a single point from native_crs to utm_crs."""
+    if utm_crs is None or utm_crs == native_crs:
+        return float(x), float(y)
+    xs, ys = warp_transform(native_crs, utm_crs, [x], [y])
+    return float(xs[0]), float(ys[0])
+
+
+def _utm_xy_to_native(utm_x, utm_y, utm_crs, native_crs):
+    """Reproject a single UTM point back to native_crs."""
+    if utm_crs is None or utm_crs == native_crs:
+        return float(utm_x), float(utm_y)
+    xs, ys = warp_transform(utm_crs, native_crs, [utm_x], [utm_y])
+    return float(xs[0]), float(ys[0])
+
+
+# ---------------------------------------------------------------------------
 # Interactive landmark selector
 # ---------------------------------------------------------------------------
 
@@ -90,9 +134,13 @@ class LandmarkSelector:
         camera_pose_data: PoseData,
         params: LandmarkPoseEstimationParams,
         depth_scale: float = 1e-3,
+        native_crs=None,
+        utm_crs=None,
     ):
         self.aerial_full = aerial_img  # full-res aerial (BGR)
         self.geotiff_transform = geotiff_transform
+        self.native_crs = native_crs
+        self.utm_crs = utm_crs
         self.img_data = img_data
         self.depth_data = depth_data
         self.camera_pose_data = camera_pose_data
@@ -252,11 +300,14 @@ class LandmarkSelector:
     # ------------------------------------------------------------------
 
     def _utm_from_display_click(self, col_disp: int, row_disp: int):
-        """Convert a display-space aerial click to UTM and full-res pixel."""
+        """Convert a display-space aerial click to true metric UTM and full-res pixel."""
         ds = self.params.aerial_display_downsample
         col_full = col_disp * ds
         row_full = row_disp * ds
-        utm_x, utm_y = rasterio_xy(self.geotiff_transform, row_full, col_full)
+        x_native, y_native = rasterio_xy(self.geotiff_transform, row_full, col_full)
+        utm_x, utm_y = _native_xy_to_utm(
+            x_native, y_native, self.native_crs, self.utm_crs
+        )
         return utm_x, utm_y, col_full, row_full
 
     # ------------------------------------------------------------------
@@ -586,6 +637,8 @@ def _draw_trajectory_on_aerial(
     landmarks: List[LandmarkMatch],
     geotiff_transform,
     aerial_display_downsample: int,
+    native_crs=None,
+    utm_crs=None,
 ) -> np.ndarray:
     """Draw trajectory polyline and landmark dots on downsampled aerial image."""
     from rasterio.transform import rowcol
@@ -594,7 +647,8 @@ def _draw_trajectory_on_aerial(
     ds = aerial_display_downsample
 
     def utm_to_display(utm_x, utm_y):
-        row, col = rowcol(geotiff_transform, utm_x, utm_y)
+        x_native, y_native = _utm_xy_to_native(utm_x, utm_y, utm_crs, native_crs)
+        row, col = rowcol(geotiff_transform, x_native, y_native)
         return int(col // ds), int(row // ds)
 
     # Sample trajectory
@@ -661,6 +715,14 @@ def gt_landmark_pose_estimation(
     # Load aerial GeoTIFF
     with rasterio.open(os.path.expandvars(data_params.aerial_img_path)) as ds:
         geotiff_transform = ds.transform
+        native_crs = ds.crs
+        utm_crs = _get_utm_crs(native_crs, ds.bounds)
+        if utm_crs != native_crs:
+            logger.info(
+                "GeoTIFF CRS is %s (non-metric); reprojecting landmarks to %s",
+                native_crs,
+                utm_crs,
+            )
         # Read as BGR
         if ds.count >= 3:
             rgb = ds.read([1, 2, 3]).transpose(1, 2, 0)
@@ -685,6 +747,8 @@ def gt_landmark_pose_estimation(
             camera_pose_data=camera_pose_data,
             params=params,
             depth_scale=data_params.depth_scale,
+            native_crs=native_crs,
+            utm_crs=utm_crs,
         )
         landmarks = selector.run()
 
@@ -742,7 +806,13 @@ def gt_landmark_pose_estimation(
         aerial_img, (w // ds, h // ds), interpolation=cv.INTER_AREA
     )
     viz = _draw_trajectory_on_aerial(
-        aerial_display, trajectory_pd, landmarks, geotiff_transform, ds
+        aerial_display,
+        trajectory_pd,
+        landmarks,
+        geotiff_transform,
+        ds,
+        native_crs=native_crs,
+        utm_crs=utm_crs,
     )
     viz_path = os.path.join(output_dir, "trajectory_viz.png")
     cv.imwrite(viz_path, viz)

@@ -73,6 +73,8 @@ class CrossViewLocalizationDataParams(ParamsBase):
     def __post_init__(self):
         if self.T_camera_flu is not None:
             self.T_camera_flu = np.array(self.T_camera_flu).reshape((4, 4))
+        if self.gt_pose_data is not None:
+            self.gt_pose_data = expandvars_recursive(self.gt_pose_data)
 
 
 @dataclass
@@ -130,6 +132,7 @@ class SemanticMatchEvaluationDataParams(ParamsBase):
             self.gt_pose_data = expandvars_recursive(self.gt_pose_data)
 
 
+@dataclass
 class LandmarkPoseEstimationDataParams(ParamsBase):
     # class attribute
     params_key: ClassVar[str] = "landmark_pose_estimation_data"

@@ -78,6 +78,63 @@ class CrossViewLocalizationData:
     aerial_img_scale: float = 0.01
     T_camera_flu: np.ndarray = None
 
+    # GeoTIFF metadata for accurate UTM→pixel reprojection
+    geotiff_transform: object = None  # rasterio Affine transform (native CRS)
+    native_crs: object = None  # native CRS of the GeoTIFF
+    utm_crs: object = None  # UTM CRS (used for reprojection when != native_crs)
+
+    def aerial_local_to_pixel(self, local_x: float, local_y: float):
+        """Convert aerial-local frame coordinates to image pixel (col, row).
+
+        local_x: meters east from aerial_img_origin[0]
+        local_y: meters south from aerial_img_origin[1] (image-y direction)
+
+        Returns (col, row) as floats.
+        """
+        utm_x = self.aerial_img_origin[0] + local_x
+        utm_y = self.aerial_img_origin[1] - local_y
+
+        if (
+            self.geotiff_transform is not None
+            and self.native_crs is not None
+            and self.utm_crs is not None
+            and self.native_crs != self.utm_crs
+        ):
+            xs, ys = warp_transform(self.utm_crs, self.native_crs, [utm_x], [utm_y])
+            native_x, native_y = float(xs[0]), float(ys[0])
+        else:
+            native_x, native_y = utm_x, utm_y
+
+        col = (native_x - self.geotiff_transform.c) / self.geotiff_transform.a
+        row = (native_y - self.geotiff_transform.f) / self.geotiff_transform.e
+        return col, row
+
+    def aerial_utm_to_pixel(self, utm_xy: np.ndarray) -> np.ndarray:
+        """Convert absolute UTM XY coordinates to aerial image pixel (col, row).
+
+        utm_xy: shape (N, 2) array of UTM [x, y] coordinates.
+        Returns: shape (N, 2) array of [col, row] pixel coordinates.
+        """
+        utm_xy = np.atleast_2d(utm_xy)
+        if (
+            self.geotiff_transform is not None
+            and self.native_crs is not None
+            and self.utm_crs is not None
+            and self.native_crs != self.utm_crs
+        ):
+            xs, ys = warp_transform(
+                self.utm_crs, self.native_crs, utm_xy[:, 0], utm_xy[:, 1]
+            )
+            native_x = np.array(xs, dtype=float)
+            native_y = np.array(ys, dtype=float)
+        else:
+            native_x = utm_xy[:, 0]
+            native_y = utm_xy[:, 1]
+
+        cols = (native_x - self.geotiff_transform.c) / self.geotiff_transform.a
+        rows = (native_y - self.geotiff_transform.f) / self.geotiff_transform.e
+        return np.column_stack([cols, rows])
+
     @classmethod
     def from_params(cls, params: Union[str, CrossViewLocalizationDataParams]):
         if type(params) is str:
@@ -85,9 +142,27 @@ class CrossViewLocalizationData:
             params = CrossViewLocalizationDataParams.from_yaml(params_file)
 
         with rasterio.open(params.aerial_img_path) as ds:
-            transform = ds.transform
-            x_utm, y_utm = xy(transform, 0, 0)  # row, col
+            geotiff_transform = ds.transform
+            native_crs = ds.crs
+            x_native, y_native = xy(geotiff_transform, 0, 0)  # row, col
             geotiff_pixel_size = cls._ground_pixel_size(ds)
+            # Reproject the aerial image origin to true metric UTM so that the
+            # aerial submap poses and the GT trajectory (also in true UTM) share
+            # the same coordinate frame.  Without this, gt-mode matching fails
+            # when the GeoTIFF is in a non-metric CRS like EPSG:3857.
+            utm_crs = cls._utm_crs_for_ds(ds)
+            if utm_crs is not None and utm_crs != native_crs:
+                xs, ys = warp_transform(native_crs, utm_crs, [x_native], [y_native])
+                x_utm, y_utm = float(xs[0]), float(ys[0])
+                logger.info(
+                    "Aerial image origin reprojected from %s to %s: (%.1f, %.1f)",
+                    native_crs,
+                    utm_crs,
+                    x_utm,
+                    y_utm,
+                )
+            else:
+                x_utm, y_utm = x_native, y_native
 
         aerial_img_scale = params.aerial_img_scale
         if aerial_img_scale is None:
@@ -107,7 +182,31 @@ class CrossViewLocalizationData:
             gt_pose_data=gt_pose_data,
             aerial_img_scale=aerial_img_scale,
             T_camera_flu=params.T_camera_flu,
+            geotiff_transform=geotiff_transform,
+            native_crs=native_crs,
+            utm_crs=utm_crs,
         )
+
+    @staticmethod
+    def _utm_crs_for_ds(ds) -> "CRS | None":
+        """Return the metric UTM CRS appropriate for this GeoTIFF's location.
+
+        If the native CRS is already a UTM zone (EPSG:326xx/327xx) it is
+        returned unchanged.  For non-metric CRSes (e.g. EPSG:3857) we find
+        the correct UTM zone from the image centre.
+        """
+        native_crs = ds.crs
+        if native_crs is None:
+            return None
+        epsg = native_crs.to_epsg()
+        if epsg is not None and (32601 <= epsg <= 32660 or 32701 <= epsg <= 32760):
+            return native_crs  # already metric UTM
+        cx = (ds.bounds.left + ds.bounds.right) / 2
+        cy = (ds.bounds.bottom + ds.bounds.top) / 2
+        lons, lats = warp_transform(native_crs, CRS.from_epsg(4326), [cx], [cy])
+        zone = int((lons[0] + 180) / 6) + 1
+        utm_epsg = 32600 + zone if lats[0] >= 0 else 32700 + zone
+        return CRS.from_epsg(utm_epsg)
 
     @staticmethod
     def _ground_pixel_size(ds) -> float:

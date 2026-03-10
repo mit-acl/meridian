@@ -241,6 +241,7 @@ class CrossViewMatchingPipeline:
         matching_mode: str = None,
         translation_only: bool = None,
         ground_dense_dir: pathlib.Path = None,
+        local_to_pixel_fn=None,
     ) -> CrossViewMatchResult:
         mode = matching_mode or self.algorithm.pipeline_params.matching_mode
         if mode == "max_intersection":
@@ -251,6 +252,7 @@ class CrossViewMatchingPipeline:
                 T_camera_flu,
                 translation_only,
                 show_progress=True,
+                local_to_pixel_fn=local_to_pixel_fn,
             )
         else:
             match_result = self.algorithm.cross_view_match(
@@ -261,6 +263,7 @@ class CrossViewMatchingPipeline:
                 matching_mode,
                 translation_only,
                 show_progress=True,
+                local_to_pixel_fn=local_to_pixel_fn,
             )
         if output_dir is not None:
             self._save_match_results(
@@ -270,6 +273,7 @@ class CrossViewMatchingPipeline:
                 aerial_submaps,
                 ground_submaps,
                 ground_dense_dir,
+                local_to_pixel_fn=local_to_pixel_fn,
             )
         return match_result
 
@@ -281,6 +285,7 @@ class CrossViewMatchingPipeline:
         aerial_submaps: Dict[str, Submap],
         ground_submaps: Dict[str, Submap],
         ground_dense_dir: pathlib.Path = None,
+        local_to_pixel_fn=None,
     ):
         output_dir = pathlib.Path(output_dir)
         viz_output_dir = output_dir / "viz"
@@ -542,6 +547,9 @@ def cross_view_matching(
             match_output_dir,
             aerial_img=data.aerial_img,
             T_camera_flu=data.T_camera_flu,
+            local_to_pixel_fn=data.aerial_local_to_pixel
+            if data.geotiff_transform is not None
+            else None,
         )
 
 

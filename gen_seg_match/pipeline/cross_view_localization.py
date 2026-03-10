@@ -169,6 +169,9 @@ class CrossViewLocalization:
             matching_mode="max_intersection",
             translation_only=True,
             ground_dense_dir=ground_dense_dir,
+            local_to_pixel_fn=data.aerial_local_to_pixel
+            if data.geotiff_transform is not None
+            else None,
         )
 
         # Build candidates from in-memory match result
@@ -475,10 +478,16 @@ class CrossViewLocalization:
         origin_x, origin_y = data.aerial_img_origin
         pixel_len_m = data.aerial_img_scale
 
-        def utm_to_pixel(xy_utm):
-            x_px = (xy_utm[:, 0] - origin_x) / pixel_len_m
-            y_px = (origin_y - xy_utm[:, 1]) / pixel_len_m
-            return np.column_stack([x_px, y_px])
+        if data.geotiff_transform is not None:
+
+            def utm_to_pixel(xy_utm):
+                return data.aerial_utm_to_pixel(np.atleast_2d(xy_utm))
+        else:
+
+            def utm_to_pixel(xy_utm):
+                x_px = (xy_utm[:, 0] - origin_x) / pixel_len_m
+                y_px = (origin_y - xy_utm[:, 1]) / pixel_len_m
+                return np.column_stack([x_px, y_px])
 
         est_px = utm_to_pixel(est_utm_positions)
 
