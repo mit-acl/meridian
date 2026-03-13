@@ -94,6 +94,61 @@ class CrossViewRPGOResult:
 
 
 # ---------------------------------------------------------------------------
+# CLIPPER data builder
+# ---------------------------------------------------------------------------
+
+
+def _build_clipper_data(
+    candidates: List[dict],
+) -> Tuple[np.ndarray, List[np.ndarray], List[np.ndarray]]:
+    """Build CLIPPER data matrix and unique pose lists from candidates.
+
+    Each column of D encodes one candidate:
+      D[0, k]     = aerial_idx  (int index into aerial_poses list)
+      D[1, k]     = ground_idx  (int index into ground_poses list)
+      D[2:18, k]  = T_i_j_hat.flatten() row-major (16 doubles)
+
+    Returns:
+        D: 18×N data matrix
+        aerial_poses: list of unique 4×4 aerial pose matrices
+        ground_poses: list of unique 4×4 ground pose matrices
+    """
+    aerial_key_to_idx: dict = {}
+    aerial_poses: List[np.ndarray] = []
+    ground_key_to_idx: dict = {}
+    ground_poses: List[np.ndarray] = []
+
+    N = len(candidates)
+    # Build D as (N, 18) row-major, then transpose to (18, N) Fortran-order
+    # so that Eigen receives a column-major matrix (each column = one datum).
+    D_rows = np.zeros((N, 18))
+
+    for k, c in enumerate(candidates):
+        # Deduplicate aerial poses by matrix content
+        aerial_key = tuple(c["aerial_pose"].flatten())
+        if aerial_key not in aerial_key_to_idx:
+            aerial_key_to_idx[aerial_key] = len(aerial_poses)
+            aerial_poses.append(c["aerial_pose"].copy())
+        aerial_idx = aerial_key_to_idx[aerial_key]
+
+        # Deduplicate ground poses by matrix content
+        ground_key = tuple(c["T_odom_ground"].flatten())
+        if ground_key not in ground_key_to_idx:
+            ground_key_to_idx[ground_key] = len(ground_poses)
+            ground_poses.append(c["T_odom_ground"].copy())
+        ground_idx = ground_key_to_idx[ground_key]
+
+        D_rows[k, 0] = aerial_idx
+        D_rows[k, 1] = ground_idx
+        D_rows[k, 2:] = c["T_i_j_hat"].flatten()  # row-major (C order)
+
+    # Transpose to (18, N) Fortran-order — pybind11 passes this to Eigen as
+    # a column-major MatrixXd where each column is one datum.
+    D = D_rows.T  # shape (18, N), Fortran-order (C-contiguous rows → F-contiguous cols)
+    return D, aerial_poses, ground_poses
+
+
+# ---------------------------------------------------------------------------
 # CrossViewRPGO
 # ---------------------------------------------------------------------------
 
@@ -122,8 +177,7 @@ class CrossViewRPGO:
         Returns:
             CrossViewRPGOResult with T_utm_odom and optimized_trajectory.
         """
-        M, C = self.build_affinity_matrix(candidates)
-        inlier_indices = self.run_clipper(M, C)
+        inlier_indices, M, C = self.run_clipper_cpp(candidates)
 
         if len(inlier_indices) == 0:
             logger.warning("CLIPPER returned empty solution.")
@@ -158,7 +212,7 @@ class CrossViewRPGO:
             candidates=candidates,
         )
 
-    def build_affinity_matrix(
+    def _build_affinity_matrix_python(
         self, candidates: List[dict]
     ) -> Tuple[np.ndarray, np.ndarray]:
         """Build CLIPPER affinity (M) and constraint (C) matrices."""
@@ -216,6 +270,33 @@ class CrossViewRPGO:
         clipper.set_matrix_data(M=M, C=C)
         clipper.solve()
         return np.array(clipper.get_solution().nodes)
+
+    def run_clipper_cpp(
+        self, candidates: List[dict]
+    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """Run CLIPPER using the C++ LoopClosureConsistency invariant.
+
+        Returns:
+            Tuple of (inlier_indices, M, C).
+        """
+        D, aerial_poses, ground_poses = _build_clipper_data(candidates)
+        iparams = clipperpy.invariants.LoopClosureConsistencyParams()
+        iparams.rot_sigma_rad = self.params.rot_consistency_sigma_rad
+        iparams.rot_eps_rad = self.params.rot_consistency_eps_rad
+        iparams.trans_sigma_m = self.params.trans_consistency_sigma_m
+        iparams.trans_eps_m = self.params.trans_consistency_eps_m
+        invariant = clipperpy.invariants.LoopClosureConsistency(
+            aerial_poses, ground_poses, iparams
+        )
+        clipper = clipperpy.CLIPPERPairwiseAndSingle(invariant, clipperpy.Params())
+        N = D.shape[1]
+        A = np.stack([np.arange(N), np.arange(N)], axis=1).astype(np.int32)
+        clipper.score_pairwise_and_single_consistency(D, D, A)
+        clipper.solve()
+        inlier_indices = np.array(clipper.get_solution().nodes)
+        M = clipper.get_affinity_matrix()
+        C = clipper.get_constraint_matrix()
+        return inlier_indices, M, C
 
     @staticmethod
     def _frame_align(candidates: List[dict], inlier_indices: np.ndarray) -> np.ndarray:
