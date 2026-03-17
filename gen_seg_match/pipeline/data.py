@@ -2,7 +2,7 @@ import logging
 import numpy as np
 from dataclasses import dataclass
 from typing import Union
-from robotdatapy.data import PoseData, ImgData
+from robotdatapy.data import PoseData, ImgData, PointCloudData
 import cv2 as cv
 import rasterio
 from rasterio.crs import CRS
@@ -12,6 +12,7 @@ from rasterio.warp import transform as warp_transform
 from roman.map.map import ROMANMap
 
 from gen_seg_match.map3d.map import SegmentMap
+from gen_seg_match.map3d.align_point_cloud import AlignPointCloud
 from gen_seg_match.params.data_params import (
     RGBDPoseEstimationDataParams,
     CrossViewLocalizationDataParams,
@@ -317,9 +318,15 @@ class GroundToBEVData:
 @dataclass
 class SegmentMappingData:
     img_data: ImgData
-    depth_data: ImgData
-    camera_pose_data: PoseData
+    depth_data: ImgData = None
+    camera_pose_data: PoseData = None
     depth_scale: float = 1e-3
+    point_cloud_data: PointCloudData = None
+    align_point_cloud: AlignPointCloud = None
+
+    @property
+    def use_point_cloud(self) -> bool:
+        return self.point_cloud_data is not None
 
     @classmethod
     def from_params(
@@ -336,10 +343,14 @@ class SegmentMappingData:
         camera_pose_data_dict = (
             dict(params.camera_pose_data) if params.camera_pose_data else {}
         )
+        pcl_dict = dict(params.point_cloud_data) if params.point_cloud_data else {}
 
         if time_range is not None:
             img_data_dict["time_range"] = time_range
-            depth_data_dict["time_range"] = time_range
+            if depth_data_dict:
+                depth_data_dict["time_range"] = time_range
+            if pcl_dict:
+                pcl_dict["time_range"] = time_range
 
         img_data = ImgData.from_dict(img_data_dict) if img_data_dict else None
         depth_data = ImgData.from_dict(depth_data_dict) if depth_data_dict else None
@@ -347,11 +358,39 @@ class SegmentMappingData:
             PoseData.from_dict(camera_pose_data_dict) if camera_pose_data_dict else None
         )
 
+        # Point cloud support
+        point_cloud_data = None
+        align_point_cloud = None
+        if pcl_dict:
+            T_camera_lidar = pcl_dict.pop("T_camera_lidar", None)
+            if time_range is not None:
+                pcl_dict["time_range"] = time_range
+            point_cloud_data = PointCloudData.from_bag(
+                path=pcl_dict["path"],
+                topic=pcl_dict["topic"],
+                time_tol=pcl_dict.get("time_tol", 0.1),
+                time_range=pcl_dict.get("time_range"),
+            )
+            if T_camera_lidar is None:
+                T_camera_lidar = AlignPointCloud.extract_T_camera_lidar(
+                    point_cloud_data=point_cloud_data,
+                    img_data=img_data,
+                    tf_bag_path=pcl_dict["path"],
+                )
+            align_point_cloud = AlignPointCloud(
+                point_cloud_data=point_cloud_data,
+                img_data=img_data,
+                camera_pose_data=camera_pose_data,
+                T_camera_lidar=T_camera_lidar,
+            )
+
         return cls(
             img_data=img_data,
             depth_data=depth_data,
             camera_pose_data=camera_pose_data,
             depth_scale=params.depth_scale,
+            point_cloud_data=point_cloud_data,
+            align_point_cloud=align_point_cloud,
         )
 
     @staticmethod

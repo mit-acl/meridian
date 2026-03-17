@@ -57,7 +57,14 @@ class AerialSegment:
         if self._convex_hull is not None:
             return self._convex_hull
         convex_hull_shapely = shapely.convex_hull(shapely.MultiPoint(self.points))
-        self._convex_hull = np.array(convex_hull_shapely.exterior.coords)
+        if convex_hull_shapely.is_empty:
+            self._convex_hull = None
+        elif hasattr(convex_hull_shapely, "exterior"):
+            # Polygon (normal case: 3+ non-collinear points)
+            self._convex_hull = np.array(convex_hull_shapely.exterior.coords)
+        else:
+            # LineString (collinear points) or Point (single point)
+            self._convex_hull = np.array(convex_hull_shapely.coords)
         return self._convex_hull
 
     @property

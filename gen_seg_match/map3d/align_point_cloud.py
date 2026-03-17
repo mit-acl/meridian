@@ -1,0 +1,157 @@
+###########################################################
+#
+# align_point_cloud.py
+#
+# A class to align a point cloud with a camera & project onto the camera image frame
+#
+# Authors: Qingyuan Li
+#
+# January 27. 2025
+#
+###########################################################
+
+
+from robotdatapy.data import PointCloudData, ImgData, PoseData
+import numpy as np
+import cv2 as cv
+from gen_seg_match.utils import expandvars_recursive
+
+
+class AlignPointCloud:
+    point_cloud_data: PointCloudData
+    img_data: ImgData
+    camera_pose_data: PoseData
+    T_camera_lidar_static: np.ndarray
+
+    def __init__(
+        self,
+        point_cloud_data: PointCloudData,
+        img_data: ImgData,
+        camera_pose_data: PoseData,
+        T_camera_lidar: np.ndarray,
+    ):
+        """
+        Class for aligning a point cloud with a camera and projecting the point cloud onto the camera's image frame
+
+        Args:
+            point_cloud_data (PointCloudData): point cloud data class
+            img_data (ImgData): image data class
+            camera_pose_data (PoseData): pose data class
+            T_camera_lidar (np.ndarray): static transform from lidar to camera frame
+        """
+        self.point_cloud_data = point_cloud_data
+        self.img_data = img_data
+        self.camera_pose_data = camera_pose_data
+
+        self.img_shape = img_data.img(img_data.times[0]).shape[:2]
+        self.T_camera_lidar_static = T_camera_lidar
+
+    @classmethod
+    def extract_T_camera_lidar(
+        cls, point_cloud_data: PointCloudData, img_data: ImgData, tf_bag_path: str
+    ):
+        """
+        Extracts the static transform from camera to range sensor from a bag file
+
+        Args:
+            point_cloud_data (PointCloudData): point cloud data class
+            img_data (ImgData): image data class
+            tf_bag_path (str):  path to bag with static tf data (needed to calculate static transform from
+                                camera to range sensor)
+        """
+        point_cloud_frame = point_cloud_data.pointcloud(
+            point_cloud_data.times[0]
+        ).header.frame_id
+        camera_frame = img_data.img_header(img_data.times[0]).frame_id
+        T_camera_lidar_static = PoseData.any_static_tf_from_bag(
+            expandvars_recursive(tf_bag_path), camera_frame, point_cloud_frame
+        )
+        return T_camera_lidar_static
+
+    def aligned_point_cloud(self, t: float):
+        """
+        Return the closest point cloud at time t, aligned to the camera frame
+
+        Args:
+            t (float): time to get closest point cloud to
+
+        Returns:
+            np.ndarray: (n, 3) array containing 3D point cloud in the frame of the camera (Z forward, Y down)
+        """
+        pcl = self.point_cloud_data.pointcloud(t)
+
+        # get exact times of point cloud and image messages
+        point_cloud_time = pcl.header.stamp.sec + 1e-9 * pcl.header.stamp.nanosec
+        img_time = self.img_data.nearest_time(t)
+
+        # calculate dynamic transform between robot at time of image and robot at time of pointcloud
+        T_W_camera_point_cloud_time = self.camera_pose_data.T_WB(point_cloud_time)
+        T_W_camera_image_time = self.camera_pose_data.T_WB(img_time)
+        T_W_rangesens_point_cloud_time = (
+            T_W_camera_point_cloud_time @ self.T_camera_lidar_static
+        )
+        T_W_rangesens_image_time = T_W_camera_image_time @ self.T_camera_lidar_static
+
+        T_img_cloud_dynamic = (
+            np.linalg.inv(T_W_rangesens_image_time) @ T_W_rangesens_point_cloud_time
+        )
+
+        # compose static and dynamic transforms to get approximately exact transform
+        # between camera at time of image and range sensor at time of point cloud
+        T_camera_rangesens = self.T_camera_lidar_static @ T_img_cloud_dynamic
+
+        # transform points into image frame
+        points = pcl.get_xyz()
+        points_h = np.hstack((points, np.ones((points.shape[0], 1))))
+        points_h_image_frame = points_h @ T_camera_rangesens.T
+        points_camera_frame = points_h_image_frame[:, :3]
+
+        # mask for points in front of camera (positive Z in camera frame)
+        in_front_mask = points_camera_frame[:, 2] >= 0
+        points_camera_frame_filtered = points_camera_frame[in_front_mask]
+
+        return points_camera_frame_filtered
+
+    def projected_point_cloud(self, points_camera_frame):
+        """
+        Projects a 3D point cloud in the camera frame (from aligned_point_cloud) to
+        the 2D image frame
+
+        Args:
+            points_camera_frame (np.ndarray): (n, 3) array containing 3D point cloud in the frame of the camera (Z forward, Y down)
+
+        Returns:
+            np.ndarray: (n, 2) array containing 2D projected points in (u, v) coordinates, order unchanged
+        """
+        # project point cloud onto 2D image
+        points_camera_frame_cv = points_camera_frame.reshape(-1, 1, 3)
+        points_2d_cv, _ = cv.projectPoints(
+            points_camera_frame_cv,
+            np.zeros(3),
+            np.zeros(3),
+            self.img_data.K,
+            self.img_data.D,
+        )
+        points_2d = points_2d_cv.reshape((-1, 2))
+
+        return points_2d
+
+    def filter_point_cloud_and_projection(self, points_camera_frame, points_2d):
+        """
+        Filters array of (u, v) coordinates in image frame and associated 3D point cloud by checking
+        that it is inside the associated rgb image frame bounds and casting to int
+
+        Args:
+            points_camera_frame (np.ndarray): (n, 3) array containing 3D point cloud in the frame of the camera (Z forward, Y down)
+            points_2d (np.ndarray): (n, 2) array containing 2D projected points in (u, v) coordinates, in same order
+        """
+        points_2d = np.round(points_2d).astype(int)
+        inside_frame = (
+            (points_2d[:, 0] >= 0)
+            & (points_2d[:, 0] < self.img_shape[1])
+            & (points_2d[:, 1] >= 0)
+            & (points_2d[:, 1] < self.img_shape[0])
+        )
+        points_camera_frame = points_camera_frame[inside_frame]
+        points_2d = points_2d[inside_frame]
+        return points_camera_frame, points_2d

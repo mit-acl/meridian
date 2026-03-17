@@ -181,6 +181,9 @@ class SegmentMappingDataParams(ParamsBase):
 
     img_data: dict = None
     depth_data: dict = None
+    point_cloud_data: dict = (
+        None  # Alternative to depth_data; keys: path, topic, T_camera_lidar, time_tol
+    )
     camera_pose_data: dict = None
     depth_scale: float = 1e-3  # Multiplier to convert depth image values to meters
     max_time: float = None  # max seconds of bag data to load at once (None = all)
@@ -195,6 +198,16 @@ class SegmentMappingDataParams(ParamsBase):
             self.depth_data = {}
         else:
             self.depth_data = expandvars_recursive(self.depth_data)
+
+        if self.point_cloud_data is None:
+            self.point_cloud_data = {}
+        else:
+            self.point_cloud_data = expandvars_recursive(self.point_cloud_data)
+
+        if "T_camera_lidar" in self.point_cloud_data:
+            self.point_cloud_data["T_camera_lidar"] = np.array(
+                self.point_cloud_data["T_camera_lidar"]
+            ).reshape((4, 4))
 
         if self.camera_pose_data is None:
             self.camera_pose_data = {}
