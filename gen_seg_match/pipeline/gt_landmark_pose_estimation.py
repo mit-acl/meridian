@@ -119,6 +119,7 @@ class LandmarkSelector:
     HELP_TEXT = [
         "a: add match",
         "n: step +1s",
+        "b: step -1s",
         "s: skip slot",
         "d: discard clicks",
         "q: quit",
@@ -390,6 +391,11 @@ class LandmarkSelector:
             elif key == ord("n"):
                 self.t_current = min(
                     self.t_current + self.params.increment_sec, self.img_data.tf
+                )
+                self.status_msg = f"t = {self.t_current:.1f}"
+            elif key == ord("b"):
+                self.t_current = max(
+                    self.t_current - self.params.increment_sec, self.img_data.t0
                 )
                 self.status_msg = f"t = {self.t_current:.1f}"
             elif key == ord("s"):
@@ -669,7 +675,28 @@ def _draw_trajectory_on_aerial(
         col, row = utm_to_display(lm.utm_x, lm.utm_y)
         h, w = img.shape[:2]
         if 0 <= col < w and 0 <= row < h:
+            # Orange line to trajectory position at landmark observation time
+            try:
+                T_obs = trajectory_pd.pose(lm.time)
+                col_t, row_t = utm_to_display(T_obs[0, 3], T_obs[1, 3])
+                if 0 <= col_t < w and 0 <= row_t < h:
+                    cv.line(img, (col, row), (col_t, row_t), (0, 165, 255), 2)
+            except Exception:
+                pass
+            # Red landmark dot (drawn on top of line)
             cv.circle(img, (col, row), 5, (0, 0, 220), -1)
+            # Pixel label
+            label = f"({lm.aerial_pixel_full[0]}, {lm.aerial_pixel_full[1]})"
+            cv.putText(
+                img,
+                label,
+                (col + 7, row - 7),
+                cv.FONT_HERSHEY_SIMPLEX,
+                0.4,
+                (0, 0, 220),
+                1,
+                cv.LINE_AA,
+            )
 
     return img
 
@@ -684,6 +711,7 @@ def gt_landmark_pose_estimation(
     output_dir: str,
     run: str = None,
     landmarks_path: str = None,
+    append: bool = False,
 ):
     """
     Landmark-based ground-truth pose estimation pipeline.
@@ -732,7 +760,7 @@ def gt_landmark_pose_estimation(
             aerial_img = cv.cvtColor(gray.astype(np.uint8), cv.COLOR_GRAY2BGR)
 
     # --------------- Step 1: interactive landmark selection ---------------
-    if landmarks_path is not None:
+    if landmarks_path is not None and not append:
         logger.info(f"Loading landmarks from {landmarks_path}")
         with open(landmarks_path) as f:
             raw = json.load(f)
@@ -750,6 +778,11 @@ def gt_landmark_pose_estimation(
             native_crs=native_crs,
             utm_crs=utm_crs,
         )
+        if landmarks_path is not None and append:
+            logger.info(f"Appending to existing landmarks from {landmarks_path}")
+            with open(landmarks_path) as f:
+                raw = json.load(f)
+            selector.landmarks = [LandmarkMatch.from_dict(d) for d in raw]
         landmarks = selector.run()
 
         if params.show_confirmation and landmarks:
@@ -843,6 +876,12 @@ if __name__ == "__main__":
         default=None,
         help="Path to existing landmarks.json (skips interactive tool)",
     )
+    parser.add_argument(
+        "--append",
+        action="store_true",
+        default=False,
+        help="Append to existing landmarks file instead of skipping interactive tool",
+    )
     args = parser.parse_args()
 
     gt_landmark_pose_estimation(
@@ -850,4 +889,5 @@ if __name__ == "__main__":
         output_dir=args.output,
         run=args.run,
         landmarks_path=args.landmarks,
+        append=args.append,
     )
