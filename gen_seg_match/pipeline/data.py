@@ -142,33 +142,55 @@ class CrossViewLocalizationData:
             params_file = params
             params = CrossViewLocalizationDataParams.from_yaml(params_file)
 
-        with rasterio.open(params.aerial_img_path) as ds:
-            geotiff_transform = ds.transform
-            native_crs = ds.crs
-            x_native, y_native = xy(geotiff_transform, 0, 0)  # row, col
-            geotiff_pixel_size = cls._ground_pixel_size(ds)
-            # Reproject the aerial image origin to true metric UTM so that the
-            # aerial submap poses and the GT trajectory (also in true UTM) share
-            # the same coordinate frame.  Without this, gt-mode matching fails
-            # when the GeoTIFF is in a non-metric CRS like EPSG:3857.
-            utm_crs = cls._utm_crs_for_ds(ds)
-            if utm_crs is not None and utm_crs != native_crs:
-                xs, ys = warp_transform(native_crs, utm_crs, [x_native], [y_native])
-                x_utm, y_utm = float(xs[0]), float(ys[0])
-                logger.info(
-                    "Aerial image origin reprojected from %s to %s: (%.1f, %.1f)",
-                    native_crs,
-                    utm_crs,
-                    x_utm,
-                    y_utm,
-                )
-            else:
-                x_utm, y_utm = x_native, y_native
+        if params.top_left_utm is not None:
+            # PNG path: user-supplied UTM origin, no GeoTIFF metadata
+            if params.aerial_img_scale is None:
+                raise ValueError("aerial_img_scale is required when using top_left_utm")
+            aerial_img = cv.imread(params.aerial_img_path)
+            aerial_img_origin = np.array(params.top_left_utm)
+            aerial_img_scale = params.aerial_img_scale
+            geotiff_transform = None
+            native_crs = None
+            utm_crs = None
+            logger.info(
+                "Using PNG with top_left_utm=(%.1f, %.1f), scale=%.6f m/px",
+                aerial_img_origin[0],
+                aerial_img_origin[1],
+                aerial_img_scale,
+            )
+        else:
+            # GeoTIFF path: extract geo-referencing from the image
+            with rasterio.open(params.aerial_img_path) as ds:
+                geotiff_transform = ds.transform
+                native_crs = ds.crs
+                x_native, y_native = xy(geotiff_transform, 0, 0)  # row, col
+                geotiff_pixel_size = cls._ground_pixel_size(ds)
+                # Reproject the aerial image origin to true metric UTM so that the
+                # aerial submap poses and the GT trajectory (also in true UTM) share
+                # the same coordinate frame.  Without this, gt-mode matching fails
+                # when the GeoTIFF is in a non-metric CRS like EPSG:3857.
+                utm_crs = cls._utm_crs_for_ds(ds)
+                if utm_crs is not None and utm_crs != native_crs:
+                    xs, ys = warp_transform(native_crs, utm_crs, [x_native], [y_native])
+                    x_utm, y_utm = float(xs[0]), float(ys[0])
+                    logger.info(
+                        "Aerial image origin reprojected from %s to %s: (%.1f, %.1f)",
+                        native_crs,
+                        utm_crs,
+                        x_utm,
+                        y_utm,
+                    )
+                else:
+                    x_utm, y_utm = x_native, y_native
 
-        aerial_img_scale = params.aerial_img_scale
-        if aerial_img_scale is None:
-            aerial_img_scale = geotiff_pixel_size
-            logger.info(f"Auto-detected aerial pixel size: {aerial_img_scale:.6f} m/px")
+            aerial_img = cv.imread(params.aerial_img_path)
+            aerial_img_origin = np.array([x_utm, y_utm])
+            aerial_img_scale = params.aerial_img_scale
+            if aerial_img_scale is None:
+                aerial_img_scale = geotiff_pixel_size
+                logger.info(
+                    f"Auto-detected aerial pixel size: {aerial_img_scale:.6f} m/px"
+                )
 
         gt_pose_data = (
             PoseData.from_dict(params.gt_pose_data) if params.gt_pose_data else None
@@ -177,8 +199,8 @@ class CrossViewLocalizationData:
         ground_map = cls._load_ground_map(params.ground_map_path)
 
         return cls(
-            aerial_img=cv.imread(params.aerial_img_path),
-            aerial_img_origin=np.array([x_utm, y_utm]),
+            aerial_img=aerial_img,
+            aerial_img_origin=aerial_img_origin,
             ground_map=ground_map,
             gt_pose_data=gt_pose_data,
             aerial_img_scale=aerial_img_scale,

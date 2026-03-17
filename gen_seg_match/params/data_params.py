@@ -68,6 +68,9 @@ class CrossViewLocalizationDataParams(ParamsBase):
     gt_pose_data: dict = None
 
     aerial_img_scale: float = None  # None = auto-detect from GeoTIFF
+    top_left_utm: tuple = (
+        None  # (easting, northing) in metres; use for non-GeoTIFF images
+    )
     T_camera_flu: list = None
 
     def __post_init__(self):
