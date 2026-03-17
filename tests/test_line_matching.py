@@ -70,6 +70,7 @@ def default_matcher_params():
         cosine_max=1.0,
         z_dir_constrained=False,
         rot_unc_ang_rad=0.0,
+        point_noise_from_angle=False,
     )
 
 

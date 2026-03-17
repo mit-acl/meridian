@@ -52,7 +52,9 @@ def make_consistent_T_hat(
     T_hat_j = np.linalg.inv(aerial_j) @ aerial_i @ odom_relative
     if noise_rot_rad > 0 or noise_trans_m > 0:
         # Add small noise
-        dR = Rot.from_rotvec([0, 0, rng.uniform(-noise_rot_rad, noise_rot_rad)]).as_matrix()
+        dR = Rot.from_rotvec(
+            [0, 0, rng.uniform(-noise_rot_rad, noise_rot_rad)]
+        ).as_matrix()
         noise = np.eye(4)
         noise[:3, :3] = dR
         noise[:2, 3] = rng.uniform(-noise_trans_m, noise_trans_m, 2)
@@ -83,34 +85,40 @@ def build_candidates(
     for k in range(n_consistent):
         T_odom_ground = ground_poses[k]
         T_hat = make_consistent_T_hat(
-            ground_poses[0], T_odom_ground,
-            aerial_pose, aerial_pose,
-            noise_rot_rad=0.02,   # ~1 deg
+            ground_poses[0],
+            T_odom_ground,
+            aerial_pose,
+            aerial_pose,
+            noise_rot_rad=0.02,  # ~1 deg
             noise_trans_m=0.5,
             rng=rng,
         )
         # For k==0, T_hat should be T_hat_ref (approximately)
         if k == 0:
             T_hat = T_hat_ref.copy()
-        candidates.append({
-            "aerial_pose": aerial_pose.copy(),
-            "T_odom_ground": T_odom_ground.copy(),
-            "T_i_j_hat": T_hat.copy(),
-            "T_utm_odom_se2": np.eye(3),
-            "ground_submap_time": float(k),
-        })
+        candidates.append(
+            {
+                "aerial_pose": aerial_pose.copy(),
+                "T_odom_ground": T_odom_ground.copy(),
+                "T_i_j_hat": T_hat.copy(),
+                "T_utm_odom_se2": np.eye(3),
+                "ground_submap_time": float(k),
+            }
+        )
 
     # Outliers: random T_hat (inconsistent)
     for k in range(n_outliers):
         T_odom_ground = ground_poses[n_consistent + k]
         T_hat = random_se3(rng)
-        candidates.append({
-            "aerial_pose": aerial_pose.copy(),
-            "T_odom_ground": T_odom_ground.copy(),
-            "T_i_j_hat": T_hat.copy(),
-            "T_utm_odom_se2": np.eye(3),
-            "ground_submap_time": float(n_consistent + k),
-        })
+        candidates.append(
+            {
+                "aerial_pose": aerial_pose.copy(),
+                "T_odom_ground": T_odom_ground.copy(),
+                "T_i_j_hat": T_hat.copy(),
+                "T_utm_odom_se2": np.eye(3),
+                "ground_submap_time": float(n_consistent + k),
+            }
+        )
 
     return candidates
 
@@ -148,7 +156,9 @@ def test_affinity_matrix_agrees():
 
     assert M_cpp.shape == (N, N), f"Expected ({N},{N}), got {M_cpp.shape}"
     np.testing.assert_allclose(
-        M_cpp, M_py, atol=1e-6,
+        M_cpp,
+        M_py,
+        atol=1e-6,
         err_msg="C++ and Python affinity matrices differ",
     )
 
@@ -186,6 +196,4 @@ def test_run_clipper_cpp_finds_inliers():
 
     # All returned indices should be within the consistent cluster (indices 0..4)
     assert len(inlier_indices) > 0, "No inliers found"
-    assert all(idx < 5 for idx in inlier_indices), (
-        f"Outlier selected: {inlier_indices}"
-    )
+    assert all(idx < 5 for idx in inlier_indices), f"Outlier selected: {inlier_indices}"
