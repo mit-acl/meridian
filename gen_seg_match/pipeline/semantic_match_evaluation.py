@@ -3,10 +3,10 @@ Pipeline for evaluating how discriminative segment semantic features are.
 
 For every sampled true geometric match (ground↔aerial point or line), records:
   (1) cosine similarity of the true pair
-  (2) mean cosine sim of the ground segment against every other aerial segment
-  (3) mean cosine sim of the aerial segment against every other ground segment
+  (2) cosine sim of the ground segment against every other aerial segment (all individual scores)
+  (3) cosine sim of the aerial segment against every other ground segment (all individual scores)
 
-Histograms, statistics, and raw arrays are saved to the output directory.
+Histograms (PDF-normalised), statistics, and raw arrays are saved to the output directory.
 """
 
 import argparse
@@ -115,26 +115,20 @@ def _build_feature_array(submaps, get_fn):
 def _compute_sims(
     g_feat, a_feat, all_ground_feats, all_aerial_feats, g_global_idx, a_global_idx
 ):
-    """Return (sim_match, sim_g_vs_other_aerial, sim_a_vs_other_ground)."""
+    """Return (sim_match, sims_g_vs_other_aerial, sims_a_vs_other_ground)."""
     sim_match = float(np.dot(g_feat, a_feat))
 
     # ground segment vs all OTHER aerial segments
     mask_a = np.ones(len(all_aerial_feats), dtype=bool)
     mask_a[a_global_idx] = False
-    if mask_a.any():
-        sim_g_nonmatch = float((all_aerial_feats[mask_a] @ g_feat).mean())
-    else:
-        sim_g_nonmatch = float("nan")
+    sims_g_nonmatch = all_aerial_feats[mask_a] @ g_feat  # shape (N_aerial-1,)
 
     # aerial segment vs all OTHER ground segments
     mask_g = np.ones(len(all_ground_feats), dtype=bool)
     mask_g[g_global_idx] = False
-    if mask_g.any():
-        sim_a_nonmatch = float((all_ground_feats[mask_g] @ a_feat).mean())
-    else:
-        sim_a_nonmatch = float("nan")
+    sims_a_nonmatch = all_ground_feats[mask_g] @ a_feat  # shape (N_ground-1,)
 
-    return sim_match, sim_g_nonmatch, sim_a_nonmatch
+    return sim_match, sims_g_nonmatch, sims_a_nonmatch
 
 
 # ---------------------------------------------------------------------------
@@ -390,43 +384,57 @@ def semantic_match_evaluation(params_path: str, output_dir: str, run: str = None
         len(line_match_sims),
     )
 
+    # flatten per-match non-match arrays into a single array each
+    point_g_nonmatch_flat = (
+        np.concatenate(point_g_nonmatch_sims) if point_g_nonmatch_sims else np.array([])
+    )
+    point_a_nonmatch_flat = (
+        np.concatenate(point_a_nonmatch_sims) if point_a_nonmatch_sims else np.array([])
+    )
+    line_g_nonmatch_flat = (
+        np.concatenate(line_g_nonmatch_sims) if line_g_nonmatch_sims else np.array([])
+    )
+    line_a_nonmatch_flat = (
+        np.concatenate(line_a_nonmatch_sims) if line_a_nonmatch_sims else np.array([])
+    )
+
     # --- save outputs -------------------------------------------------------
     _save_histogram(
         output_dir / "point_similarities.png",
         point_match_sims,
-        point_g_nonmatch_sims,
-        point_a_nonmatch_sims,
+        point_g_nonmatch_flat,
+        point_a_nonmatch_flat,
         title="Point semantic similarity",
     )
     _save_histogram(
         output_dir / "line_similarities.png",
         line_match_sims,
-        line_g_nonmatch_sims,
-        line_a_nonmatch_sims,
+        line_g_nonmatch_flat,
+        line_a_nonmatch_flat,
         title="Line semantic similarity",
     )
 
     _save_statistics(
         output_dir / "statistics.txt",
         point_match_sims,
-        point_g_nonmatch_sims,
-        point_a_nonmatch_sims,
+        point_g_nonmatch_flat,
+        point_a_nonmatch_flat,
         line_match_sims,
-        line_g_nonmatch_sims,
-        line_a_nonmatch_sims,
+        line_g_nonmatch_flat,
+        line_a_nonmatch_flat,
     )
 
     np.savez(
         output_dir / "point_similarities.npz",
         match=np.array(point_match_sims),
-        gnd_vs_aerial=np.array(point_g_nonmatch_sims),
-        aerial_vs_gnd=np.array(point_a_nonmatch_sims),
+        gnd_vs_aerial=point_g_nonmatch_flat,
+        aerial_vs_gnd=point_a_nonmatch_flat,
     )
     np.savez(
         output_dir / "line_similarities.npz",
         match=np.array(line_match_sims),
-        gnd_vs_aerial=np.array(line_g_nonmatch_sims),
-        aerial_vs_gnd=np.array(line_a_nonmatch_sims),
+        gnd_vs_aerial=line_g_nonmatch_flat,
+        aerial_vs_gnd=line_a_nonmatch_flat,
     )
     logger.info("Outputs written to %s", output_dir)
 
@@ -439,23 +447,31 @@ def semantic_match_evaluation(params_path: str, output_dir: str, run: str = None
 def _save_histogram(path, match_sims, g_nonmatch_sims, a_nonmatch_sims, title=""):
     fig, ax = plt.subplots()
     bins = 30
-    if match_sims:
-        ax.hist(match_sims, bins=bins, alpha=0.6, label="match", color="green")
-    if g_nonmatch_sims:
+    if len(match_sims):
         ax.hist(
-            g_nonmatch_sims, bins=bins, alpha=0.6, label="gnd vs aerial", color="orange"
+            match_sims, bins=bins, alpha=0.6, density=True, label="match", color="green"
         )
-    if a_nonmatch_sims:
+    if len(g_nonmatch_sims):
+        ax.hist(
+            g_nonmatch_sims,
+            bins=bins,
+            alpha=0.6,
+            density=True,
+            label="gnd vs aerial",
+            color="orange",
+        )
+    if len(a_nonmatch_sims):
         ax.hist(
             a_nonmatch_sims,
             bins=bins,
             alpha=0.6,
+            density=True,
             label="aerial vs gnd",
             color="steelblue",
         )
     ax.legend()
     ax.set_xlabel("Cosine similarity")
-    ax.set_ylabel("Count")
+    ax.set_ylabel("Density")
     ax.set_title(title)
     fig.tight_layout()
     fig.savefig(path, dpi=100)
@@ -463,9 +479,9 @@ def _save_histogram(path, match_sims, g_nonmatch_sims, a_nonmatch_sims, title=""
 
 
 def _dist_stats(data):
-    if not data:
+    a = np.asarray(data)
+    if a.size == 0:
         return "  (no data)"
-    a = np.array(data)
     return (
         f"  mean={a.mean():.4f}  median={np.median(a):.4f}"
         f"  std={a.std():.4f}  min={a.min():.4f}  max={a.max():.4f}"
