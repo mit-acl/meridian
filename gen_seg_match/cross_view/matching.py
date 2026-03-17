@@ -120,7 +120,9 @@ class CrossViewMatching:
     aerial_segmenter: AerialSegmenter
     matcher: SegmentMatcher
     registerer: Registerer
-    ground_submap_params: SubmapParams = None
+    ground_submap_params: SubmapParams = (
+        None  # TODO This shouldn't be used anymore... Remove?
+    )
     ground_segmenter: GroundSegmenter = None
     place_recognition: CrossViewPlaceRecognition = None
 

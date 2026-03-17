@@ -47,6 +47,7 @@ class RGBDPoseEstimationParams(ParamsBase):
             return self.use_additional_adjacent_imgs
 
 
+# TODO: Move these params to cross_view_params.py
 @dataclass
 class CrossViewMatchingParams(ParamsBase):
     # class attribute
