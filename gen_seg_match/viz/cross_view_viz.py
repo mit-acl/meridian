@@ -422,6 +422,7 @@ def viz_pose_on_aerial_crop(
     patch_size_px: int,
     T_est: np.ndarray = None,
     target_size_kb: int = 200,
+    line_width_px: int = 20,
 ) -> bytes:
     x1, y1 = crop_origin_px
     x2 = x1 + patch_size_px
@@ -449,8 +450,8 @@ def viz_pose_on_aerial_crop(
             int(round(cx + arrow_len * y_dir[0])),
             int(round(cy + arrow_len * y_dir[1])),
         )
-        cv.arrowedLine(img, (cx, cy), x_end, color, 20, tipLength=0.3)
-        cv.arrowedLine(img, (cx, cy), y_end, color, 20, tipLength=0.3)
+        cv.arrowedLine(img, (cx, cy), x_end, color, line_width_px, tipLength=0.3)
+        cv.arrowedLine(img, (cx, cy), y_end, color, line_width_px, tipLength=0.3)
 
     gt_color = (0, 200, 0)
     est_color = (0, 0, 220)

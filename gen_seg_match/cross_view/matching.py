@@ -120,7 +120,9 @@ class CrossViewMatching:
     aerial_segmenter: AerialSegmenter
     matcher: SegmentMatcher
     registerer: Registerer
-    ground_submap_params: SubmapParams = None
+    ground_submap_params: SubmapParams = (
+        None  # TODO This shouldn't be used anymore... Remove?
+    )
     ground_segmenter: GroundSegmenter = None
     place_recognition: CrossViewPlaceRecognition = None
 
@@ -666,6 +668,7 @@ class CrossViewMatching:
         matching_mode: str = None,
         translation_only: bool = None,
         show_progress: bool = False,
+        local_to_pixel_fn=None,
     ) -> CrossViewMatchResult:
         """Match aerial and ground submaps without any I/O.
 
@@ -780,6 +783,7 @@ class CrossViewMatching:
                     ground_pose_ref,
                     T_ground_odom_ground_robot,
                     do_translation_only,
+                    local_to_pixel_fn=local_to_pixel_fn,
                 )
 
                 results_matrix[i_a, j_a] = single_result.pose_result
@@ -881,6 +885,7 @@ class CrossViewMatching:
         ground_pose_ref,
         T_ground_odom_ground_robot: np.ndarray,
         translation_only: bool,
+        local_to_pixel_fn=None,
     ) -> SingleMatchResult:
         """Match a single aerial-ground submap pair."""
         # Compute rotation from reference trajectory if available
@@ -892,6 +897,17 @@ class CrossViewMatching:
                 T_aerial_ground = T_aerial_camera @ T_camera_flu
             else:
                 T_aerial_ground = T_aerial_camera
+            # T_aerial_ground[:2, 3] is in UTM-delta frame (inv(pose_flu_UTM) @ UTM_pose).
+            # T_aerial_ground_hat will be in pixel-meter frame (from segment registerer).
+            # Convert GT translation to pixel-meter frame so errors are computed correctly.
+            if local_to_pixel_fn is not None:
+                pixel_len_m = self.aerial_segmenter.params.pixel_len_m
+                col, row = local_to_pixel_fn(
+                    float(T_aerial_ground[0, 3]), float(T_aerial_ground[1, 3])
+                )
+                T_aerial_ground = T_aerial_ground.copy()
+                T_aerial_ground[0, 3] = col * pixel_len_m
+                T_aerial_ground[1, 3] = row * pixel_len_m
         else:
             T_aerial_ground = np.zeros((4, 4)) * np.nan
             R_aerial_ground_2d = None
@@ -1061,6 +1077,7 @@ class CrossViewMatching:
         T_camera_flu: np.ndarray = None,
         translation_only: bool = None,
         show_progress: bool = False,
+        local_to_pixel_fn=None,
     ) -> CrossViewMatchResult:
         """Cross-view match using max_intersection mode.
 
@@ -1123,6 +1140,7 @@ class CrossViewMatching:
                 ground_pose_ref,
                 T_ground_odom_ground_robot,
                 do_translation_only,
+                local_to_pixel_fn=local_to_pixel_fn,
             )
 
             results_matrix[i_a, j_a] = single_result.pose_result

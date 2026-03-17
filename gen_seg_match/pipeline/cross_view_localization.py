@@ -50,6 +50,7 @@ class CrossViewLocalization:
         ground_submaps: Optional[Dict[str, Submap]] = None,
         aerial_img: np.ndarray = None,
         main_output_dir: str = None,
+        save_viz: bool = True,
     ) -> Optional[CrossViewRPGOResult]:
         """Run the full localization pipeline.
 
@@ -111,6 +112,7 @@ class CrossViewLocalization:
                 output_dir,
                 aerial_img,
                 main_output_dir,
+                save_viz=save_viz,
             )
             if rerun_result is not None:
                 return rerun_result
@@ -133,6 +135,7 @@ class CrossViewLocalization:
         output_dir: pathlib.Path,
         aerial_img: np.ndarray = None,
         main_output_dir: str = None,
+        save_viz: bool = True,
     ) -> Optional[CrossViewRPGOResult]:
         """Re-run matching using optimized trajectory rotation, then re-run RPGO."""
         logger.info("Rerunning matching with known rotation from initial RPGO...")
@@ -169,6 +172,10 @@ class CrossViewLocalization:
             matching_mode="max_intersection",
             translation_only=True,
             ground_dense_dir=ground_dense_dir,
+            local_to_pixel_fn=data.aerial_local_to_pixel
+            if data.geotiff_transform is not None
+            else None,
+            save_viz=save_viz,
         )
 
         # Build candidates from in-memory match result
@@ -475,10 +482,16 @@ class CrossViewLocalization:
         origin_x, origin_y = data.aerial_img_origin
         pixel_len_m = data.aerial_img_scale
 
-        def utm_to_pixel(xy_utm):
-            x_px = (xy_utm[:, 0] - origin_x) / pixel_len_m
-            y_px = (origin_y - xy_utm[:, 1]) / pixel_len_m
-            return np.column_stack([x_px, y_px])
+        if data.geotiff_transform is not None:
+
+            def utm_to_pixel(xy_utm):
+                return data.aerial_utm_to_pixel(np.atleast_2d(xy_utm))
+        else:
+
+            def utm_to_pixel(xy_utm):
+                x_px = (xy_utm[:, 0] - origin_x) / pixel_len_m
+                y_px = (origin_y - xy_utm[:, 1]) / pixel_len_m
+                return np.column_stack([x_px, y_px])
 
         est_px = utm_to_pixel(est_utm_positions)
 
@@ -583,12 +596,12 @@ class CrossViewLocalization:
 # ---------------------------------------------------------------------------
 
 
-def cross_view_localization(params, output_dir, skip_matching=False):
+def cross_view_localization(params, output_dir, skip_matching=False, save_viz=True):
     """Run cross-view matching (optionally) then localization."""
     output_dir = str(output_dir)
 
     if not skip_matching:
-        cross_view_matching(params, output_dir)
+        cross_view_matching(params, output_dir, save_viz=save_viz)
 
     match_output_dir = os.path.join(output_dir, "match")
 
@@ -655,6 +668,7 @@ def cross_view_localization(params, output_dir, skip_matching=False):
         ground_submaps=ground_submaps,
         aerial_img=data.aerial_img,
         main_output_dir=output_dir,
+        save_viz=save_viz,
     )
     return result
 
@@ -695,6 +709,9 @@ if __name__ == "__main__":
         action="store_true",
         help="Skip segment matching (passed to cross_view_matching).",
     )
+    parser.add_argument(
+        "--no-viz", action="store_true", help="Skip per-match viz images."
+    )
     args = parser.parse_args()
 
     if not args.skip_matching:
@@ -704,6 +721,7 @@ if __name__ == "__main__":
             skip_aerial=args.skip_aerial,
             skip_ground=args.skip_ground,
             skip_match=args.skip_match,
+            save_viz=not args.no_viz,
         )
 
     match_output_dir = os.path.join(args.output, "match")
@@ -770,4 +788,5 @@ if __name__ == "__main__":
         ground_submaps=ground_submaps,
         aerial_img=data.aerial_img,
         main_output_dir=args.output,
+        save_viz=not args.no_viz,
     )

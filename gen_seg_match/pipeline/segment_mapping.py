@@ -35,8 +35,16 @@ class SegmentMapping:
     _video_writer: object = field(default=None, init=False, repr=False)
 
     def run(self, data: SegmentMappingData):
-        t0 = max(data.img_data.t0, data.depth_data.t0, data.camera_pose_data.t0)
-        tf = min(data.img_data.tf, data.depth_data.tf, data.camera_pose_data.tf)
+        if data.use_point_cloud:
+            t0 = max(
+                data.img_data.t0, data.point_cloud_data.t0, data.camera_pose_data.t0
+            )
+            tf = min(
+                data.img_data.tf, data.point_cloud_data.tf, data.camera_pose_data.tf
+            )
+        else:
+            t0 = max(data.img_data.t0, data.depth_data.t0, data.camera_pose_data.t0)
+            tf = min(data.img_data.tf, data.depth_data.tf, data.camera_pose_data.tf)
 
         times = np.arange(t0, tf, self.mapping_params.dt)
         print(f"Processing {len(times)} frames from t={t0:.2f} to t={tf:.2f}")
@@ -45,8 +53,15 @@ class SegmentMapping:
             try:
                 img_t = data.img_data.nearest_time(t)
                 img = data.img_data.img(img_t)
-                depth = data.depth_data.img(img_t)
                 pose = data.camera_pose_data.pose(img_t)
+                if data.use_point_cloud:
+                    pcl = data.align_point_cloud.aligned_point_cloud(img_t)
+                    pcl_proj = data.align_point_cloud.projected_point_cloud(pcl)
+                    depth = data.align_point_cloud.filter_point_cloud_and_projection(
+                        pcl, pcl_proj
+                    )
+                else:
+                    depth = data.depth_data.img(img_t)
             except NoDataNearTimeException:
                 continue
 
@@ -186,7 +201,10 @@ def segment_mapping(
     mapping_params = SegmentMappingParams.load(params_path, run=run)
     data_params = SegmentMappingDataParams.load(params_path, run=run)
     segmenter_params = SegmenterParams.load(params_path, run=run)
-    segmenter_params.depth_scale = 1 / data_params.depth_scale
+    if data_params.point_cloud_data:
+        segmenter_params.use_point_cloud = True
+    else:
+        segmenter_params.depth_scale = 1 / data_params.depth_scale
 
     os.makedirs(output_dir, exist_ok=True)
 

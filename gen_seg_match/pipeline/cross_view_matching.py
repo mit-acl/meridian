@@ -241,6 +241,8 @@ class CrossViewMatchingPipeline:
         matching_mode: str = None,
         translation_only: bool = None,
         ground_dense_dir: pathlib.Path = None,
+        local_to_pixel_fn=None,
+        save_viz: bool = True,
     ) -> CrossViewMatchResult:
         mode = matching_mode or self.algorithm.pipeline_params.matching_mode
         if mode == "max_intersection":
@@ -251,6 +253,7 @@ class CrossViewMatchingPipeline:
                 T_camera_flu,
                 translation_only,
                 show_progress=True,
+                local_to_pixel_fn=local_to_pixel_fn,
             )
         else:
             match_result = self.algorithm.cross_view_match(
@@ -261,6 +264,7 @@ class CrossViewMatchingPipeline:
                 matching_mode,
                 translation_only,
                 show_progress=True,
+                local_to_pixel_fn=local_to_pixel_fn,
             )
         if output_dir is not None:
             self._save_match_results(
@@ -270,6 +274,8 @@ class CrossViewMatchingPipeline:
                 aerial_submaps,
                 ground_submaps,
                 ground_dense_dir,
+                local_to_pixel_fn=local_to_pixel_fn,
+                save_viz=save_viz,
             )
         return match_result
 
@@ -281,6 +287,8 @@ class CrossViewMatchingPipeline:
         aerial_submaps: Dict[str, Submap],
         ground_submaps: Dict[str, Submap],
         ground_dense_dir: pathlib.Path = None,
+        local_to_pixel_fn=None,
+        save_viz: bool = True,
     ):
         output_dir = pathlib.Path(output_dir)
         viz_output_dir = output_dir / "viz"
@@ -338,41 +346,49 @@ class CrossViewMatchingPipeline:
                 if ground_key in ground_submaps:
                     ground_segments_all = ground_submaps[ground_key].segments
 
-                viz_cross_view_matches(
-                    single_result.aerial_segs_processed,
-                    single_result.ground_segs_processed,
-                    result.associations,
-                    aerial_crop=aerial_crop,
-                    ground_segments_all=ground_segments_all,
-                    dense_points_by_id=dense_points_by_id,
-                    px_per_m=px_per_m,
-                    aerial_origin_m=aerial_origin_m,
-                )
-                fig = plt.gcf()
-                buf = io.BytesIO()
-                fig.savefig(buf, format="png", dpi=150)
-                plt.close(fig)
-                buf.seek(0)
-                img_array = cv.imdecode(
-                    np.frombuffer(buf.getvalue(), dtype=np.uint8), cv.IMREAD_COLOR
-                )
-                viz_bytes = downsample_to_target_size(
-                    img_array, params.match_viz_target_size_kb
-                )
-                fname_viz = (
-                    ground_sub_dir / f"ground_{ground_key}_aerial_{aerial_key}.jpg"
-                )
-                with open(fname_viz, "wb") as f:
-                    f.write(viz_bytes)
+                if save_viz:
+                    viz_cross_view_matches(
+                        single_result.aerial_segs_processed,
+                        single_result.ground_segs_processed,
+                        result.associations,
+                        aerial_crop=aerial_crop,
+                        ground_segments_all=ground_segments_all,
+                        dense_points_by_id=dense_points_by_id,
+                        px_per_m=px_per_m,
+                        aerial_origin_m=aerial_origin_m,
+                    )
+                    fig = plt.gcf()
+                    buf = io.BytesIO()
+                    fig.savefig(buf, format="png", dpi=150)
+                    plt.close(fig)
+                    buf.seek(0)
+                    img_array = cv.imdecode(
+                        np.frombuffer(buf.getvalue(), dtype=np.uint8), cv.IMREAD_COLOR
+                    )
+                    viz_bytes = downsample_to_target_size(
+                        img_array, params.match_viz_target_size_kb
+                    )
+                    fname_viz = (
+                        ground_sub_dir / f"ground_{ground_key}_aerial_{aerial_key}.jpg"
+                    )
+                    with open(fname_viz, "wb") as f:
+                        f.write(viz_bytes)
 
                 # Pose on aerial crop visualization
-                if aerial_img is not None and not np.any(np.isnan(result.T_i_j)):
+                if (
+                    save_viz
+                    and aerial_img is not None
+                    and not np.any(np.isnan(result.T_i_j))
+                ):
                     x1 = i_a * stride
                     y1 = j_a * stride
                     T_est_for_viz = (
                         result.T_i_j_hat
                         if not np.any(np.isnan(result.T_i_j_hat))
                         else None
+                    )
+                    line_width_px = max(
+                        1, round(params.aerial_viz_line_width_m * px_per_m)
                     )
                     viz_bytes = viz_pose_on_aerial_crop(
                         aerial_img,
@@ -382,6 +398,7 @@ class CrossViewMatchingPipeline:
                         patch_size_px,
                         T_est_for_viz,
                         params.aerial_viz_target_size_kb,
+                        line_width_px=line_width_px,
                     )
                     fname_pose = (
                         ground_sub_dir
@@ -466,7 +483,12 @@ class CrossViewMatchingPipeline:
 
 
 def cross_view_matching(
-    params, output_dir, skip_aerial=False, skip_ground=False, skip_match=False
+    params,
+    output_dir,
+    skip_aerial=False,
+    skip_ground=False,
+    skip_match=False,
+    save_viz=True,
 ):
     pipeline_params = CrossViewMatchingParams.load(params)
     pipeline_params.output_directory = output_dir
@@ -542,6 +564,10 @@ def cross_view_matching(
             match_output_dir,
             aerial_img=data.aerial_img,
             T_camera_flu=data.T_camera_flu,
+            local_to_pixel_fn=data.aerial_local_to_pixel
+            if data.geotiff_transform is not None
+            else None,
+            save_viz=save_viz,
         )
 
 
@@ -572,11 +598,19 @@ if __name__ == "__main__":
     parser.add_argument(
         "--skip-match", action="store_true", help="Skip segment matching."
     )
+    parser.add_argument(
+        "--no-viz", action="store_true", help="Skip per-match viz images."
+    )
     args = parser.parse_args()
 
     if not os.path.isdir(args.output):
         os.mkdir(expandvars_recursive(args.output))
 
     cross_view_matching(
-        args.params, args.output, args.skip_aerial, args.skip_ground, args.skip_match
+        args.params,
+        args.output,
+        args.skip_aerial,
+        args.skip_ground,
+        args.skip_match,
+        save_viz=not args.no_viz,
     )

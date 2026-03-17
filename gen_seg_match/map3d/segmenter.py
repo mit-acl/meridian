@@ -296,7 +296,12 @@ class Segmenter:
             frame_descriptor = self.get_frame_descriptor(dino_output_patches)
 
         if depth_data is not None:
-            occlusion_edge_mask = self._get_occlusion_edge_mask(depth_data)
+            if self.params.use_point_cloud:
+                occlusion_edge_mask = self._get_border_occlusion_edge_mask(
+                    img_bgr.shape[:2]
+                )
+            else:
+                occlusion_edge_mask = self._get_occlusion_edge_mask(depth_data)
 
         for mask in masks:
             mask = self.unapply_rotation(mask)
@@ -719,6 +724,23 @@ class Segmenter:
         )
         return max(self.params.min_mask_pixels, from_image_fraction)
 
+    def _get_border_occlusion_edge_mask(self, img_shape):
+        """Simple border-only occlusion edge mask for point cloud mode.
+
+        Instead of finding where depth pixels start (which requires a dense
+        depth image), just marks border pixels based on the configured fraction.
+        """
+        h, w = img_shape
+        max_dim = max(h, w)
+        edge_pixels = int(self.params.occlusion_edge_img_frac * max_dim)
+
+        occlusion_edge_mask = np.zeros((h, w), dtype=bool)
+        occlusion_edge_mask[:edge_pixels, :] = True
+        occlusion_edge_mask[-edge_pixels:, :] = True
+        occlusion_edge_mask[:, :edge_pixels] = True
+        occlusion_edge_mask[:, -edge_pixels:] = True
+        return occlusion_edge_mask
+
     def _get_occlusion_edge_mask(self, depth_img):
         occlusion_edge_mask = np.zeros_like(depth_img, dtype=bool)
 
@@ -766,16 +788,21 @@ class Segmenter:
         self, points: np.ndarray, mask: np.ndarray, depth_img, occlusion_edge_mask=None
     ):
         if occlusion_edge_mask is None:
-            occlusion_edge_mask = self._get_occlusion_edge_mask(depth_img)
+            if self.params.use_point_cloud:
+                occlusion_edge_mask = self._get_border_occlusion_edge_mask(
+                    mask.shape[:2]
+                )
+            else:
+                occlusion_edge_mask = self._get_occlusion_edge_mask(depth_img)
 
         occluded_points = points[
             (points[:, 2] < self.params.max_depth)
             & (points[:, 2] > self.params.occlusion_max_depth)
         ]
 
-        # TODO: support occlusion points for point cloud case
-
-        if occlusion_edge_mask.size > 0:
+        # For point cloud mode, skip depth-image-based occlusion pixel extraction
+        # since we don't have a dense depth image to index into.
+        if not self.params.use_point_cloud and occlusion_edge_mask.size > 0:
             occluded_pixels = np.array(
                 np.where(np.bitwise_and(mask.astype(bool), occlusion_edge_mask))
             ).T  # (y, x)

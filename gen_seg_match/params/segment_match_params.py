@@ -62,6 +62,7 @@ class SegmentMatchParams(ParamsBase):
     xyz_dir_constrained: bool = False
     xy_dir_constrained_2d: bool = False
     rot_unc_ang_rad: float = 0.0
+    point_noise_from_angle: bool = True
     k_nearest_neighbors: int = None  # None = all-to-all (current behavior)
 
     def to_clipper(
@@ -87,4 +88,5 @@ class SegmentMatchParams(ParamsBase):
         iparams.xyz_dir_constrained = self.xyz_dir_constrained
         iparams.xy_dir_constrained_2d = self.xy_dir_constrained_2d
         iparams.rot_unc_ang_rad = self.rot_unc_ang_rad
+        iparams.point_noise_from_angle = self.point_noise_from_angle
         return iparams
