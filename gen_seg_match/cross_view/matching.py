@@ -1,5 +1,6 @@
 import logging
 import numpy as np
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from copy import deepcopy
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple, Union
@@ -147,13 +148,6 @@ class CrossViewMatching:
                     seg.obb_extents[0] < thresh[0] and seg.obb_extents[1] > thresh[1]
                 )
             ]
-        for segment in segments:
-            segment.get_alpha_shape(
-                alpha=self.pipeline_params.alpha_shape_alpha,
-                grid_downsample=self.pipeline_params.alpha_shape_grid_downsample,
-                max_n_pts=self.pipeline_params.alpha_shape_max_n_pts,
-                alpha_ref_size=self.pipeline_params.alpha_shape_ref_size_m,
-            )
         return segments
 
     def aerial_segments_to_general_segments(
@@ -213,6 +207,8 @@ class CrossViewMatching:
             # classify as a point using the fitted circle center
             if segment.area < self.pipeline_params.circle_point_max_area:
                 alpha_pts = alpha_shape
+                if alpha_pts.size == 0:
+                    continue
                 if np.allclose(alpha_pts[0], alpha_pts[-1]):
                     alpha_pts = alpha_pts[:-1]
                 if len(alpha_pts) >= 3:
@@ -436,6 +432,58 @@ class CrossViewMatching:
     # Batch aerial segmentation (no I/O)
     # ------------------------------------------------------------------
 
+    def _process_aerial_patch(
+        self,
+        aerial_segments,
+        crop,
+        i,
+        j,
+        pose_flu,
+        patch_size_m,
+    ):
+        """Post-process a single aerial patch (thread-safe, CPU-only)."""
+        for segment in aerial_segments:
+            segment.get_alpha_shape(
+                alpha=self.pipeline_params.alpha_shape_alpha,
+                grid_downsample=self.pipeline_params.alpha_shape_grid_downsample,
+                max_n_pts=self.pipeline_params.alpha_shape_max_n_pts,
+                alpha_ref_size=self.pipeline_params.alpha_shape_ref_size_m,
+            )
+        general_segments = self.aerial_segments_to_general_segments(
+            aerial_segments, crop=crop
+        )
+        sparse_general_segments = (
+            general_segments.get_points()
+            + clean_up_line_map(
+                general_segments.get_lines(),
+                angle_tol=self.pipeline_params.line_merge_ang_thresh_rad,
+                dist_tol=self.pipeline_params.line_merge_dist_thresh_m,
+                perp_dist_tol=self.pipeline_params.line_merge_perp_dist_thresh_m,
+                short_line_thresh=self.pipeline_params.line_merge_short_thresh_m,
+                semantic_sim_thresh=self.pipeline_params.line_merge_semantic_sim,
+            )[0]
+        )
+        _convert_long_lines_to_infinite(
+            sparse_general_segments,
+            self.pipeline_params.line_len_to_infinite,
+        )
+        sparse_general_segments.reindex()
+
+        submap = Submap(
+            id=(i, j),
+            time=0.0,
+            segments=sparse_general_segments,
+            pose=pose_flu,
+            segment_frame=FrameType.UTM,
+            descriptor=None,
+            metadata={
+                "crop_center_m": np.array(
+                    [(i + 0.5) * patch_size_m, -(j + 0.5) * patch_size_m]
+                )
+            },
+        )
+        return submap, general_segments
+
     def batch_aerial_img_to_segments(
         self,
         img: np.ndarray,
@@ -483,67 +531,65 @@ class CrossViewMatching:
             for j, y1 in enumerate(range(0, h - patch_size_px + 1, stride))
             for i, x1 in enumerate(range(0, w - patch_size_px + 1, stride))
         ]
-        iterator = patches
+
+        # Phase 1: serial segmentation (GPU-bound)
+        segmentation_results = []
+        seg_iterator = patches
         if show_progress:
-            iterator = tqdm(iterator, desc="Aerial segmentation")
-        for j, y1, i, x1 in iterator:
+            seg_iterator = tqdm(seg_iterator, desc="Aerial segmentation")
+        for j, y1, i, x1 in seg_iterator:
             x2 = x1 + patch_size_px
             y2 = y1 + patch_size_px
             crop = (x1, y1, x2, y2)
-
             patch_img = img[y1:y2, x1:x2].copy()
-
             aerial_segments = self.aerial_img_to_segments(img, crop=crop)
+            segmentation_results.append(
+                (j, y1, i, x1, crop, patch_img, aerial_segments)
+            )
 
-            general_segments = self.aerial_segments_to_general_segments(
-                aerial_segments, crop=crop
-            )
-            sparse_general_segments = (
-                general_segments.get_points()
-                + clean_up_line_map(
-                    general_segments.get_lines(),
-                    angle_tol=self.pipeline_params.line_merge_ang_thresh_rad,
-                    dist_tol=self.pipeline_params.line_merge_dist_thresh_m,
-                    perp_dist_tol=self.pipeline_params.line_merge_perp_dist_thresh_m,
-                    short_line_thresh=self.pipeline_params.line_merge_short_thresh_m,
-                    semantic_sim_thresh=self.pipeline_params.line_merge_semantic_sim,
-                )[0]
-            )
-            _convert_long_lines_to_infinite(
-                sparse_general_segments,
-                self.pipeline_params.line_len_to_infinite,
-            )
-            sparse_general_segments.reindex()
+        # Phase 2: parallel post-processing (CPU-bound)
+        max_threads = self.pipeline_params.sparse_conversion_max_threads
+        with ThreadPoolExecutor(max_workers=max_threads) as executor:
+            futures = {}
+            for j, y1, i, x1, crop, patch_img, aerial_segments in segmentation_results:
+                future = executor.submit(
+                    self._process_aerial_patch,
+                    aerial_segments,
+                    crop,
+                    i,
+                    j,
+                    pose_flu,
+                    patch_size_m,
+                )
+                futures[future] = (j, y1, i, x1, crop, patch_img, aerial_segments)
 
-            submaps[crop] = Submap(
-                id=(i, j),
-                time=0.0,
-                segments=sparse_general_segments,
-                pose=pose_flu,
-                segment_frame=FrameType.UTM,
-                descriptor=None,
-                metadata={
-                    "crop_center_m": np.array(
-                        [(i + 0.5) * patch_size_m, -(j + 0.5) * patch_size_m]
+            post_iterator = as_completed(futures)
+            if show_progress:
+                post_iterator = tqdm(
+                    post_iterator,
+                    total=len(futures),
+                    desc="Aerial post-processing",
+                )
+            for future in post_iterator:
+                j, y1, i, x1, crop, patch_img, aerial_segments = futures[future]
+                submap, general_segments = future.result()
+
+                # Place recognition descriptor (may use GPU — keep serial)
+                if self.place_recognition is not None:
+                    submap.descriptor = self.place_recognition.aerial_descriptor(
+                        submap,
+                        aerial_segmenter=self.aerial_segmenter,
+                        img_bgr=img,
+                        crop=crop,
                     )
-                },
-            )
 
-            # Compute descriptor after submap is created
-            if self.place_recognition is not None:
-                submaps[crop].descriptor = self.place_recognition.aerial_descriptor(
-                    submaps[crop],
-                    aerial_segmenter=self.aerial_segmenter,
-                    img_bgr=img,
-                    crop=crop,
-                )
-
-            if return_intermediates:
-                intermediates[crop] = AerialPatchIntermediates(
-                    patch_img=patch_img,
-                    aerial_segments=aerial_segments,
-                    general_segments=general_segments,
-                )
+                submaps[crop] = submap
+                if return_intermediates:
+                    intermediates[crop] = AerialPatchIntermediates(
+                        patch_img=patch_img,
+                        aerial_segments=aerial_segments,
+                        general_segments=general_segments,
+                    )
 
         return AerialSegmentationResult(submaps=submaps, intermediates=intermediates)
 
@@ -551,105 +597,122 @@ class CrossViewMatching:
     # Batch ground segmentation (no I/O)
     # ------------------------------------------------------------------
 
+    def _process_ground_submap(self, k, submap, return_intermediates):
+        """Process a single ground submap (thread-safe, CPU-only)."""
+        assert submap.segment_frame == FrameType.CAMERA, (
+            f"Expected submap segments in CAMERA frame, but got {submap.segment_frame}"
+        )
+        submap.segments.transform(submap.pose)
+
+        flattened_submap = self.ground_segmenter.flatten_3d_submap(submap)
+        aerial_segments = self.ground_segmenter.submap_2d_to_aerial(flattened_submap)
+        aerial_segments = [
+            seg
+            for seg in aerial_segments
+            if seg.get_alpha_shape(
+                alpha=self.pipeline_params.alpha_shape_alpha,
+                grid_downsample=self.pipeline_params.alpha_shape_grid_downsample,
+                max_n_pts=self.pipeline_params.alpha_shape_max_n_pts,
+                alpha_ref_size=self.pipeline_params.alpha_shape_ref_size_m,
+            )
+            is not None
+        ]
+        general_segments = self.aerial_segments_to_general_segments(aerial_segments)
+        sparse_general_segments = (
+            general_segments.get_points()
+            + clean_up_line_map(
+                general_segments.get_lines(),
+                angle_tol=self.pipeline_params.line_merge_ang_thresh_rad,
+                dist_tol=self.pipeline_params.line_merge_dist_thresh_m,
+                perp_dist_tol=self.pipeline_params.line_merge_perp_dist_thresh_m,
+                short_line_thresh=self.pipeline_params.line_merge_short_thresh_m,
+                semantic_sim_thresh=self.pipeline_params.line_merge_semantic_sim,
+            )[0]
+        )
+        # Remove lines that are FOV border artifacts
+        valid_lines = SegmentList()
+        for line in sparse_general_segments.get_lines():
+            parent_id = line.history[0] if line.history else None
+            parent_seg = (
+                flattened_submap.segments.get_segment_from_id(parent_id)
+                if parent_id is not None
+                else None
+            )
+            if parent_seg is None or self._line_is_valid(line, parent_seg):
+                valid_lines.append(line)
+        sparse_general_segments = sparse_general_segments.get_points() + valid_lines
+
+        _convert_long_lines_to_infinite(
+            sparse_general_segments,
+            self.pipeline_params.line_len_to_infinite,
+        )
+
+        sparse_general_segments.reindex()
+        for seg in sparse_general_segments:
+            history_heights = [
+                submap.segments.get_segment_from_id(id_hist).point.item(2)
+                for id_hist in seg.history
+            ]
+            seg.height = np.mean(history_heights)
+        # For semantic-point-line, compute descriptor from point/line segments
+        ground_descriptor = submap.descriptor
+        if (
+            self.place_recognition is not None
+            and self.place_recognition.method == "semantic-point-line"
+        ):
+            ground_descriptor = self.place_recognition.ground_descriptor(
+                None, submap_segments=sparse_general_segments
+            )
+
+        submap_2d = Submap(
+            id=k,
+            time=submap.time,
+            segments=sparse_general_segments,
+            pose=np.eye(4),
+            segment_frame=FrameType.ODOMETRY,
+            descriptor=ground_descriptor,
+            metadata={"camera_pose": submap.pose},
+        )
+
+        intermediate = None
+        if return_intermediates:
+            intermediate = GroundSubmapIntermediates(
+                flattened_submap=flattened_submap,
+                aerial_segments=aerial_segments,
+                general_segments=general_segments,
+            )
+
+        return submap_2d, intermediate
+
     def batch_ground_to_sparse_2d_submaps(
         self,
         submaps: List[Submap],
         return_intermediates: bool = False,
         show_progress: bool = False,
     ) -> GroundSegmentationResult:
-        result_submaps = []
-        intermediates_list = [] if return_intermediates else None
-
-        iterator = enumerate(submaps)
-        if show_progress:
-            iterator = tqdm(iterator, desc="Ground segmentation", total=len(submaps))
-        for k, submap in iterator:
-            assert submap.segment_frame == FrameType.CAMERA, (
-                f"Expected submap segments in CAMERA frame, but got {submap.segment_frame}"
-            )
-            submap.segments.transform(submap.pose)
-
-            flattened_submap = self.ground_segmenter.flatten_3d_submap(submap)
-            aerial_segments = self.ground_segmenter.submap_2d_to_aerial(
-                flattened_submap
-            )
-            aerial_segments = [
-                seg
-                for seg in aerial_segments
-                if seg.get_alpha_shape(
-                    alpha=self.pipeline_params.alpha_shape_alpha,
-                    grid_downsample=self.pipeline_params.alpha_shape_grid_downsample,
-                    max_n_pts=self.pipeline_params.alpha_shape_max_n_pts,
-                    alpha_ref_size=self.pipeline_params.alpha_shape_ref_size_m,
+        max_threads = self.pipeline_params.sparse_conversion_max_threads
+        with ThreadPoolExecutor(max_workers=max_threads) as executor:
+            futures = {}
+            for k, submap in enumerate(submaps):
+                future = executor.submit(
+                    self._process_ground_submap, k, submap, return_intermediates
                 )
-                is not None
-            ]
-            general_segments = self.aerial_segments_to_general_segments(aerial_segments)
-            sparse_general_segments = (
-                general_segments.get_points()
-                + clean_up_line_map(
-                    general_segments.get_lines(),
-                    angle_tol=self.pipeline_params.line_merge_ang_thresh_rad,
-                    dist_tol=self.pipeline_params.line_merge_dist_thresh_m,
-                    perp_dist_tol=self.pipeline_params.line_merge_perp_dist_thresh_m,
-                    short_line_thresh=self.pipeline_params.line_merge_short_thresh_m,
-                    semantic_sim_thresh=self.pipeline_params.line_merge_semantic_sim,
-                )[0]
-            )
-            # Remove lines that are FOV border artifacts
-            valid_lines = SegmentList()
-            for line in sparse_general_segments.get_lines():
-                parent_id = line.history[0] if line.history else None
-                parent_seg = (
-                    flattened_submap.segments.get_segment_from_id(parent_id)
-                    if parent_id is not None
-                    else None
+                futures[future] = k
+
+            result_submaps = [None] * len(submaps)
+            intermediates_list = [None] * len(submaps) if return_intermediates else None
+
+            post_iterator = as_completed(futures)
+            if show_progress:
+                post_iterator = tqdm(
+                    post_iterator, total=len(futures), desc="Ground segmentation"
                 )
-                if parent_seg is None or self._line_is_valid(line, parent_seg):
-                    valid_lines.append(line)
-            sparse_general_segments = sparse_general_segments.get_points() + valid_lines
-
-            _convert_long_lines_to_infinite(
-                sparse_general_segments,
-                self.pipeline_params.line_len_to_infinite,
-            )
-
-            sparse_general_segments.reindex()
-            for seg in sparse_general_segments:
-                history_heights = [
-                    submap.segments.get_segment_from_id(id_hist).point.item(2)
-                    for id_hist in seg.history
-                ]
-                seg.height = np.mean(history_heights)
-            # For semantic-point-line, compute descriptor from point/line segments
-            ground_descriptor = submap.descriptor
-            if (
-                self.place_recognition is not None
-                and self.place_recognition.method == "semantic-point-line"
-            ):
-                ground_descriptor = self.place_recognition.ground_descriptor(
-                    None, submap_segments=sparse_general_segments
-                )
-
-            submap_2d = Submap(
-                id=k,
-                time=submap.time,
-                segments=sparse_general_segments,
-                pose=np.eye(4),
-                segment_frame=FrameType.ODOMETRY,
-                descriptor=ground_descriptor,
-                metadata={"camera_pose": submap.pose},
-            )
-            result_submaps.append(submap_2d)
-
-            if return_intermediates:
-                intermediates_list.append(
-                    GroundSubmapIntermediates(
-                        flattened_submap=flattened_submap,
-                        aerial_segments=aerial_segments,
-                        general_segments=general_segments,
-                    )
-                )
+            for future in post_iterator:
+                k = futures[future]
+                submap_2d, intermediate = future.result()
+                result_submaps[k] = submap_2d
+                if return_intermediates:
+                    intermediates_list[k] = intermediate
 
         return GroundSegmentationResult(
             submaps=result_submaps, intermediates=intermediates_list

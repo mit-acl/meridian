@@ -8,7 +8,7 @@ from gen_seg_match.params.ground_segmenter_params import GroundSegmenterParams
 from gen_seg_match.params.register_params import RegisterParams
 
 from gen_seg_match.params.pipeline_params import RGBDPoseEstimationParams
-from gen_seg_match.params.pipeline_params import CrossViewMatchingParams
+from gen_seg_match.params.cross_view_params import CrossViewMatchingParams
 from gen_seg_match.params.pipeline_params import SemanticMatchEvaluationParams
 from gen_seg_match.params.pipeline_params import LandmarkPoseEstimationParams
 from gen_seg_match.params.cross_view_params import CrossViewPlaceRecognitionParams
