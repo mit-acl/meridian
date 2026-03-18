@@ -421,9 +421,31 @@ class CrossViewMatchingPipeline:
             results_matrix.save(
                 segments_output_dir / f"ground_{ground_key}_results_matrix.pkl"
             )
+
+            # Compute GT patch indices from T_i_j
+            gt_patches = None
+            for idx in np.ndindex(results_matrix.shape):
+                t = results_matrix[idx].T_i_j
+                if not np.any(np.isnan(t)):
+                    ground_pos = t[:2, 3]
+                    gt_patches = []
+                    stride_m = stride * pixel_len_m
+                    patch_size_m = params.aerial_img_patch_side_len_m
+                    for i_a in range(results_matrix.shape[0]):
+                        for j_a in range(results_matrix.shape[1]):
+                            x1 = i_a * stride_m
+                            y1 = j_a * stride_m
+                            if (
+                                x1 <= ground_pos[0] <= x1 + patch_size_m
+                                and y1 <= ground_pos[1] <= y1 + patch_size_m
+                            ):
+                                gt_patches.append((i_a, j_a))
+                    break
+
             results_matrix.plot(
                 dist_thresh=params.match_viz_dist_thresh_m,
                 angle_thresh_deg=params.match_viz_angle_thresh_deg,
+                gt_patches=gt_patches,
             )
             fname_heatmap = viz_output_dir / f"ground_{ground_key}_all.png"
             plt.savefig(fname_heatmap, dpi=400)
@@ -489,6 +511,8 @@ def cross_view_matching(
     skip_ground=False,
     skip_match=False,
     save_viz=True,
+    aerial_dir=None,
+    ground_dir=None,
 ):
     pipeline_params = CrossViewMatchingParams.load(params)
     pipeline_params.output_directory = output_dir
@@ -524,12 +548,26 @@ def cross_view_matching(
     algorithm.aerial_segmenter.params.pixel_len_m = data.aerial_img_scale
 
     # Set up output directories
-    aerial_output_dir = os.path.join(output_dir, "aerial")
-    ground_output_dir = os.path.join(output_dir, "ground")
+    pathlib.Path(output_dir).mkdir(parents=True, exist_ok=True)
+    if aerial_dir is not None:
+        aerial_output_dir = str(aerial_dir)
+        skip_aerial = True
+        with open(os.path.join(output_dir, "aerial.txt"), "w") as f:
+            f.write(os.path.abspath(aerial_output_dir) + "\n")
+    else:
+        aerial_output_dir = os.path.join(output_dir, "aerial")
+
+    if ground_dir is not None:
+        ground_output_dir = str(ground_dir)
+        skip_ground = True
+        with open(os.path.join(output_dir, "ground.txt"), "w") as f:
+            f.write(os.path.abspath(ground_output_dir) + "\n")
+    else:
+        ground_output_dir = os.path.join(output_dir, "ground")
+
     match_output_dir = os.path.join(output_dir, "match")
 
     # copy params to main output directory
-    pathlib.Path(output_dir).mkdir(parents=True, exist_ok=True)
     if os.path.isfile(params):
         shutil.copy2(params, os.path.join(output_dir, os.path.basename(params)))
     else:
@@ -601,6 +639,18 @@ if __name__ == "__main__":
     parser.add_argument(
         "--no-viz", action="store_true", help="Skip per-match viz images."
     )
+    parser.add_argument(
+        "--aerial",
+        type=str,
+        default=None,
+        help="Path to existing aerial directory (skips aerial segmentation).",
+    )
+    parser.add_argument(
+        "--ground",
+        type=str,
+        default=None,
+        help="Path to existing ground directory (skips ground segmentation).",
+    )
     args = parser.parse_args()
 
     if not os.path.isdir(args.output):
@@ -613,4 +663,6 @@ if __name__ == "__main__":
         args.skip_ground,
         args.skip_match,
         save_viz=not args.no_viz,
+        aerial_dir=args.aerial,
+        ground_dir=args.ground,
     )

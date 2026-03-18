@@ -14,6 +14,7 @@ from gen_seg_match.cross_view.rpgo import (
     CrossViewRPGO,
     CrossViewRPGOResult,
     pose_data_from_trajectory,
+    se2_to_se3,
     se3_to_se2,
 )
 from gen_seg_match.map3d.submap import Submap
@@ -83,8 +84,9 @@ class CrossViewLocalization:
         rpgo = CrossViewRPGO(params=self.rpgo_params)
         result = rpgo.solve(candidates, trajectory, times, data.T_camera_flu)
 
-        if result.M is not None:
-            self._visualize_affinity_matrix(result.M, result.C, candidates, output_dir)
+        # TODO - do we want to visualize affinity matrix? Slow and can crash if too big rn
+        # if result.M is not None:
+        #     self._visualize_affinity_matrix(result.M, result.C, candidates, output_dir)
 
         if not result.success:
             logger.warning("RPGO solve failed — returning None.")
@@ -225,8 +227,20 @@ class CrossViewLocalization:
     ) -> List[dict]:
         """Load per-instance matching results and build candidate list."""
         segments_dir = match_output_dir / "segments"
-        ground_dir = match_output_dir.parent / "ground" / "segments"
-        aerial_dir = match_output_dir.parent / "aerial" / "segments"
+
+        # Resolve aerial/ground dirs, checking for redirect files written
+        # when --aerial / --ground flags point to external directories.
+        aerial_txt = match_output_dir.parent / "aerial.txt"
+        if aerial_txt.exists():
+            aerial_dir = pathlib.Path(aerial_txt.read_text().strip()) / "segments"
+        else:
+            aerial_dir = match_output_dir.parent / "aerial" / "segments"
+
+        ground_txt = match_output_dir.parent / "ground.txt"
+        if ground_txt.exists():
+            ground_dir = pathlib.Path(ground_txt.read_text().strip()) / "segments"
+        else:
+            ground_dir = match_output_dir.parent / "ground" / "segments"
 
         # Load aerial pose (same for all patches)
         aerial_files = sorted(aerial_dir.glob("*.pkl"))
@@ -277,6 +291,17 @@ class CrossViewLocalization:
                 # T_i_j_hat is T_aerialmeter_ground (maps ground to aerial-meter frame)
                 # T_utm_odom = pose_flu @ T_hat @ inv(T_odom_ground)
                 T_utm_odom_4x4 = pose_flu @ T_i_j_hat @ np.linalg.inv(T_odom_ground)
+
+                # Reject improper rotations (reflections) from registration.
+                # Check on T_utm_odom (both frames are z-up) rather than T_i_j_hat
+                # which mixes camera/FLU and aerial-meter frame conventions.
+                if np.linalg.det(T_utm_odom_4x4[:2, :2]) < 0:
+                    logger.debug(
+                        "Rejecting candidate with reflected rotation "
+                        f"(det(R_2x2)={np.linalg.det(T_utm_odom_4x4[:2, :2]):.4f})"
+                    )
+                    continue
+
                 T_utm_odom_se2 = se3_to_se2(T_utm_odom_4x4)
 
                 candidates.append(
@@ -331,6 +356,17 @@ class CrossViewLocalization:
                     T_odom_ground = ground_camera_pose
 
                 T_utm_odom_4x4 = pose_flu @ T_i_j_hat @ np.linalg.inv(T_odom_ground)
+
+                # Reject improper rotations (reflections) from registration.
+                # Check on T_utm_odom (both frames are z-up) rather than T_i_j_hat
+                # which mixes camera/FLU and aerial-meter frame conventions.
+                if np.linalg.det(T_utm_odom_4x4[:2, :2]) < 0:
+                    logger.debug(
+                        "Rejecting candidate with reflected rotation "
+                        f"(det(R_2x2)={np.linalg.det(T_utm_odom_4x4[:2, :2]):.4f})"
+                    )
+                    continue
+
                 T_utm_odom_se2 = se3_to_se2(T_utm_odom_4x4)
 
                 candidates.append(
@@ -526,20 +562,52 @@ class CrossViewLocalization:
         # Mark inlier candidate positions using optimized trajectory
         candidates = result.candidates
         inlier_indices = result.inlier_indices
+        T_cam_flu = data.T_camera_flu
+
         inlier_utm = []
+        raw_utm = []
         for idx in inlier_indices:
             c = candidates[idx]
             ground_time = c["ground_submap_time"]
             traj_idx = int(np.argmin(np.abs(traj_times - ground_time)))
+            # Optimized position
             inlier_utm.append(optimized_traj[traj_idx][:2, 3])
+            # Raw measurement position
+            T_odom_body = ground_map.trajectory[traj_idx]
+            if T_cam_flu is not None:
+                T_odom_body = T_odom_body @ T_cam_flu
+            T_utm_body_raw = se2_to_se3(c["T_utm_odom_se2"]) @ T_odom_body
+            raw_utm.append(T_utm_body_raw[:2, 3])
+
         inlier_utm = np.array(inlier_utm)
+        raw_utm = np.array(raw_utm)
         inlier_px = utm_to_pixel(inlier_utm)
+        raw_px = utm_to_pixel(raw_utm)
+
+        # Draw residual lines from optimized to raw measurement
+        for i in range(len(inlier_indices)):
+            ax.plot(
+                [inlier_px[i, 0], raw_px[i, 0]],
+                [inlier_px[i, 1], raw_px[i, 1]],
+                "r-",
+                linewidth=1.0,
+                alpha=0.7,
+            )
+        # Draw stars at optimized positions (on top of lines)
         ax.plot(
             inlier_px[:, 0],
             inlier_px[:, 1],
             "r*",
             markersize=8,
             label=f"Inliers ({len(inlier_indices)})",
+        )
+        # Draw dots at raw measurement positions
+        ax.plot(
+            raw_px[:, 0],
+            raw_px[:, 1],
+            "ro",
+            markersize=4,
+            alpha=0.7,
         )
 
         ax.legend()
@@ -596,12 +664,25 @@ class CrossViewLocalization:
 # ---------------------------------------------------------------------------
 
 
-def cross_view_localization(params, output_dir, skip_matching=False, save_viz=True):
+def cross_view_localization(
+    params,
+    output_dir,
+    skip_matching=False,
+    save_viz=True,
+    aerial_dir=None,
+    ground_dir=None,
+):
     """Run cross-view matching (optionally) then localization."""
     output_dir = str(output_dir)
 
     if not skip_matching:
-        cross_view_matching(params, output_dir, save_viz=save_viz)
+        cross_view_matching(
+            params,
+            output_dir,
+            save_viz=save_viz,
+            aerial_dir=aerial_dir,
+            ground_dir=ground_dir,
+        )
 
     match_output_dir = os.path.join(output_dir, "match")
 
@@ -650,12 +731,14 @@ def cross_view_localization(params, output_dir, skip_matching=False, save_viz=Tr
         # Sync aerial segmenter pixel size with data
         algorithm.aerial_segmenter.params.pixel_len_m = data.aerial_img_scale
         pipeline = CrossViewMatchingPipeline(algorithm=algorithm)
-        aerial_submaps = pipeline.load_submaps_from_dir(
-            os.path.join(output_dir, "aerial", "segments")
+        aerial_seg_dir = os.path.join(
+            aerial_dir or os.path.join(output_dir, "aerial"), "segments"
         )
-        ground_submaps = pipeline.load_submaps_from_dir(
-            os.path.join(output_dir, "ground", "segments")
+        ground_seg_dir = os.path.join(
+            ground_dir or os.path.join(output_dir, "ground"), "segments"
         )
+        aerial_submaps = pipeline.load_submaps_from_dir(aerial_seg_dir)
+        ground_submaps = pipeline.load_submaps_from_dir(ground_seg_dir)
 
     runner = CrossViewLocalization(rpgo_params=rpgo_params)
     loc_output_dir = os.path.join(output_dir, "localization")
@@ -712,6 +795,18 @@ if __name__ == "__main__":
     parser.add_argument(
         "--no-viz", action="store_true", help="Skip per-match viz images."
     )
+    parser.add_argument(
+        "--aerial",
+        type=str,
+        default=None,
+        help="Path to existing aerial directory (skips aerial segmentation).",
+    )
+    parser.add_argument(
+        "--ground",
+        type=str,
+        default=None,
+        help="Path to existing ground directory (skips ground segmentation).",
+    )
     args = parser.parse_args()
 
     if not args.skip_matching:
@@ -722,6 +817,8 @@ if __name__ == "__main__":
             skip_ground=args.skip_ground,
             skip_match=args.skip_match,
             save_viz=not args.no_viz,
+            aerial_dir=args.aerial,
+            ground_dir=args.ground,
         )
 
     match_output_dir = os.path.join(args.output, "match")
@@ -770,12 +867,14 @@ if __name__ == "__main__":
         # Sync aerial segmenter pixel size with data
         algorithm.aerial_segmenter.params.pixel_len_m = data.aerial_img_scale
         pipeline = CrossViewMatchingPipeline(algorithm=algorithm)
-        aerial_submaps = pipeline.load_submaps_from_dir(
-            os.path.join(args.output, "aerial", "segments")
+        aerial_seg_dir = os.path.join(
+            args.aerial or os.path.join(args.output, "aerial"), "segments"
         )
-        ground_submaps = pipeline.load_submaps_from_dir(
-            os.path.join(args.output, "ground", "segments")
+        ground_seg_dir = os.path.join(
+            args.ground or os.path.join(args.output, "ground"), "segments"
         )
+        aerial_submaps = pipeline.load_submaps_from_dir(aerial_seg_dir)
+        ground_submaps = pipeline.load_submaps_from_dir(ground_seg_dir)
 
     runner = CrossViewLocalization(rpgo_params=rpgo_params)
     loc_output_dir = os.path.join(args.output, "localization")
