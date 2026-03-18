@@ -16,50 +16,34 @@
 
 import cv2 as cv
 import numpy as np
-from numpy.typing import ArrayLike
 import open3d as o3d
 import copy
 import torch
 from yolov7_package import Yolov7Detector
 from PIL import Image
-from fastsam import FastSAMPrompt
-from fastsam import FastSAM
 import clip
-from transformers import AutoImageProcessor, AutoModel
 from typing import List
-from segment_anything import sam_model_registry, SamAutomaticMaskGenerator
 from scipy.spatial import cKDTree
 
 
 from robotdatapy.camera import CameraParams, pixel_depth_2_xyz
-from robotdatapy.transform import transform
 
 from gen_seg_match.params import SegmenterParams
 from gen_seg_match.viz.viz_segments import viz_masks_on_img
 from gen_seg_match.map3d.observation import Observation
+from gen_seg_match.segmenter.segmenter_base import SegmenterBase
 
 
-class Segmenter:
+class Segmenter(SegmenterBase):
     def __init__(self, params: SegmenterParams, depth_cam_params: CameraParams = None):
         # parameters
-        self.params = params
         self.depth_cam_params = depth_cam_params
 
         # member variables
         self.observations = []
 
-        # Setup segmentation model
-        if self.params.model_type == "fastsam":
-            self.model = FastSAM(self.params.weights_path)
-        elif self.params.get_model_type() == "segment_anything":
-            sam = sam_model_registry["vit_l"](checkpoint=self.params.weights_path)
-            sam.to(self.params.device)
-            sam.eval()
-            self.model = SamAutomaticMaskGenerator(sam)
-        else:
-            raise ValueError(
-                f"Unsupported segmenter model type: {self.params.model_type}"
-            )
+        # Initialize base (segmentation model + semantics model)
+        super().__init__(params)
 
         # Check for valid params
         assert self.params.device == "cuda" or self.params.device == "cpu", (
@@ -90,82 +74,6 @@ class Segmenter:
         self.run_yolo = (
             len(self.params.ignore_labels) > 0 or self.params.use_keep_labels
         )
-
-        # Set up semantics model
-        if self.params.semantics is None or self.params.semantics.lower() == "none":
-            self.semantics_model = None
-            self.semantics_preprocess = None
-        elif self.params.semantics.lower() == "clip":
-            clip_model = "ViT-L/14"
-            self.semantics_model, self.semantics_preprocess = clip.load(
-                clip_model, device=self.params.device
-            )
-        elif self.params.semantics.lower() == "dino":
-            dino_model_name = f"facebook/dinov2-{self.params.semantics_size}"
-            self.semantics_preprocess = AutoImageProcessor.from_pretrained(
-                dino_model_name, do_center_crop=False
-            )
-            self.semantics_model = AutoModel.from_pretrained(dino_model_name)
-            self.semantics_model.eval()
-            self.semantics_model.to(self.params.device)
-            self._num_register_tokens = 0
-        elif self.params.semantics.lower() == "dinov3-hf":
-            size_to_hf_name = {
-                "small": "facebook/dinov3-vits16-pretrain-lvd1689m",
-                "base": "facebook/dinov3-vitb16-pretrain-lvd1689m",
-                "large": "facebook/dinov3-vitl16-pretrain-lvd1689m",
-            }
-            hf_name = size_to_hf_name.get(self.params.semantics_size)
-            if hf_name is None:
-                raise ValueError(
-                    f"Invalid semantics_size for dinov3-hf: {self.params.semantics_size}. "
-                    f"Choose from {list(size_to_hf_name.keys())}."
-                )
-            self.semantics_preprocess = AutoImageProcessor.from_pretrained(
-                hf_name, do_center_crop=False
-            )
-            self.semantics_model = AutoModel.from_pretrained(hf_name)
-            self.semantics_model.eval()
-            self.semantics_model.to(self.params.device)
-            self._num_register_tokens = self.semantics_model.config.num_register_tokens
-        elif self.params.semantics.lower() == "dinov3":
-            import torchvision.transforms as T
-
-            size_to_hub_fn = {
-                "small": "dinov3_vits16",
-                "base": "dinov3_vitb16",
-                "large": "dinov3_vitl16",
-            }
-            hub_fn = size_to_hub_fn.get(self.params.semantics_size)
-            if hub_fn is None:
-                raise ValueError(
-                    f"Invalid semantics_size for dinov3: {self.params.semantics_size}. "
-                    f"Choose from {list(size_to_hub_fn.keys())}."
-                )
-            hub_kwargs = {}
-            if self.params.dinov3_weights is not None:
-                hub_kwargs["weights"] = self.params.dinov3_weights
-            self.semantics_model = torch.hub.load(
-                self.params.dinov3_path, hub_fn, source="local", **hub_kwargs
-            )
-            self.semantics_model.eval()
-            self.semantics_model.to(self.params.device)
-            self.dinov3_transform = T.Compose(
-                [
-                    T.ToTensor(),
-                    T.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
-                ]
-            )
-        else:
-            raise ValueError(
-                f"Invalid semantics option: {self.params.semantics}. Choose from 'clip', 'dino', 'dinov3', 'dinov3-hf', or 'none'."
-            )
-        self.semantic_patches_shape = None
-        self.frame_descriptor_type = self.params.frame_descriptor
-        if self.params.frame_descriptor is not None:
-            assert self.params.semantics in ("dino", "dinov3", "dinov3-hf"), (
-                "Frame descriptor only supported with DINO, DINOv3, or DINOv3-HF semantics."
-            )
 
         # Set up ignore mask from triangle ignore masks
         if self.params.triangle_ignore_masks is not None:
@@ -205,6 +113,19 @@ class Segmenter:
             )
         else:
             self.erosion_element = None
+
+    def _init_semantics_model(self):
+        """Override to add CLIP support on top of base DINO/DINOv3 support."""
+        if (
+            self.params.semantics is not None
+            and self.params.semantics.lower() == "clip"
+        ):
+            clip_model = "ViT-L/14"
+            self.semantics_model, self.semantics_preprocess = clip.load(
+                clip_model, device=self.params.device
+            )
+        else:
+            super()._init_semantics_model()
 
     def set_depth_camera_params(self, depth_cam_params: CameraParams):
         self.depth_cam_params = depth_cam_params
@@ -258,41 +179,15 @@ class Segmenter:
         # run segmentation
         masks = self._process_img(img_bgr, ignore_mask=ignore_mask, keep_mask=keep_mask)
 
-        if self.params.semantics in ("dino", "dinov3-hf"):
-            # Process the image for DINO / DINOv3-HF
-            img_rgb = cv.cvtColor(img_bgr, cv.COLOR_BGR2RGB)
-            preprocessed = self.semantics_preprocess(
-                images=img_rgb, return_tensors="pt"
-            ).to(self.params.device)
-            dino_output = self.semantics_model(**preprocessed)
-            dino_output_patches = self.get_output_patches(
-                model_output=dino_output.last_hidden_state,
-                img_shape=img_bgr.shape,
-                feature_dim=self.params.semantics_dim,
-            )
-            dino_features = self.get_per_pixel_features(
-                model_output_patches=dino_output_patches, img_shape=img_bgr.shape
-            )
+        if self.params.semantics in ("dino", "dinov3", "dinov3-hf"):
+            dino_features, dino_output_patches = self._extract_dino_features(img_bgr)
             dino_features = self.unapply_rotation(dino_features)
-        elif self.params.semantics == "dinov3":
-            img_rgb = cv.cvtColor(img_bgr, cv.COLOR_BGR2RGB)
-            img_tensor = (
-                self.dinov3_transform(img_rgb).unsqueeze(0).to(self.params.device)
-            )
-            with torch.no_grad():
-                features = self.semantics_model.get_intermediate_layers(
-                    img_tensor, n=1, reshape=True, return_class_token=False, norm=True
-                )[0]  # (B, C, H_patches, W_patches)
-            dino_output_patches = features.permute(0, 2, 3, 1)  # (1, H, W, C)
-            dino_features = torch.nn.functional.interpolate(
-                features,
-                size=(img_bgr.shape[0], img_bgr.shape[1]),
-                mode="bilinear",
-            )[0].permute(1, 2, 0)  # (H, W, C)
-            dino_features = self.unapply_rotation(dino_features)
+        elif self.params.semantics == "clip":
+            dino_output_patches = None
+            dino_features = None
 
         frame_descriptor = None
-        if self.frame_descriptor_type is not None:
+        if self.frame_descriptor_type is not None and dino_output_patches is not None:
             frame_descriptor = self.get_frame_descriptor(dino_output_patches)
 
         if depth_data is not None:
@@ -390,11 +285,9 @@ class Segmenter:
                     mask.shape[0] == dino_features.shape[0]
                     and mask.shape[1] == dino_features.shape[1]
                 ), "Mask and DINO features must have the same shape."
-                dino_mask = dino_features[mask.astype(bool)]  # num-pixels x dino_shape
-                dino_mask = dino_mask.cpu().detach().numpy()
-                mean_dino = np.mean(dino_mask, axis=0)  # dino_shape
-                mean_dino = mean_dino / np.linalg.norm(mean_dino)  # normalize
-                semantic_descriptor = mean_dino
+                semantic_descriptor = self._compute_mean_dino_descriptor(
+                    dino_features, mask
+                )
 
             new_observation = Observation(
                 id=len(self.observations),
@@ -502,106 +395,54 @@ class Segmenter:
         return ignore_mask, keep_mask
 
     def _process_img(self, image_bgr, ignore_mask=None, keep_mask=None):
-        """Process FastSAM on image, returns segment masks and center points from results
+        """Process segmentation on image with filtering.
 
         Args:
-            image_bgr ((h,w,3) np.array): color image
-            fastSamModel (FastSAM): FastSAM object
-            device (str, optional): 'cuda' or 'cpu'. Defaults to 'cuda'.
-            plot (bool, optional): Plots (slow) for visualization. Defaults to False.
-            ignore_edges (bool, optional): Filters out edge-touching segments. Defaults to False.
+            image_bgr: BGR color image.
+            ignore_mask: Optional mask of regions to ignore.
+            keep_mask: Optional mask of regions to keep.
 
         Returns:
-            segmask ((n,h,w) np.array): n segmented masks (binary mask over image)
-            blob_means ((n, 2) list): pixel means of segmasks
-            blob_covs ((n, (2, 2) np.array) list): list of covariances (ellipses describing segmasks)
-            (fig, ax) (Matplotlib fig, ax): fig and ax with visualization
+            Filtered masks as (N, H, W) numpy array.
         """
-
-        # OpenCV uses BGR images, but FastSAM requires an RGB image, so convert.
         image_rgb = cv.cvtColor(image_bgr, cv.COLOR_BGR2RGB)
+        masks = self._run_segmentation(image_rgb)
 
-        # Run segmentation
-        if self.params.get_model_type() == "fastsam":
-            everything_results = self.model(
-                image_rgb,
-                retina_masks=True,
-                device=self.params.device,
-                imgsz=self.params.imgsz,
-                conf=self.params.conf,
-                iou=self.params.iou,
-            )
-            prompt_process = FastSAMPrompt(
-                image_rgb, everything_results, device=self.params.device
-            )
-            masks = prompt_process.everything_prompt()
-        elif self.params.get_model_type() == "segment_anything":
-            masks_output = self.model.generate(image_rgb)
-
-            # Convert SAM result masks into (N,H,W) boolean numpy array like FastSAM
-            mask_list = []
-            for obj in masks_output:
-                mask_list.append(obj["segmentation"].astype(np.uint8))
-
-            masks = torch.from_numpy(np.stack(mask_list)).to(self.params.device)
-        else:
-            raise ValueError(
-                f"Unsupported segmenter model type: {self.params.model_type}"
-            )
-
-        # If there were segmentations detected by FastSAM, transfer them from GPU to CPU and convert to Numpy arrays
-        if len(masks) > 0:
-            masks = masks.cpu().numpy()
-        else:
-            masks = None
-
-        if masks is not None:
-            # FastSAM provides a numMask-channel image in shape C, H, W where each channel in the image is a binary mask
-            # of the detected segment
-            [numMasks, h, w] = masks.shape
-
-            to_delete = []
-            for maskId in range(numMasks):
-                # Extract the single binary mask for this mask id
-                mask_this_id = masks[maskId, :, :]
-
-                # filter out small masks
-                num_pixels = mask_this_id.astype(np.int8).sum()
-                if num_pixels < self._min_mask_pixels(image_bgr.shape):
-                    to_delete.append(maskId)
-                    continue
-
-                # filter out ignore mask
-                if ignore_mask is not None and np.any(
-                    np.bitwise_and(mask_this_id.astype(np.int8), ignore_mask)
-                ):
-                    to_delete.append(maskId)
-                    continue
-
-                # Only keep masks that are within keep_mask
-                # if keep_mask is not None and not np.any(np.bitwise_and(mask_this_id.astype(np.int8), keep_mask)):
-                #     print("Delete maskID: ", maskId)
-                #     to_delete.append(maskId)
-                #     continue
-                # if keep_mask is not None and self.keep_labels_option == 'intersect' and (not np.any(np.bitwise_and(mask_this_id.astype(np.int8), keep_mask))):
-                if (
-                    keep_mask is not None
-                    and self.keep_labels_option == "intersect"
-                    and (
-                        np.bitwise_and(mask_this_id.astype(np.int8), keep_mask).sum()
-                        < self.params.keep_mask_minimal_intersection
-                        * mask_this_id.astype(np.int8).sum()
-                    )
-                ):
-                    to_delete.append(maskId)
-                    continue
-
-                # TODO: filter out based on number of pixels maybe
-
-            masks = np.delete(masks, to_delete, axis=0)
-
-        else:
+        if len(masks) == 0:
             return []
+
+        [numMasks, h, w] = masks.shape
+
+        to_delete = []
+        for maskId in range(numMasks):
+            mask_this_id = masks[maskId, :, :]
+
+            # filter out small masks
+            num_pixels = mask_this_id.astype(np.int8).sum()
+            if num_pixels < self._min_mask_pixels(image_bgr.shape):
+                to_delete.append(maskId)
+                continue
+
+            # filter out ignore mask
+            if ignore_mask is not None and np.any(
+                np.bitwise_and(mask_this_id.astype(np.int8), ignore_mask)
+            ):
+                to_delete.append(maskId)
+                continue
+
+            if (
+                keep_mask is not None
+                and self.keep_labels_option == "intersect"
+                and (
+                    np.bitwise_and(mask_this_id.astype(np.int8), keep_mask).sum()
+                    < self.params.keep_mask_minimal_intersection
+                    * mask_this_id.astype(np.int8).sum()
+                )
+            ):
+                to_delete.append(maskId)
+                continue
+
+        masks = np.delete(masks, to_delete, axis=0)
 
         return masks
 
@@ -634,89 +475,6 @@ class Segmenter:
             max_col,
             max_row,
         )
-
-    def get_output_patches(
-        self, model_output: ArrayLike, img_shape: ArrayLike, feature_dim: int
-    ) -> ArrayLike:
-        """
-        Extract (Dino) output patches
-
-        Args:
-            model_output (ArrayLike): Last hidden state of (Dino) model
-            img_shape (ArrayLike): Original image shape
-            feature_dim (int): Expected (Dino) feature dimension
-
-        Returns:
-            ArrayLike: Reshaped (Dino) output
-        """
-        model_output_flat_patches = model_output[:, 1 + self._num_register_tokens :, :]
-        if self.semantic_patches_shape is None:
-            ratio = img_shape[1] / img_shape[0]  # width / height
-            num_patches = model_output_flat_patches.shape[1]
-            h = np.round(np.sqrt(num_patches / ratio)).astype(
-                int
-            )  # number of patches along y-axis
-            w = np.round(np.sqrt(num_patches * ratio)).astype(
-                int
-            )  # number of patches along x-axis
-
-            self.semantic_patches_shape = (1, h, w, feature_dim)
-
-        model_output_patches = model_output_flat_patches.reshape(
-            self.semantic_patches_shape
-        )
-
-        return model_output_patches  # 1 x h x w x feature_dim
-
-    def get_per_pixel_features(
-        self, model_output_patches: ArrayLike, img_shape: ArrayLike
-    ) -> ArrayLike:
-        """
-        Extract (Dino) per-pixel features
-
-        Args:
-            model_output_patches (ArrayLike): Reshaped (Dino) output patches
-            img_shape (ArrayLike): Original image shape
-
-        Returns:
-            ArrayLike: Reshaped (Dino) output
-        """
-        # interpolate the feature map to match the size of the original image
-        per_pixel_features = torch.nn.functional.interpolate(
-            model_output_patches.permute(
-                0, 3, 1, 2
-            ),  # permute to be batch, channels, height, width
-            size=(img_shape[0], img_shape[1]),
-            mode="bilinear",
-        )  # 1 x dino_shape x h x w
-
-        # reshape
-        per_pixel_features = per_pixel_features[0].permute(
-            1, 2, 0
-        )  # h x w x feature_dim
-
-        return per_pixel_features  # h x w x feature_dim
-
-    def get_frame_descriptor(self, dino_features: torch.Tensor) -> np.ndarray:
-        with torch.no_grad():  # prevent memory leak
-            dino_features_flat = dino_features.view(-1, dino_features.shape[-1])
-            if self.frame_descriptor_type == "dino-gap":
-                frame_descriptor = torch.sum(dino_features_flat, dim=0)
-            elif self.frame_descriptor_type == "dino-gmp":
-                frame_descriptor = torch.max(dino_features_flat, dim=0).values
-            elif self.frame_descriptor_type == "dino-gem":
-                cubed_descriptor = torch.mean(dino_features_flat**3, dim=0)
-                frame_descriptor = torch.sign(cubed_descriptor) * (
-                    torch.abs(cubed_descriptor).clamp(min=1e-12) ** (1.0 / 3)
-                )  # avoid NaN from negative or zero root
-            else:
-                raise ValueError(
-                    f"frame descriptor must be one of 'dino-gap', 'dino-gmp', or 'dino-gem'."
-                )
-
-            frame_descriptor /= torch.norm(frame_descriptor)
-
-        return frame_descriptor.cpu().detach().numpy()
 
     def _min_mask_pixels(self, image_shape):
         from_image_fraction = int(
