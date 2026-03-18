@@ -337,6 +337,10 @@ class Registerer:
 
         return SegmentList(target.get_points().copy() + t_lines + t_planes)
 
+    # TODO: add a 2D (SE(2)) registration mode for cross-view matching where
+    # the problem is planar. The current 3D SVD can produce improper rotations
+    # (det(R_2x2) = -1) when segments are coplanar. Currently handled by
+    # rejecting reflections downstream in cross_view_localization.py.
     def aruns_extended(
         self,
         source: SegmentList,

@@ -115,7 +115,7 @@ def _build_feature_array(submaps, get_fn):
 def _compute_sims(
     g_feat, a_feat, all_ground_feats, all_aerial_feats, g_global_idx, a_global_idx
 ):
-    """Return (sim_match, sims_g_vs_other_aerial, sims_a_vs_other_ground)."""
+    """Return (sim_match, sims_nonmatch) where non-match sims are combined."""
     sim_match = float(np.dot(g_feat, a_feat))
 
     # ground segment vs all OTHER aerial segments
@@ -128,7 +128,7 @@ def _compute_sims(
     mask_g[g_global_idx] = False
     sims_a_nonmatch = all_ground_feats[mask_g] @ a_feat  # shape (N_ground-1,)
 
-    return sim_match, sims_g_nonmatch, sims_a_nonmatch
+    return sim_match, np.concatenate([sims_g_nonmatch, sims_a_nonmatch])
 
 
 # ---------------------------------------------------------------------------
@@ -192,12 +192,10 @@ def semantic_match_evaluation(params_path: str, output_dir: str, run: str = None
 
     # --- sample true matches ------------------------------------------------
     point_match_sims = []
-    point_g_nonmatch_sims = []
-    point_a_nonmatch_sims = []
+    point_nonmatch_sims = []
 
     line_match_sims = []
-    line_g_nonmatch_sims = []
-    line_a_nonmatch_sims = []
+    line_nonmatch_sims = []
 
     n_point_target = params.num_point_matches
     n_line_target = params.num_line_matches
@@ -278,7 +276,7 @@ def semantic_match_evaluation(params_path: str, output_dir: str, run: str = None
                         a_idx = a_pt_lookup.get((a_key, a_seg.id))
                         if g_idx is None or a_idx is None:
                             continue
-                        sm, sg, sa = _compute_sims(
+                        sm, s_nm = _compute_sims(
                             g_seg.cos_feature,
                             a_seg.cos_feature,
                             all_ground_point_feats,
@@ -287,8 +285,7 @@ def semantic_match_evaluation(params_path: str, output_dir: str, run: str = None
                             a_idx,
                         )
                         point_match_sims.append(sm)
-                        point_g_nonmatch_sims.append(sg)
-                        point_a_nonmatch_sims.append(sa)
+                        point_nonmatch_sims.append(s_nm)
                         pbar.update(1)
                         break  # one match per g_seg
 
@@ -364,7 +361,7 @@ def semantic_match_evaluation(params_path: str, output_dir: str, run: str = None
                         a_idx = a_ln_lookup.get((a_key, a_seg.id))
                         if g_idx is None or a_idx is None:
                             continue
-                        sm, sg, sa = _compute_sims(
+                        sm, s_nm = _compute_sims(
                             g_seg.cos_feature,
                             a_seg.cos_feature,
                             all_ground_line_feats,
@@ -373,8 +370,7 @@ def semantic_match_evaluation(params_path: str, output_dir: str, run: str = None
                             a_idx,
                         )
                         line_match_sims.append(sm)
-                        line_g_nonmatch_sims.append(sg)
-                        line_a_nonmatch_sims.append(sa)
+                        line_nonmatch_sims.append(s_nm)
                         pbar.update(1)
                         break
 
@@ -385,56 +381,44 @@ def semantic_match_evaluation(params_path: str, output_dir: str, run: str = None
     )
 
     # flatten per-match non-match arrays into a single array each
-    point_g_nonmatch_flat = (
-        np.concatenate(point_g_nonmatch_sims) if point_g_nonmatch_sims else np.array([])
+    point_nonmatch_flat = (
+        np.concatenate(point_nonmatch_sims) if point_nonmatch_sims else np.array([])
     )
-    point_a_nonmatch_flat = (
-        np.concatenate(point_a_nonmatch_sims) if point_a_nonmatch_sims else np.array([])
-    )
-    line_g_nonmatch_flat = (
-        np.concatenate(line_g_nonmatch_sims) if line_g_nonmatch_sims else np.array([])
-    )
-    line_a_nonmatch_flat = (
-        np.concatenate(line_a_nonmatch_sims) if line_a_nonmatch_sims else np.array([])
+    line_nonmatch_flat = (
+        np.concatenate(line_nonmatch_sims) if line_nonmatch_sims else np.array([])
     )
 
     # --- save outputs -------------------------------------------------------
     _save_histogram(
         output_dir / "point_similarities.png",
         point_match_sims,
-        point_g_nonmatch_flat,
-        point_a_nonmatch_flat,
+        point_nonmatch_flat,
         title="Point semantic similarity",
     )
     _save_histogram(
         output_dir / "line_similarities.png",
         line_match_sims,
-        line_g_nonmatch_flat,
-        line_a_nonmatch_flat,
+        line_nonmatch_flat,
         title="Line semantic similarity",
     )
 
     _save_statistics(
         output_dir / "statistics.txt",
         point_match_sims,
-        point_g_nonmatch_flat,
-        point_a_nonmatch_flat,
+        point_nonmatch_flat,
         line_match_sims,
-        line_g_nonmatch_flat,
-        line_a_nonmatch_flat,
+        line_nonmatch_flat,
     )
 
     np.savez(
         output_dir / "point_similarities.npz",
         match=np.array(point_match_sims),
-        gnd_vs_aerial=point_g_nonmatch_flat,
-        aerial_vs_gnd=point_a_nonmatch_flat,
+        nonmatch=point_nonmatch_flat,
     )
     np.savez(
         output_dir / "line_similarities.npz",
         match=np.array(line_match_sims),
-        gnd_vs_aerial=line_g_nonmatch_flat,
-        aerial_vs_gnd=line_a_nonmatch_flat,
+        nonmatch=line_nonmatch_flat,
     )
     logger.info("Outputs written to %s", output_dir)
 
@@ -444,30 +428,21 @@ def semantic_match_evaluation(params_path: str, output_dir: str, run: str = None
 # ---------------------------------------------------------------------------
 
 
-def _save_histogram(path, match_sims, g_nonmatch_sims, a_nonmatch_sims, title=""):
+def _save_histogram(path, match_sims, nonmatch_sims, title=""):
     fig, ax = plt.subplots()
     bins = 30
     if len(match_sims):
         ax.hist(
             match_sims, bins=bins, alpha=0.6, density=True, label="match", color="green"
         )
-    if len(g_nonmatch_sims):
+    if len(nonmatch_sims):
         ax.hist(
-            g_nonmatch_sims,
+            nonmatch_sims,
             bins=bins,
             alpha=0.6,
             density=True,
-            label="gnd vs aerial",
+            label="non-match",
             color="orange",
-        )
-    if len(a_nonmatch_sims):
-        ax.hist(
-            a_nonmatch_sims,
-            bins=bins,
-            alpha=0.6,
-            density=True,
-            label="aerial vs gnd",
-            color="steelblue",
         )
     ax.legend()
     ax.set_xlabel("Cosine similarity")
@@ -491,22 +466,18 @@ def _dist_stats(data):
 def _save_statistics(
     path,
     pt_match,
-    pt_g_nm,
-    pt_a_nm,
+    pt_nm,
     ln_match,
-    ln_g_nm,
-    ln_a_nm,
+    ln_nm,
 ):
     lines = [
         "=== Points ===",
-        f"match:          {_dist_stats(pt_match)}",
-        f"gnd vs aerial:  {_dist_stats(pt_g_nm)}",
-        f"aerial vs gnd:  {_dist_stats(pt_a_nm)}",
+        f"match:      {_dist_stats(pt_match)}",
+        f"non-match:  {_dist_stats(pt_nm)}",
         "",
         "=== Lines ===",
-        f"match:          {_dist_stats(ln_match)}",
-        f"gnd vs aerial:  {_dist_stats(ln_g_nm)}",
-        f"aerial vs gnd:  {_dist_stats(ln_a_nm)}",
+        f"match:      {_dist_stats(ln_match)}",
+        f"non-match:  {_dist_stats(ln_nm)}",
     ]
     path.write_text("\n".join(lines) + "\n")
 

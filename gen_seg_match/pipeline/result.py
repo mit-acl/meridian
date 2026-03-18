@@ -1,5 +1,6 @@
 import numpy as np
 import matplotlib.pyplot as plt
+from matplotlib.patches import Rectangle
 from dataclasses import dataclass, field
 from enum import Enum
 from scipy.spatial.transform import Rotation as Rot
@@ -169,7 +170,11 @@ class PoseEstimationResultMatrix(np.ndarray):
         np.savez_compressed(filepath, results=self)
 
     def plot(
-        self, dpi: int = 500, dist_thresh: float = 5.0, angle_thresh_deg: float = 10.0
+        self,
+        dpi: int = 250,
+        dist_thresh: float = 5.0,
+        angle_thresh_deg: float = 10.0,
+        gt_patches=None,
     ):
         show_sim = self.has_similarity
 
@@ -231,6 +236,21 @@ class PoseEstimationResultMatrix(np.ndarray):
                 ax[i, j].set_xlabel("submap index (robot 2)")
                 ax[i, j].set_ylabel("submap index (robot 1)")
                 ax[i, j].grid(True)
+
+        if gt_patches:
+            for a in ax.flat:
+                if not a.has_data():
+                    continue
+                for i_a, j_a in gt_patches:
+                    rect = Rectangle(
+                        (j_a - 0.5, i_a - 0.5),
+                        1,
+                        1,
+                        linewidth=2,
+                        edgecolor="lime",
+                        facecolor="none",
+                    )
+                    a.add_patch(rect)
 
         if not show_sim:
             fig.delaxes(ax[2, 1])

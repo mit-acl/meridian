@@ -241,6 +241,8 @@ def cross_view_place_recognition(
     skip_segmentation=False,
     skip_aerial=False,
     skip_ground=False,
+    aerial_dir=None,
+    ground_dir=None,
 ):
     """Run place recognition pipeline.
 
@@ -259,6 +261,8 @@ def cross_view_place_recognition(
             skip_aerial=skip_aerial,
             skip_ground=skip_ground,
             skip_match=True,
+            aerial_dir=aerial_dir,
+            ground_dir=ground_dir,
         )
 
     # Load submaps (descriptors are persisted via pickle)
@@ -283,11 +287,15 @@ def cross_view_place_recognition(
         ground_submap_params=SubmapParams.load(params),
     )
 
-    aerial_dir = os.path.join(output_dir, "aerial", "segments")
-    ground_dir = os.path.join(output_dir, "ground", "segments")
+    aerial_seg_dir = os.path.join(
+        aerial_dir or os.path.join(output_dir, "aerial"), "segments"
+    )
+    ground_seg_dir = os.path.join(
+        ground_dir or os.path.join(output_dir, "ground"), "segments"
+    )
 
-    aerial_submaps = runner.load_submaps_from_dir(aerial_dir)
-    ground_submaps = runner.load_submaps_from_dir(ground_dir)
+    aerial_submaps = runner.load_submaps_from_dir(aerial_seg_dir)
+    ground_submaps = runner.load_submaps_from_dir(ground_seg_dir)
 
     # Load GT pose data for green-box visualization
     gt_pose_data = None
@@ -374,6 +382,18 @@ if __name__ == "__main__":
         action="store_true",
         help="Skip ground segmentation (forwarded to cross_view_matching).",
     )
+    parser.add_argument(
+        "--aerial",
+        type=str,
+        default=None,
+        help="Path to existing aerial directory (skips aerial segmentation).",
+    )
+    parser.add_argument(
+        "--ground",
+        type=str,
+        default=None,
+        help="Path to existing ground directory (skips ground segmentation).",
+    )
     args = parser.parse_args()
 
     pathlib.Path(args.output).mkdir(parents=True, exist_ok=True)
@@ -384,4 +404,6 @@ if __name__ == "__main__":
         skip_segmentation=args.skip_segmentation,
         skip_aerial=args.skip_aerial,
         skip_ground=args.skip_ground,
+        aerial_dir=args.aerial,
+        ground_dir=args.ground,
     )
