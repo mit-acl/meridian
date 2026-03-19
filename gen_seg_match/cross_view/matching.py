@@ -1,6 +1,6 @@
 import logging
 import numpy as np
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from copy import deepcopy
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple, Union
@@ -110,6 +110,295 @@ def _aerial_key_to_tuple(key: str) -> Tuple[int, ...]:
     return tuple(int(x) for x in key.split("_"))
 
 
+def _aerial_segments_to_general_segments_impl(
+    segments: List[AerialSegment],
+    pipeline_params: CrossViewMatchingParams,
+    pixel_len_m: float = None,
+    crop: Crop = None,
+) -> SegmentList:
+    """Convert aerial segments to general (point/line) segments.
+
+    Module-level function so it can be called from multiprocessing workers.
+    """
+    if crop is not None:
+        x1, y1, x2, y2 = crop
+        min_dist_m = pipeline_params.aerial_min_dist_to_border_m
+        x1_border = x1 * pixel_len_m + min_dist_m
+        y1_border = y1 * pixel_len_m + min_dist_m
+        x2_border = x2 * pixel_len_m - min_dist_m
+        y2_border = y2 * pixel_len_m - min_dist_m
+    else:
+        x1_border = -np.inf
+        y1_border = -np.inf
+        x2_border = np.inf
+        y2_border = np.inf
+
+    def pt_within_border(pt):
+        return x1_border <= pt[0] <= x2_border and y1_border <= pt[1] <= y2_border
+
+    lines = []
+    center_points = []
+    for j, segment in enumerate(segments):
+        if segment.area < pipeline_params.min_area_m_sq:
+            continue
+        if (
+            segment.area < pipeline_params.point_max_area_m_sq
+            and segment.max_extent < pipeline_params.point_max_len_m
+        ):
+            if not pt_within_border(segment.center):
+                continue
+            center_points.append(
+                SegmentPoint(
+                    j,
+                    segment.center,
+                    cos_feature=segment.semantic_descriptor,
+                    first_seen=segment.first_seen,
+                    last_seen=segment.last_seen,
+                    history=[segment.id],
+                )
+            )
+            continue
+        alpha_shape = segment.get_alpha_shape(
+            grid_downsample=pipeline_params.alpha_shape_grid_downsample,
+            alpha=pipeline_params.alpha_shape_alpha,
+            max_n_pts=pipeline_params.alpha_shape_max_n_pts,
+            alpha_ref_size=pipeline_params.alpha_shape_ref_size_m,
+        )
+        if alpha_shape is None:
+            continue
+
+        if segment.area < pipeline_params.circle_point_max_area:
+            alpha_pts = alpha_shape
+            if alpha_pts.size == 0:
+                continue
+            if np.allclose(alpha_pts[0], alpha_pts[-1]):
+                alpha_pts = alpha_pts[:-1]
+            if len(alpha_pts) >= 3:
+                xc, yc, r, s = circle_fit.least_squares_circle(alpha_pts)
+                if (
+                    r > 0
+                    and s < pipeline_params.circle_point_rad_frac_fit_err * r
+                    and r < pipeline_params.circle_point_max_rad
+                ):
+                    center = np.array([xc, yc])
+                    if pt_within_border(center):
+                        center_points.append(
+                            SegmentPoint(
+                                j,
+                                center,
+                                cos_feature=segment.semantic_descriptor,
+                                first_seen=segment.first_seen,
+                                last_seen=segment.last_seen,
+                                history=[segment.id],
+                            )
+                        )
+                    continue
+
+        for i, pt0 in enumerate(alpha_shape):
+            pt1 = alpha_shape[i + 1 if i + 1 < len(alpha_shape) else 0]
+            keep = np.linalg.norm(pt1 - pt0) > pipeline_params.line_min_length_m
+            keep &= pt_within_border(pt0) and pt_within_border(pt1)
+            if keep:
+                line = SegmentLine.from_endpoints(
+                    j,
+                    pt0,
+                    pt1,
+                    cos_feature=segment.semantic_descriptor,
+                    first_seen=segment.first_seen,
+                    last_seen=segment.last_seen,
+                    history=[segment.id],
+                )
+                lines.append(line)
+    result = SegmentList(center_points + lines)
+    result.reindex()
+    return result
+
+
+def _line_is_valid_impl(
+    line: SegmentLine,
+    original_segment,
+    pipeline_params: CrossViewMatchingParams,
+) -> bool:
+    """Check that a line is not just a FOV border artifact.
+
+    Module-level function so it can be called from multiprocessing workers.
+    """
+    pt0, pt1 = line.endpoints
+    if pt0 is None or pt1 is None:
+        return True
+
+    n = pipeline_params.line_occlusion_num_samples
+    dist_thresh = pipeline_params.line_pt_dist_check_m
+
+    t = np.linspace(0, 1, n).reshape(-1, 1)
+    samples = pt0 + t * (pt1 - pt0)
+
+    dense_pts = original_segment.dense_points
+    occ_pts = getattr(original_segment, "occluded_points", None)
+
+    if dense_pts is not None and len(dense_pts) > 0:
+        dists_to_dense = np.linalg.norm(
+            samples[:, None, :2] - dense_pts[None, :, :2], axis=2
+        ).min(axis=1)
+        frac_near = np.mean(dists_to_dense < dist_thresh)
+        if frac_near < pipeline_params.line_frac_near_points:
+            return False
+
+    if occ_pts is not None and len(occ_pts) > 0:
+        dists_to_occ = np.linalg.norm(
+            samples[:, None, :2] - occ_pts[None, :, :2], axis=2
+        ).min(axis=1)
+        frac_non_occluded = np.mean(dists_to_occ >= dist_thresh)
+        if frac_non_occluded < pipeline_params.line_occlusion_req_non_occluded:
+            return False
+
+    return True
+
+
+def _process_aerial_patch_worker(
+    pipeline_params, pixel_len_m, aerial_segments, crop, i, j, pose_flu, patch_size_m,
+):
+    """Post-process a single aerial patch (process-safe, CPU-only).
+
+    Top-level function for use with ProcessPoolExecutor.
+    """
+    for segment in aerial_segments:
+        segment.get_alpha_shape(
+            alpha=pipeline_params.alpha_shape_alpha,
+            grid_downsample=pipeline_params.alpha_shape_grid_downsample,
+            max_n_pts=pipeline_params.alpha_shape_max_n_pts,
+            alpha_ref_size=pipeline_params.alpha_shape_ref_size_m,
+        )
+    general_segments = _aerial_segments_to_general_segments_impl(
+        aerial_segments, pipeline_params, pixel_len_m=pixel_len_m, crop=crop,
+    )
+    sparse_general_segments = (
+        general_segments.get_points()
+        + clean_up_line_map(
+            general_segments.get_lines(),
+            angle_tol=pipeline_params.line_merge_ang_thresh_rad,
+            dist_tol=pipeline_params.line_merge_dist_thresh_m,
+            perp_dist_tol=pipeline_params.line_merge_perp_dist_thresh_m,
+            short_line_thresh=pipeline_params.line_merge_short_thresh_m,
+            semantic_sim_thresh=pipeline_params.line_merge_semantic_sim,
+        )[0]
+    )
+    _convert_long_lines_to_infinite(
+        sparse_general_segments,
+        pipeline_params.line_len_to_infinite,
+    )
+    sparse_general_segments.reindex()
+
+    submap = Submap(
+        id=(i, j),
+        time=0.0,
+        segments=sparse_general_segments,
+        pose=pose_flu,
+        segment_frame=FrameType.UTM,
+        descriptor=None,
+        metadata={
+            "crop_center_m": np.array(
+                [(i + 0.5) * patch_size_m, -(j + 0.5) * patch_size_m]
+            )
+        },
+    )
+    return submap, general_segments
+
+
+def _process_ground_submap_worker(ground_segmenter, pipeline_params, place_recognition,
+                                   k, submap, return_intermediates):
+    """Process a single ground submap (process-safe, CPU-only).
+
+    Top-level function for use with ProcessPoolExecutor.
+    """
+    assert submap.segment_frame == FrameType.CAMERA, (
+        f"Expected submap segments in CAMERA frame, but got {submap.segment_frame}"
+    )
+    submap.segments.transform(submap.pose)
+
+    flattened_submap = ground_segmenter.flatten_3d_submap(submap)
+    aerial_segments = ground_segmenter.submap_2d_to_aerial(flattened_submap)
+    aerial_segments = [
+        seg
+        for seg in aerial_segments
+        if seg.get_alpha_shape(
+            alpha=pipeline_params.alpha_shape_alpha,
+            grid_downsample=pipeline_params.alpha_shape_grid_downsample,
+            max_n_pts=pipeline_params.alpha_shape_max_n_pts,
+            alpha_ref_size=pipeline_params.alpha_shape_ref_size_m,
+        )
+        is not None
+    ]
+    general_segments = _aerial_segments_to_general_segments_impl(
+        aerial_segments, pipeline_params
+    )
+    sparse_general_segments = (
+        general_segments.get_points()
+        + clean_up_line_map(
+            general_segments.get_lines(),
+            angle_tol=pipeline_params.line_merge_ang_thresh_rad,
+            dist_tol=pipeline_params.line_merge_dist_thresh_m,
+            perp_dist_tol=pipeline_params.line_merge_perp_dist_thresh_m,
+            short_line_thresh=pipeline_params.line_merge_short_thresh_m,
+            semantic_sim_thresh=pipeline_params.line_merge_semantic_sim,
+        )[0]
+    )
+    # Remove lines that are FOV border artifacts
+    valid_lines = SegmentList()
+    for line in sparse_general_segments.get_lines():
+        parent_id = line.history[0] if line.history else None
+        parent_seg = (
+            flattened_submap.segments.get_segment_from_id(parent_id)
+            if parent_id is not None
+            else None
+        )
+        if parent_seg is None or _line_is_valid_impl(line, parent_seg, pipeline_params):
+            valid_lines.append(line)
+    sparse_general_segments = sparse_general_segments.get_points() + valid_lines
+
+    _convert_long_lines_to_infinite(
+        sparse_general_segments,
+        pipeline_params.line_len_to_infinite,
+    )
+
+    sparse_general_segments.reindex()
+    for seg in sparse_general_segments:
+        history_heights = [
+            submap.segments.get_segment_from_id(id_hist).point.item(2)
+            for id_hist in seg.history
+        ]
+        seg.height = np.mean(history_heights)
+    # For semantic-point-line, compute descriptor from point/line segments
+    ground_descriptor = submap.descriptor
+    if (
+        place_recognition is not None
+        and place_recognition.method == "semantic-point-line"
+    ):
+        ground_descriptor = place_recognition.ground_descriptor(
+            None, submap_segments=sparse_general_segments
+        )
+
+    submap_2d = Submap(
+        id=k,
+        time=submap.time,
+        segments=sparse_general_segments,
+        pose=np.eye(4),
+        segment_frame=FrameType.ODOMETRY,
+        descriptor=ground_descriptor,
+        metadata={"camera_pose": submap.pose},
+    )
+
+    intermediate = None
+    if return_intermediates:
+        intermediate = GroundSubmapIntermediates(
+            flattened_submap=flattened_submap,
+            aerial_segments=aerial_segments,
+            general_segments=general_segments,
+        )
+
+    return submap_2d, intermediate
+
+
 # ---------------------------------------------------------------------------
 # CrossViewMatching — pure algorithm class (no I/O)
 # ---------------------------------------------------------------------------
@@ -153,105 +442,10 @@ class CrossViewMatching:
     def aerial_segments_to_general_segments(
         self, segments: List[AerialSegment], crop: Crop = None
     ) -> SegmentList:
-        # precomputation
-        if crop is not None:
-            x1, y1, x2, y2 = crop
-            pixel_len_m = self.aerial_segmenter.params.pixel_len_m
-            min_dist_m = self.pipeline_params.aerial_min_dist_to_border_m
-            x1_border = x1 * pixel_len_m + min_dist_m
-            y1_border = y1 * pixel_len_m + min_dist_m
-            x2_border = x2 * pixel_len_m - min_dist_m
-            y2_border = y2 * pixel_len_m - min_dist_m
-        else:
-            # No crop --> no border restrictions
-            x1_border = -np.inf
-            y1_border = -np.inf
-            x2_border = np.inf
-            y2_border = np.inf
-
-        def pt_within_border(pt):
-            return x1_border <= pt[0] <= x2_border and y1_border <= pt[1] <= y2_border
-
-        lines = []
-        center_points = []
-        for j, segment in enumerate(segments):
-            if segment.area < self.pipeline_params.min_area_m_sq:
-                continue
-            if (
-                segment.area < self.pipeline_params.point_max_area_m_sq
-                and segment.max_extent < self.pipeline_params.point_max_len_m
-            ):
-                if not pt_within_border(segment.center):
-                    continue
-                center_points.append(
-                    SegmentPoint(
-                        j,
-                        segment.center,
-                        cos_feature=segment.semantic_descriptor,
-                        first_seen=segment.first_seen,
-                        last_seen=segment.last_seen,
-                        history=[segment.id],
-                    )
-                )
-                continue
-            alpha_shape = segment.get_alpha_shape(
-                grid_downsample=self.pipeline_params.alpha_shape_grid_downsample,
-                alpha=self.pipeline_params.alpha_shape_alpha,
-                max_n_pts=self.pipeline_params.alpha_shape_max_n_pts,
-                alpha_ref_size=self.pipeline_params.alpha_shape_ref_size_m,
-            )
-            if alpha_shape is None:
-                continue
-
-            # Circle check: if segment is small and alpha shape is circular,
-            # classify as a point using the fitted circle center
-            if segment.area < self.pipeline_params.circle_point_max_area:
-                alpha_pts = alpha_shape
-                if alpha_pts.size == 0:
-                    continue
-                if np.allclose(alpha_pts[0], alpha_pts[-1]):
-                    alpha_pts = alpha_pts[:-1]
-                if len(alpha_pts) >= 3:
-                    xc, yc, r, s = circle_fit.least_squares_circle(alpha_pts)
-                    if (
-                        r > 0
-                        and s < self.pipeline_params.circle_point_rad_frac_fit_err * r
-                        and r < self.pipeline_params.circle_point_max_rad
-                    ):
-                        center = np.array([xc, yc])
-                        if pt_within_border(center):
-                            center_points.append(
-                                SegmentPoint(
-                                    j,
-                                    center,
-                                    cos_feature=segment.semantic_descriptor,
-                                    first_seen=segment.first_seen,
-                                    last_seen=segment.last_seen,
-                                    history=[segment.id],
-                                )
-                            )
-                        continue
-
-            for i, pt0 in enumerate(alpha_shape):
-                pt1 = alpha_shape[i + 1 if i + 1 < len(alpha_shape) else 0]
-                keep = (
-                    np.linalg.norm(pt1 - pt0) > self.pipeline_params.line_min_length_m
-                )
-                keep &= pt_within_border(pt0) and pt_within_border(pt1)
-                if keep:
-                    line = SegmentLine.from_endpoints(
-                        j,
-                        pt0,
-                        pt1,
-                        cos_feature=segment.semantic_descriptor,
-                        first_seen=segment.first_seen,
-                        last_seen=segment.last_seen,
-                        history=[segment.id],
-                    )
-                    lines.append(line)
-        result = SegmentList(center_points + lines)
-        result.reindex()
-        return result
+        pixel_len_m = self.aerial_segmenter.params.pixel_len_m if crop is not None else None
+        return _aerial_segments_to_general_segments_impl(
+            segments, self.pipeline_params, pixel_len_m=pixel_len_m, crop=crop,
+        )
 
     def ground_map_to_submaps(
         self,
@@ -291,7 +485,7 @@ class CrossViewMatching:
         # Precompute ground map data for semantic-gem descriptors
         _attach_gem_descriptors = (
             self.place_recognition is not None
-            and self.place_recognition.method == "semantic-gem"
+            and self.place_recognition.method in ("semantic-gem", "anyloc")
         )
         if _attach_gem_descriptors:
             self.place_recognition.precompute_ground_map_data(ground_map)
@@ -388,101 +582,22 @@ class CrossViewMatching:
         return submaps
 
     def _line_is_valid(self, line: SegmentLine, original_segment) -> bool:
-        """Check that a line is not just a FOV border artifact.
-
-        A line is valid when enough of its sampled points are (a) far from
-        occluded points and (b) close to actual dense points.
-        """
-        pt0, pt1 = line.endpoints
-        if pt0 is None or pt1 is None:
-            return True
-
-        n = self.pipeline_params.line_occlusion_num_samples
-        dist_thresh = self.pipeline_params.line_pt_dist_check_m
-
-        # Sample n points along the line
-        t = np.linspace(0, 1, n).reshape(-1, 1)
-        samples = pt0 + t * (pt1 - pt0)  # (n, dim)
-
-        dense_pts = original_segment.dense_points
-        occ_pts = getattr(original_segment, "occluded_points", None)
-
-        # Check proximity to dense points
-        if dense_pts is not None and len(dense_pts) > 0:
-            # (n, 1, dim) - (1, M, dim) -> (n, M) -> (n,)
-            dists_to_dense = np.linalg.norm(
-                samples[:, None, :2] - dense_pts[None, :, :2], axis=2
-            ).min(axis=1)
-            frac_near = np.mean(dists_to_dense < dist_thresh)
-            if frac_near < self.pipeline_params.line_frac_near_points:
-                return False
-
-        # Check distance from occluded points
-        if occ_pts is not None and len(occ_pts) > 0:
-            dists_to_occ = np.linalg.norm(
-                samples[:, None, :2] - occ_pts[None, :, :2], axis=2
-            ).min(axis=1)
-            frac_non_occluded = np.mean(dists_to_occ >= dist_thresh)
-            if frac_non_occluded < self.pipeline_params.line_occlusion_req_non_occluded:
-                return False
-
-        return True
+        """Check that a line is not just a FOV border artifact."""
+        return _line_is_valid_impl(line, original_segment, self.pipeline_params)
 
     # ------------------------------------------------------------------
     # Batch aerial segmentation (no I/O)
     # ------------------------------------------------------------------
 
     def _process_aerial_patch(
-        self,
-        aerial_segments,
-        crop,
-        i,
-        j,
-        pose_flu,
-        patch_size_m,
+        self, aerial_segments, crop, i, j, pose_flu, patch_size_m,
     ):
-        """Post-process a single aerial patch (thread-safe, CPU-only)."""
-        for segment in aerial_segments:
-            segment.get_alpha_shape(
-                alpha=self.pipeline_params.alpha_shape_alpha,
-                grid_downsample=self.pipeline_params.alpha_shape_grid_downsample,
-                max_n_pts=self.pipeline_params.alpha_shape_max_n_pts,
-                alpha_ref_size=self.pipeline_params.alpha_shape_ref_size_m,
-            )
-        general_segments = self.aerial_segments_to_general_segments(
-            aerial_segments, crop=crop
+        """Post-process a single aerial patch. Delegates to module-level worker."""
+        pixel_len_m = self.aerial_segmenter.params.pixel_len_m if crop is not None else None
+        return _process_aerial_patch_worker(
+            self.pipeline_params, pixel_len_m,
+            aerial_segments, crop, i, j, pose_flu, patch_size_m,
         )
-        sparse_general_segments = (
-            general_segments.get_points()
-            + clean_up_line_map(
-                general_segments.get_lines(),
-                angle_tol=self.pipeline_params.line_merge_ang_thresh_rad,
-                dist_tol=self.pipeline_params.line_merge_dist_thresh_m,
-                perp_dist_tol=self.pipeline_params.line_merge_perp_dist_thresh_m,
-                short_line_thresh=self.pipeline_params.line_merge_short_thresh_m,
-                semantic_sim_thresh=self.pipeline_params.line_merge_semantic_sim,
-            )[0]
-        )
-        _convert_long_lines_to_infinite(
-            sparse_general_segments,
-            self.pipeline_params.line_len_to_infinite,
-        )
-        sparse_general_segments.reindex()
-
-        submap = Submap(
-            id=(i, j),
-            time=0.0,
-            segments=sparse_general_segments,
-            pose=pose_flu,
-            segment_frame=FrameType.UTM,
-            descriptor=None,
-            metadata={
-                "crop_center_m": np.array(
-                    [(i + 0.5) * patch_size_m, -(j + 0.5) * patch_size_m]
-                )
-            },
-        )
-        return submap, general_segments
 
     def batch_aerial_img_to_segments(
         self,
@@ -547,13 +662,17 @@ class CrossViewMatching:
                 (j, y1, i, x1, crop, patch_img, aerial_segments)
             )
 
-        # Phase 2: parallel post-processing (CPU-bound)
-        max_threads = self.pipeline_params.sparse_conversion_max_threads
-        with ThreadPoolExecutor(max_workers=max_threads) as executor:
+        # Phase 2: parallel post-processing (CPU-bound, use processes to avoid GIL)
+        max_workers = self.pipeline_params.sparse_conversion_max_threads
+        pixel_len_m = self.aerial_segmenter.params.pixel_len_m
+        pipeline_params = self.pipeline_params
+        with ProcessPoolExecutor(max_workers=max_workers) as executor:
             futures = {}
             for j, y1, i, x1, crop, patch_img, aerial_segments in segmentation_results:
                 future = executor.submit(
-                    self._process_aerial_patch,
+                    _process_aerial_patch_worker,
+                    pipeline_params,
+                    pixel_len_m,
                     aerial_segments,
                     crop,
                     i,
@@ -598,91 +717,11 @@ class CrossViewMatching:
     # ------------------------------------------------------------------
 
     def _process_ground_submap(self, k, submap, return_intermediates):
-        """Process a single ground submap (thread-safe, CPU-only)."""
-        assert submap.segment_frame == FrameType.CAMERA, (
-            f"Expected submap segments in CAMERA frame, but got {submap.segment_frame}"
+        """Process a single ground submap. Delegates to module-level worker."""
+        return _process_ground_submap_worker(
+            self.ground_segmenter, self.pipeline_params, self.place_recognition,
+            k, submap, return_intermediates,
         )
-        submap.segments.transform(submap.pose)
-
-        flattened_submap = self.ground_segmenter.flatten_3d_submap(submap)
-        aerial_segments = self.ground_segmenter.submap_2d_to_aerial(flattened_submap)
-        aerial_segments = [
-            seg
-            for seg in aerial_segments
-            if seg.get_alpha_shape(
-                alpha=self.pipeline_params.alpha_shape_alpha,
-                grid_downsample=self.pipeline_params.alpha_shape_grid_downsample,
-                max_n_pts=self.pipeline_params.alpha_shape_max_n_pts,
-                alpha_ref_size=self.pipeline_params.alpha_shape_ref_size_m,
-            )
-            is not None
-        ]
-        general_segments = self.aerial_segments_to_general_segments(aerial_segments)
-        sparse_general_segments = (
-            general_segments.get_points()
-            + clean_up_line_map(
-                general_segments.get_lines(),
-                angle_tol=self.pipeline_params.line_merge_ang_thresh_rad,
-                dist_tol=self.pipeline_params.line_merge_dist_thresh_m,
-                perp_dist_tol=self.pipeline_params.line_merge_perp_dist_thresh_m,
-                short_line_thresh=self.pipeline_params.line_merge_short_thresh_m,
-                semantic_sim_thresh=self.pipeline_params.line_merge_semantic_sim,
-            )[0]
-        )
-        # Remove lines that are FOV border artifacts
-        valid_lines = SegmentList()
-        for line in sparse_general_segments.get_lines():
-            parent_id = line.history[0] if line.history else None
-            parent_seg = (
-                flattened_submap.segments.get_segment_from_id(parent_id)
-                if parent_id is not None
-                else None
-            )
-            if parent_seg is None or self._line_is_valid(line, parent_seg):
-                valid_lines.append(line)
-        sparse_general_segments = sparse_general_segments.get_points() + valid_lines
-
-        _convert_long_lines_to_infinite(
-            sparse_general_segments,
-            self.pipeline_params.line_len_to_infinite,
-        )
-
-        sparse_general_segments.reindex()
-        for seg in sparse_general_segments:
-            history_heights = [
-                submap.segments.get_segment_from_id(id_hist).point.item(2)
-                for id_hist in seg.history
-            ]
-            seg.height = np.mean(history_heights)
-        # For semantic-point-line, compute descriptor from point/line segments
-        ground_descriptor = submap.descriptor
-        if (
-            self.place_recognition is not None
-            and self.place_recognition.method == "semantic-point-line"
-        ):
-            ground_descriptor = self.place_recognition.ground_descriptor(
-                None, submap_segments=sparse_general_segments
-            )
-
-        submap_2d = Submap(
-            id=k,
-            time=submap.time,
-            segments=sparse_general_segments,
-            pose=np.eye(4),
-            segment_frame=FrameType.ODOMETRY,
-            descriptor=ground_descriptor,
-            metadata={"camera_pose": submap.pose},
-        )
-
-        intermediate = None
-        if return_intermediates:
-            intermediate = GroundSubmapIntermediates(
-                flattened_submap=flattened_submap,
-                aerial_segments=aerial_segments,
-                general_segments=general_segments,
-            )
-
-        return submap_2d, intermediate
 
     def batch_ground_to_sparse_2d_submaps(
         self,
@@ -690,12 +729,18 @@ class CrossViewMatching:
         return_intermediates: bool = False,
         show_progress: bool = False,
     ) -> GroundSegmentationResult:
-        max_threads = self.pipeline_params.sparse_conversion_max_threads
-        with ThreadPoolExecutor(max_workers=max_threads) as executor:
+        max_workers = self.pipeline_params.sparse_conversion_max_threads
+        ground_segmenter = self.ground_segmenter
+        pipeline_params = self.pipeline_params
+        place_recognition = self.place_recognition
+
+        with ProcessPoolExecutor(max_workers=max_workers) as executor:
             futures = {}
             for k, submap in enumerate(submaps):
                 future = executor.submit(
-                    self._process_ground_submap, k, submap, return_intermediates
+                    _process_ground_submap_worker,
+                    ground_segmenter, pipeline_params, place_recognition,
+                    k, submap, return_intermediates,
                 )
                 futures[future] = k
 
