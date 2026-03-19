@@ -18,32 +18,36 @@ class AerialSegmenter(SegmenterBase):
         super().__init__(copy.deepcopy(params))
 
     def get_crop_descriptor(self, img_bgr, crop=None) -> np.ndarray:
-        """Compute a DINO-GeM global descriptor for an image crop.
+        """Compute a global descriptor for an image crop.
 
         Args:
             img_bgr: BGR image (full aerial image).
             crop: Optional (x1, y1, x2, y2) pixel crop.
 
         Returns:
-            Normalized 1-D numpy array of shape (semantics_dim,), or None if
-            semantics is disabled.
+            Normalized 1-D numpy descriptor array, or None if semantics is
+            disabled and frame_descriptor is not "anyloc".
         """
-        if self.semantics_model is None:
-            return None
-
         if crop is not None:
             img_bgr = img_bgr[crop[1] : crop[3], crop[0] : crop[2]]
-        image_rgb = cv.cvtColor(img_bgr, cv.COLOR_BGR2RGB)
 
         if self.params.downsample_factor > 1:
-            image_rgb = cv.resize(
-                image_rgb,
+            img_bgr = cv.resize(
+                img_bgr,
                 (
-                    image_rgb.shape[1] // self.params.downsample_factor,
-                    image_rgb.shape[0] // self.params.downsample_factor,
+                    img_bgr.shape[1] // self.params.downsample_factor,
+                    img_bgr.shape[0] // self.params.downsample_factor,
                 ),
                 interpolation=cv.INTER_LINEAR,
             )
+
+        if self.frame_descriptor_type == "anyloc":
+            return self._compute_anyloc_descriptor(img_bgr)
+
+        if self.semantics_model is None:
+            return None
+
+        image_rgb = cv.cvtColor(img_bgr, cv.COLOR_BGR2RGB)
 
         with torch.no_grad():
             if self.params.semantics in ("dino", "dinov3-hf"):

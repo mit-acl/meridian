@@ -1,3 +1,5 @@
+import os
+
 import cv2 as cv
 import numpy as np
 from numpy.typing import ArrayLike
@@ -24,6 +26,9 @@ class SegmenterBase:
         self._init_semantics_model()
 
         self.frame_descriptor_type = params.frame_descriptor
+        self._anyloc_extractor = None
+        self._anyloc_vlad = None
+        self._anyloc_transform = None
         if params.frame_descriptor is not None:
             assert (
                 params.semantics in ("dino", "dinov3", "dinov3-hf")
@@ -31,6 +36,8 @@ class SegmenterBase:
             ), (
                 "Frame descriptor only supported with DINO, DINOv3, DINOv3-HF semantics, or 'anyloc'."
             )
+            if params.frame_descriptor == "anyloc":
+                self._init_anyloc()
 
     def _init_segmentation_model(self):
         if self.params.get_model_type() == "fastsam":
@@ -316,8 +323,73 @@ class SegmenterBase:
 
         return frame_descriptor.cpu().detach().numpy()
 
-    def _compute_anyloc_descriptor(self, img_bgr):
-        """Compute AnyLoc (DINOv2 + VLAD) descriptor. Placeholder for future integration."""
-        raise NotImplementedError(
-            "AnyLoc descriptor not yet implemented. Set frame_descriptor to 'dino-gem', 'dino-gap', or 'dino-gmp'."
+    def _init_anyloc(self):
+        """Initialize AnyLoc DINOv2 extractor and VLAD vocabulary."""
+        import sys
+        import torchvision.transforms as tvf
+
+        sys.path.insert(0, os.path.join(self.params.anyloc_path, "demo"))
+        from utilities import DinoV2ExtractFeatures, VLAD
+
+        self._anyloc_extractor = DinoV2ExtractFeatures(
+            self.params.anyloc_dino_model,
+            self.params.anyloc_layer,
+            self.params.anyloc_facet,
+            device=self.params.device,
         )
+        self._anyloc_transform = tvf.Compose(
+            [
+                tvf.ToTensor(),
+                tvf.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+            ]
+        )
+
+        ext_specifier = (
+            f"{self.params.anyloc_dino_model}/"
+            f"l{self.params.anyloc_layer}_{self.params.anyloc_facet}"
+            f"_c{self.params.anyloc_num_clusters}"
+        )
+        c_centers_file = os.path.join(
+            self.params.anyloc_vocab_dir,
+            "vocabulary",
+            ext_specifier,
+            self.params.anyloc_domain,
+            "c_centers.pt",
+        )
+        assert os.path.isfile(c_centers_file), (
+            f"AnyLoc vocabulary not found: {c_centers_file}"
+        )
+
+        self._anyloc_vlad = VLAD(
+            self.params.anyloc_num_clusters,
+            desc_dim=None,
+            cache_dir=os.path.dirname(c_centers_file),
+        )
+        self._anyloc_vlad.fit(None)
+
+    def _compute_anyloc_descriptor(self, img_bgr):
+        """Compute AnyLoc (DINOv2 + VLAD) descriptor from a BGR image.
+
+        Args:
+            img_bgr: BGR image as numpy array.
+
+        Returns:
+            Normalized 1-D numpy array of shape (num_clusters * desc_dim,).
+        """
+        import torchvision.transforms as tvf
+        from PIL import Image as PILImage
+
+        img_rgb = cv.cvtColor(img_bgr, cv.COLOR_BGR2RGB)
+        pil_img = PILImage.fromarray(img_rgb)
+        img_pt = self._anyloc_transform(pil_img).to(self.params.device)
+
+        c, h, w = img_pt.shape
+        h_new = (h // 14) * 14
+        w_new = (w // 14) * 14
+        img_pt = tvf.CenterCrop((h_new, w_new))(img_pt)[None, ...]
+
+        with torch.no_grad():
+            ret = self._anyloc_extractor(img_pt)
+            gd = self._anyloc_vlad.generate(ret.cpu().squeeze())
+
+        return gd.numpy()

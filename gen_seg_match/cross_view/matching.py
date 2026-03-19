@@ -256,7 +256,14 @@ def _line_is_valid_impl(
 
 
 def _process_aerial_patch_worker(
-    pipeline_params, pixel_len_m, aerial_segments, crop, i, j, pose_flu, patch_size_m,
+    pipeline_params,
+    pixel_len_m,
+    aerial_segments,
+    crop,
+    i,
+    j,
+    pose_flu,
+    patch_size_m,
 ):
     """Post-process a single aerial patch (process-safe, CPU-only).
 
@@ -270,7 +277,10 @@ def _process_aerial_patch_worker(
             alpha_ref_size=pipeline_params.alpha_shape_ref_size_m,
         )
     general_segments = _aerial_segments_to_general_segments_impl(
-        aerial_segments, pipeline_params, pixel_len_m=pixel_len_m, crop=crop,
+        aerial_segments,
+        pipeline_params,
+        pixel_len_m=pixel_len_m,
+        crop=crop,
     )
     sparse_general_segments = (
         general_segments.get_points()
@@ -305,8 +315,14 @@ def _process_aerial_patch_worker(
     return submap, general_segments
 
 
-def _process_ground_submap_worker(ground_segmenter, pipeline_params, place_recognition,
-                                   k, submap, return_intermediates):
+def _process_ground_submap_worker(
+    ground_segmenter,
+    pipeline_params,
+    place_recognition,
+    k,
+    submap,
+    return_intermediates,
+):
     """Process a single ground submap (process-safe, CPU-only).
 
     Top-level function for use with ProcessPoolExecutor.
@@ -442,9 +458,14 @@ class CrossViewMatching:
     def aerial_segments_to_general_segments(
         self, segments: List[AerialSegment], crop: Crop = None
     ) -> SegmentList:
-        pixel_len_m = self.aerial_segmenter.params.pixel_len_m if crop is not None else None
+        pixel_len_m = (
+            self.aerial_segmenter.params.pixel_len_m if crop is not None else None
+        )
         return _aerial_segments_to_general_segments_impl(
-            segments, self.pipeline_params, pixel_len_m=pixel_len_m, crop=crop,
+            segments,
+            self.pipeline_params,
+            pixel_len_m=pixel_len_m,
+            crop=crop,
         )
 
     def ground_map_to_submaps(
@@ -590,13 +611,27 @@ class CrossViewMatching:
     # ------------------------------------------------------------------
 
     def _process_aerial_patch(
-        self, aerial_segments, crop, i, j, pose_flu, patch_size_m,
+        self,
+        aerial_segments,
+        crop,
+        i,
+        j,
+        pose_flu,
+        patch_size_m,
     ):
         """Post-process a single aerial patch. Delegates to module-level worker."""
-        pixel_len_m = self.aerial_segmenter.params.pixel_len_m if crop is not None else None
+        pixel_len_m = (
+            self.aerial_segmenter.params.pixel_len_m if crop is not None else None
+        )
         return _process_aerial_patch_worker(
-            self.pipeline_params, pixel_len_m,
-            aerial_segments, crop, i, j, pose_flu, patch_size_m,
+            self.pipeline_params,
+            pixel_len_m,
+            aerial_segments,
+            crop,
+            i,
+            j,
+            pose_flu,
+            patch_size_m,
         )
 
     def batch_aerial_img_to_segments(
@@ -719,8 +754,12 @@ class CrossViewMatching:
     def _process_ground_submap(self, k, submap, return_intermediates):
         """Process a single ground submap. Delegates to module-level worker."""
         return _process_ground_submap_worker(
-            self.ground_segmenter, self.pipeline_params, self.place_recognition,
-            k, submap, return_intermediates,
+            self.ground_segmenter,
+            self.pipeline_params,
+            self.place_recognition,
+            k,
+            submap,
+            return_intermediates,
         )
 
     def batch_ground_to_sparse_2d_submaps(
@@ -739,8 +778,12 @@ class CrossViewMatching:
             for k, submap in enumerate(submaps):
                 future = executor.submit(
                     _process_ground_submap_worker,
-                    ground_segmenter, pipeline_params, place_recognition,
-                    k, submap, return_intermediates,
+                    ground_segmenter,
+                    pipeline_params,
+                    place_recognition,
+                    k,
+                    submap,
+                    return_intermediates,
                 )
                 futures[future] = k
 

@@ -86,7 +86,7 @@ class CrossViewMatchingParams(ParamsBase):
 class CrossViewPlaceRecognitionParams(ParamsBase):
     params_key: ClassVar[str] = "cross_view_place_recognition"
 
-    method: str = "semantic-gem"  # "semantic-gem" or "semantic-point-line"
+    method: str = "semantic-gem"  # "semantic-gem", "anyloc", or "semantic-point-line"
     ground_descriptor_dist_m: float = 5.0
     k_nearest_neighbors: int = 5
 
