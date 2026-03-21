@@ -21,6 +21,7 @@ class FrameType(Enum):
     GRAVITY_ALIGNED_FLU = "gravity_aligned_flu"
     UTM = "utm"
     ODOMETRY = "odometry"
+    IMG_PATCH_TOP_LEFT_CORNER = "img_patch_top_left_corner"
 
 
 @dataclass

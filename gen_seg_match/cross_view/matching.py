@@ -1,4 +1,5 @@
 import logging
+import math
 import numpy as np
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from copy import deepcopy
@@ -108,6 +109,31 @@ def _convert_long_lines_to_infinite(segments: SegmentList, threshold: float):
 
 def _aerial_key_to_tuple(key: str) -> Tuple[int, ...]:
     return tuple(int(x) for x in key.split("_"))
+
+
+def _compute_sub_patch_crops(patch_crop, seg_size_px):
+    """Tile a patch crop into overlapping sub-patch crops.
+
+    Returns [(x1, y1, x2, y2), ...] in full-image pixel coords.
+    If seg_size_px >= patch dimension, returns [patch_crop].
+    """
+    x1, y1, x2, y2 = patch_crop
+    pw, ph = x2 - x1, y2 - y1
+
+    def _offsets(total, tile):
+        if tile >= total:
+            return [0]
+        n = math.ceil(total / tile)
+        stride = (total - tile) / (n - 1)
+        return [round(stride * k) for k in range(n)]
+
+    crops = []
+    for dy in _offsets(ph, seg_size_px):
+        for dx in _offsets(pw, seg_size_px):
+            crops.append(
+                (x1 + dx, y1 + dy, x1 + dx + seg_size_px, y1 + dy + seg_size_px)
+            )
+    return crops
 
 
 def _aerial_segments_to_general_segments_impl(
@@ -258,8 +284,7 @@ def _line_is_valid_impl(
 def _process_aerial_patch_worker(
     pipeline_params,
     pixel_len_m,
-    aerial_segments,
-    crop,
+    sub_patch_results,
     i,
     j,
     pose_flu,
@@ -268,24 +293,32 @@ def _process_aerial_patch_worker(
     """Post-process a single aerial patch (process-safe, CPU-only).
 
     Top-level function for use with ProcessPoolExecutor.
+
+    Args:
+        sub_patch_results: List of (aerial_segments, sub_crop) tuples, one per
+            sub-patch tile within this aerial patch.
     """
-    for segment in aerial_segments:
-        segment.get_alpha_shape(
-            alpha=pipeline_params.alpha_shape_alpha,
-            grid_downsample=pipeline_params.alpha_shape_grid_downsample,
-            max_n_pts=pipeline_params.alpha_shape_max_n_pts,
-            alpha_ref_size=pipeline_params.alpha_shape_ref_size_m,
+    all_general_segments = SegmentList()
+    for aerial_segments, sub_crop in sub_patch_results:
+        for segment in aerial_segments:
+            segment.get_alpha_shape(
+                alpha=pipeline_params.alpha_shape_alpha,
+                grid_downsample=pipeline_params.alpha_shape_grid_downsample,
+                max_n_pts=pipeline_params.alpha_shape_max_n_pts,
+                alpha_ref_size=pipeline_params.alpha_shape_ref_size_m,
+            )
+        general_segments = _aerial_segments_to_general_segments_impl(
+            aerial_segments,
+            pipeline_params,
+            pixel_len_m=pixel_len_m,
+            crop=sub_crop,
         )
-    general_segments = _aerial_segments_to_general_segments_impl(
-        aerial_segments,
-        pipeline_params,
-        pixel_len_m=pixel_len_m,
-        crop=crop,
-    )
+        all_general_segments = all_general_segments + general_segments
+
     sparse_general_segments = (
-        general_segments.get_points()
+        all_general_segments.get_points()
         + clean_up_line_map(
-            general_segments.get_lines(),
+            all_general_segments.get_lines(),
             angle_tol=pipeline_params.line_merge_ang_thresh_rad,
             dist_tol=pipeline_params.line_merge_dist_thresh_m,
             perp_dist_tol=pipeline_params.line_merge_perp_dist_thresh_m,
@@ -304,7 +337,7 @@ def _process_aerial_patch_worker(
         time=0.0,
         segments=sparse_general_segments,
         pose=pose_flu,
-        segment_frame=FrameType.UTM,
+        segment_frame=FrameType.IMG_PATCH_TOP_LEFT_CORNER,
         descriptor=None,
         metadata={
             "crop_center_m": np.array(
@@ -312,7 +345,7 @@ def _process_aerial_patch_worker(
             )
         },
     )
-    return submap, general_segments
+    return submap, all_general_segments
 
 
 def _process_ground_submap_worker(
@@ -612,22 +645,18 @@ class CrossViewMatching:
 
     def _process_aerial_patch(
         self,
-        aerial_segments,
-        crop,
+        sub_patch_results,
         i,
         j,
         pose_flu,
         patch_size_m,
     ):
         """Post-process a single aerial patch. Delegates to module-level worker."""
-        pixel_len_m = (
-            self.aerial_segmenter.params.pixel_len_m if crop is not None else None
-        )
+        pixel_len_m = self.aerial_segmenter.params.pixel_len_m
         return _process_aerial_patch_worker(
             self.pipeline_params,
             pixel_len_m,
-            aerial_segments,
-            crop,
+            sub_patch_results,
             i,
             j,
             pose_flu,
@@ -646,6 +675,11 @@ class CrossViewMatching:
 
         patch_size_m = self.pipeline_params.aerial_img_patch_side_len_m
         patch_size_px = int(patch_size_m * px_per_m)
+
+        seg_size_m = self.pipeline_params.aerial_img_segmentation_side_len_m
+        if seg_size_m is None:
+            seg_size_m = patch_size_m
+        seg_size_px = int(seg_size_m * px_per_m)
 
         overlap = self.pipeline_params.aerial_img_patch_overlap
         stride = int(patch_size_px * (1.0 - overlap))
@@ -688,13 +722,15 @@ class CrossViewMatching:
         if show_progress:
             seg_iterator = tqdm(seg_iterator, desc="Aerial segmentation")
         for j, y1, i, x1 in seg_iterator:
-            x2 = x1 + patch_size_px
-            y2 = y1 + patch_size_px
-            crop = (x1, y1, x2, y2)
-            patch_img = img[y1:y2, x1:x2].copy()
-            aerial_segments = self.aerial_img_to_segments(img, crop=crop)
+            crop = (x1, y1, x1 + patch_size_px, y1 + patch_size_px)
+            patch_img = img[y1 : y1 + patch_size_px, x1 : x1 + patch_size_px].copy()
+            sub_crops = _compute_sub_patch_crops(crop, seg_size_px)
+            sub_patch_results = []
+            for sub_crop in sub_crops:
+                aerial_segments = self.aerial_img_to_segments(img, crop=sub_crop)
+                sub_patch_results.append((aerial_segments, sub_crop))
             segmentation_results.append(
-                (j, y1, i, x1, crop, patch_img, aerial_segments)
+                (j, y1, i, x1, crop, patch_img, sub_patch_results)
             )
 
         # Phase 2: parallel post-processing (CPU-bound, use processes to avoid GIL)
@@ -703,19 +739,26 @@ class CrossViewMatching:
         pipeline_params = self.pipeline_params
         with ProcessPoolExecutor(max_workers=max_workers) as executor:
             futures = {}
-            for j, y1, i, x1, crop, patch_img, aerial_segments in segmentation_results:
+            for (
+                j,
+                y1,
+                i,
+                x1,
+                crop,
+                patch_img,
+                sub_patch_results,
+            ) in segmentation_results:
                 future = executor.submit(
                     _process_aerial_patch_worker,
                     pipeline_params,
                     pixel_len_m,
-                    aerial_segments,
-                    crop,
+                    sub_patch_results,
                     i,
                     j,
                     pose_flu,
                     patch_size_m,
                 )
-                futures[future] = (j, y1, i, x1, crop, patch_img, aerial_segments)
+                futures[future] = (j, y1, i, x1, crop, patch_img, sub_patch_results)
 
             post_iterator = as_completed(futures)
             if show_progress:
@@ -725,7 +768,7 @@ class CrossViewMatching:
                     desc="Aerial post-processing",
                 )
             for future in post_iterator:
-                j, y1, i, x1, crop, patch_img, aerial_segments = futures[future]
+                j, y1, i, x1, crop, patch_img, sub_patch_results = futures[future]
                 submap, general_segments = future.result()
 
                 # Place recognition descriptor (may use GPU — keep serial)
@@ -739,9 +782,12 @@ class CrossViewMatching:
 
                 submaps[crop] = submap
                 if return_intermediates:
+                    all_aerial_segments = [
+                        seg for segs, _ in sub_patch_results for seg in segs
+                    ]
                     intermediates[crop] = AerialPatchIntermediates(
                         patch_img=patch_img,
-                        aerial_segments=aerial_segments,
+                        aerial_segments=all_aerial_segments,
                         general_segments=general_segments,
                     )
 

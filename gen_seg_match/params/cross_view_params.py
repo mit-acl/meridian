@@ -38,6 +38,9 @@ class CrossViewMatchingParams(ParamsBase):
     line_split_length_m: float = 15.0
 
     aerial_img_patch_side_len_m: float = 30.0
+    aerial_img_segmentation_side_len_m: float = (
+        None  # None → same as aerial_img_patch_side_len_m
+    )
     aerial_img_patch_overlap: float = 0.5
     aerial_min_dist_to_border_m: float = 0.5
 
