@@ -38,6 +38,9 @@ class CrossViewMatchingParams(ParamsBase):
     line_split_length_m: float = 15.0
 
     aerial_img_patch_side_len_m: float = 30.0
+    aerial_img_segmentation_side_len_m: float = (
+        None  # None → same as aerial_img_patch_side_len_m
+    )
     aerial_img_patch_overlap: float = 0.5
     aerial_min_dist_to_border_m: float = 0.5
 
@@ -86,7 +89,7 @@ class CrossViewMatchingParams(ParamsBase):
 class CrossViewPlaceRecognitionParams(ParamsBase):
     params_key: ClassVar[str] = "cross_view_place_recognition"
 
-    method: str = "semantic-gem"  # "semantic-gem" or "semantic-point-line"
+    method: str = "semantic-gem"  # "semantic-gem", "anyloc", or "semantic-point-line"
     ground_descriptor_dist_m: float = 5.0
     k_nearest_neighbors: int = 5
 

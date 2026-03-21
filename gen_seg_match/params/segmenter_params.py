@@ -1,28 +1,19 @@
-import os
-import numpy as np
 from dataclasses import dataclass
-from typing import ClassVar, List, Tuple
+from typing import ClassVar, Tuple
 
-from gen_seg_match.params.params_base import ParamsBase
+from gen_seg_match.params.segmenter_params_base import SegmenterParamsBase
 from gen_seg_match.utils import expandvars_recursive
 
 
 @dataclass
-class SegmenterParams(ParamsBase):
-    # class attribute
+class SegmenterParams(SegmenterParamsBase):
     params_key: ClassVar[str] = "segmenter"
 
-    ##################
+    # Override base default
+    frame_descriptor: str = "dino-gem"
 
-    model_type: str = "fastsam"
-    weights_path: str = "$ROMAN_WEIGHTS/FastSAM-x.pt"
+    # Ground-specific fields
     yolo_weights_path: str = "$ROMAN_WEIGHTS/yolov7.pt"
-    imgsz: Tuple[int, int] = (256, 256)
-    conf: float = 0.5
-    iou: float = 0.9
-    device: str = "cuda"
-    semantics: str = "dino"
-    semantics_dim: int = 768
     erosion_size: int = 3
     voxel_size: float = 0.05
     ignore_labels: list = tuple([])
@@ -31,11 +22,6 @@ class SegmenterParams(ParamsBase):
     keep_labels_option: dict = None
     keep_mask_minimal_intersection: float = 0.3
     rotate_img: str = None
-    semantics: str = "dino"
-    semantics_size: str = "base"
-    dinov3_path: str = "~/code/dinov3"
-    dinov3_weights: str = None
-    frame_descriptor: str = "dino-gem"
     yolo_imgsz: Tuple[int, int] = None
     use_point_cloud: bool = False
     depth_scale: float = 1e3
@@ -44,9 +30,6 @@ class SegmenterParams(ParamsBase):
     pcd_stride: int = 4
     min_mask_pixels: int = 0
     min_mask_image_fraction: float = 0.0
-    triangle_ignore_masks: List[
-        Tuple[Tuple[int, int], Tuple[int, int], Tuple[int, int]]
-    ] = None
     occlusion_edge_img_frac: float = 0.02
     occlusion_edge_max_img_frac: float = 0.15
     occlusion_max_depth: float = 7.0
@@ -55,18 +38,8 @@ class SegmenterParams(ParamsBase):
     outlier_removal_dbscan_min_points: int = 10
     min_occluded_unoccluded_dist_m: float = 0.1
 
-    def get_model_type(self):
-        return self.model_type.lower()
-
     def __post_init__(self):
-        if self.model_type is not None:
-            self.model_type = self.model_type.lower()
-        if self.frame_descriptor.lower() == "none":
-            self.frame_descriptor = None
-        self.weights_path = expandvars_recursive(self.weights_path)
+        super().__post_init__()
         self.yolo_weights_path = expandvars_recursive(self.yolo_weights_path)
-        self.dinov3_path = os.path.expanduser(self.dinov3_path)
-        if self.dinov3_weights is not None:
-            self.dinov3_weights = os.path.expanduser(self.dinov3_weights)
         if self.yolo_imgsz is None:
             self.yolo_imgsz = self.imgsz

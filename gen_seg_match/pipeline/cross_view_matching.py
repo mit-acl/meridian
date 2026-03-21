@@ -462,6 +462,7 @@ class CrossViewMatchingPipeline:
         n_total = len(all_results)
         n_any_success = 0
         n_max_assoc_success = 0
+        successful_ground_keys = []
 
         for ground_key, results_matrix in all_results.items():
             trans_errors = results_matrix.translation_error_m
@@ -474,6 +475,7 @@ class CrossViewMatchingPipeline:
             )
             if np.any(success_mask):
                 n_any_success += 1
+                successful_ground_keys.append(ground_key)
 
             # Metric 2: crop(s) with max associations — majority correct
             valid_mask = num_assoc > 0
@@ -493,6 +495,10 @@ class CrossViewMatchingPipeline:
             f"Successful ground submap pose found: {n_any_success} / {n_total}\n"
             + "Successful ground submap pose using max number of "
             + f"associations: {n_max_assoc_success} / {n_total}\n"
+            + "\nGround keys with successful registration "
+            + f"({len(successful_ground_keys)} / {n_total}): "
+            + " ".join(successful_ground_keys)
+            + "\n"
         )
         print(results_str)
         with open(results_path, "w") as f:
@@ -569,7 +575,13 @@ def cross_view_matching(
 
     # copy params to main output directory
     if os.path.isfile(params):
-        shutil.copy2(params, os.path.join(output_dir, os.path.basename(params)))
+        # don't copy if params is already in output_dir
+        if not os.path.exists(
+            os.path.join(output_dir, os.path.basename(params))
+        ) or not os.path.samefile(
+            params, os.path.join(output_dir, os.path.basename(params))
+        ):
+            shutil.copy2(params, os.path.join(output_dir, os.path.basename(params)))
     else:
         shutil.copytree(params, output_dir, dirs_exist_ok=True)
 
@@ -602,6 +614,7 @@ def cross_view_matching(
             match_output_dir,
             aerial_img=data.aerial_img,
             T_camera_flu=data.T_camera_flu,
+            ground_dense_dir=os.path.join(ground_output_dir, "segments"),
             local_to_pixel_fn=data.aerial_local_to_pixel
             if data.geotiff_transform is not None
             else None,
