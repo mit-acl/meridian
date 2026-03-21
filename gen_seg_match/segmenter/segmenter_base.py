@@ -22,8 +22,14 @@ class SegmenterBase:
         self.params = params
         self.semantic_patches_shape = None
 
-        self._init_segmentation_model()
-        self._init_semantics_model()
+        # Lazy-init flags — models loaded on first use
+        self._segmentation_model_loaded = False
+        self._semantics_model_loaded = False
+        self._anyloc_loaded = False
+
+        self.model = None
+        self.semantics_model = None
+        self.semantics_preprocess = None
 
         self.frame_descriptor_type = params.frame_descriptor
         self._anyloc_extractor = None
@@ -36,8 +42,21 @@ class SegmenterBase:
             ), (
                 "Frame descriptor only supported with DINO, DINOv3, DINOv3-HF semantics, or 'anyloc'."
             )
-            if params.frame_descriptor == "anyloc":
-                self._init_anyloc()
+
+    def _ensure_segmentation_model(self):
+        if not self._segmentation_model_loaded:
+            self._init_segmentation_model()
+            self._segmentation_model_loaded = True
+
+    def _ensure_semantics_model(self):
+        if not self._semantics_model_loaded:
+            self._init_semantics_model()
+            self._semantics_model_loaded = True
+
+    def _ensure_anyloc(self):
+        if not self._anyloc_loaded:
+            self._init_anyloc()
+            self._anyloc_loaded = True
 
     def _init_segmentation_model(self):
         if self.params.get_model_type() == "fastsam":
@@ -127,6 +146,7 @@ class SegmenterBase:
         Returns:
             masks: (N, H, W) numpy array of binary masks, or empty list if none found.
         """
+        self._ensure_segmentation_model()
         if self.params.get_model_type() == "fastsam":
             everything_results = self.model(
                 image_rgb,
@@ -169,6 +189,7 @@ class SegmenterBase:
                 per_pixel_features: (H, W, C) tensor of per-pixel features.
                 output_patches: (1, h, w, C) tensor of patch features.
         """
+        self._ensure_semantics_model()
         if self.params.semantics in ("dino", "dinov3-hf"):
             img_rgb = cv.cvtColor(img_bgr, cv.COLOR_BGR2RGB)
             preprocessed = self.semantics_preprocess(
@@ -376,6 +397,7 @@ class SegmenterBase:
         Returns:
             Normalized 1-D numpy array of shape (num_clusters * desc_dim,).
         """
+        self._ensure_anyloc()
         import torchvision.transforms as tvf
         from PIL import Image as PILImage
 

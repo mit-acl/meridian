@@ -188,7 +188,7 @@ class Segmenter(SegmenterBase):
 
         frame_descriptor = None
         if self.frame_descriptor_type is not None and dino_output_patches is not None:
-            frame_descriptor = self.get_frame_descriptor(dino_output_patches)
+            frame_descriptor = self.get_frame_descriptor(dino_output_patches, img_bgr)
 
         if depth_data is not None:
             if self.params.use_point_cloud:
