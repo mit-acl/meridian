@@ -13,36 +13,31 @@ def _point_to_infinite_line_dist(point, line_point, line_dir):
 
 
 def merge_lines(line1: SegmentLine, line2: SegmentLine) -> SegmentLine:
-    """Merge two lines into one by taking the endpoints that are farthest apart."""
-    len_line1 = np.linalg.norm(line1.endpoints[1] - line1.endpoints[0])
-    len_line2 = np.linalg.norm(line2.endpoints[1] - line2.endpoints[0])
-    direction1 = line1.get_direction() * len_line1 + line2.get_direction() * len_line2
-    direction2 = line1.get_direction() * len_line1 - line2.get_direction() * len_line2
-    direction = (
-        direction1
-        if np.linalg.norm(direction1) > np.linalg.norm(direction2)
-        else direction2
-    )
-    direction /= np.linalg.norm(direction)
+    """Merge two lines using least-squares fit of all constituent endpoints.
 
-    # project endpoints of both lines onto the merged line
-    endpoints = [
-        line1.endpoints[0],
-        line1.endpoints[1],
-        line2.endpoints[0],
-        line2.endpoints[1],
-    ]
+    Accumulates endpoints through successive merges so that the fitted direction
+    is robust to noisy short-line endpoints.
+    """
+    # Collect all constituent endpoints (carried forward through merges)
+    eps1 = getattr(line1, "_merged_endpoints", [line1.endpoints[0], line1.endpoints[1]])
+    eps2 = getattr(line2, "_merged_endpoints", [line2.endpoints[0], line2.endpoints[1]])
+    all_endpoints = eps1 + eps2
 
-    max_dist = -1
-    pt1_idx = -1
-    pt2_idx = -1
-    for i in range(len(endpoints)):
-        for j in range(i + 1, len(endpoints)):
-            dist = np.linalg.norm(endpoints[i] - endpoints[j])
-            if dist > max_dist:
-                max_dist = dist
-                pt1_idx = i
-                pt2_idx = j
+    # Least-squares line fit via PCA of endpoint cloud
+    pts = np.array(all_endpoints)
+    centroid = pts.mean(axis=0)
+    centered = pts - centroid
+    _, _, Vt = np.linalg.svd(centered, full_matrices=False)
+    direction = Vt[0]  # first principal component = line direction
+
+    # Project all endpoints onto the fitted line, pick the two extremes
+    projections = centered @ direction
+    min_idx = int(np.argmin(projections))
+    max_idx = int(np.argmax(projections))
+
+    # Projected endpoints lie on the best-fit line (perpendicular noise removed)
+    ep1 = centroid + projections[min_idx] * direction
+    ep2 = centroid + projections[max_idx] * direction
 
     # TODO: we should probably keep track of the history of cosine features as we are
     # merging lines. Also, should probably weight by length.
@@ -62,15 +57,17 @@ def merge_lines(line1: SegmentLine, line2: SegmentLine) -> SegmentLine:
         first_seen = line2.first_seen
     if line2.last_seen is not None and line2.last_seen > last_seen:
         last_seen = line2.last_seen
-    return SegmentLine.from_endpoints(
+    merged = SegmentLine.from_endpoints(
         -1,
-        endpoints[pt1_idx],
-        endpoints[pt2_idx],
+        ep1,
+        ep2,
         cos_feature=merged_cos_feature,
         first_seen=first_seen,
         last_seen=last_seen,
         history=list(set(line1.history).union(set(line2.history))),
     )
+    merged._merged_endpoints = all_endpoints
+    return merged
 
 
 def merge_points(pt1, pt2):

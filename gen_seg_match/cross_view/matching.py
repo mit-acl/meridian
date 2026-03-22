@@ -104,6 +104,7 @@ def _convert_long_lines_to_infinite(segments: SegmentList, threshold: float):
         return
     for seg in segments.get_lines():
         if seg.get_length() > threshold:
+            seg.point = 0.5 * (seg.endpoints[0] + seg.endpoints[1])
             seg.endpoints = (None, None)
 
 
