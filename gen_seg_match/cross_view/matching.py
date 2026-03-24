@@ -1,5 +1,6 @@
 import logging
 import math
+import time
 import numpy as np
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from copy import deepcopy
@@ -1156,6 +1157,7 @@ class CrossViewMatching:
             # Ensure the matcher uses the direction constraints
             self.matcher.params.xy_dir_constrained_2d = True
 
+        t0 = time.time()
         matches = self.matcher.match(
             aerial_segs_j,
             ground_segs_i,
@@ -1176,6 +1178,7 @@ class CrossViewMatching:
                 T_aerial_ground_hat = T_aerial_ground_hat @ T_camera_flu
         except InsufficientAssociationsException:
             T_aerial_ground_hat = np.zeros((4, 4)) * np.nan
+        runtime_s = time.time() - t0
 
         # no z component estimated
         T_aerial_ground[2, 3] = 0.0
@@ -1186,6 +1189,7 @@ class CrossViewMatching:
             T_i_j_hat=T_aerial_ground_hat,
             T_i_j=T_aerial_ground,
             associations=matches,
+            runtime_s=runtime_s,
         )
 
         matched_ground = SegmentList(

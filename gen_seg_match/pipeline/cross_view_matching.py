@@ -666,11 +666,19 @@ class CrossViewMatchingPipeline:
             if tied_successes > tied_total / 2:  # strict majority
                 n_max_assoc_success += 1
 
+        # Compute mean time per registration across all pairs
+        all_runtimes = []
+        for results_matrix in all_results.values():
+            runtimes = results_matrix.runtime_s.flatten()
+            all_runtimes.extend(runtimes[~np.isnan(runtimes)])
+        mean_runtime = np.mean(all_runtimes) if all_runtimes else np.nan
+
         results_path = pathlib.Path(output_dir) / "results.txt"
         results_str = (
             f"Successful ground submap pose found: {n_any_success} / {n_total}\n"
             + "Successful ground submap pose using max number of "
             + f"associations: {n_max_assoc_success} / {n_total}\n"
+            + f"Mean time per registration: {mean_runtime:.3f} s\n"
             + "\nGround keys with successful registration "
             + f"({len(successful_ground_keys)} / {n_total}): "
             + " ".join(successful_ground_keys)
