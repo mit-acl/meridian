@@ -162,6 +162,19 @@ class Segmenter(SegmenterBase):
 
         if self.params.use_point_cloud:
             pcl, pcl_proj = depth_data
+            # Build a sparse depth image from the point cloud projections
+            # so occlusion edge logic can index it like a dense depth image.
+            h, w = img_bgr.shape[:2]
+            sparse_depth_img = np.zeros((h, w), dtype=np.float32)
+            valid = (
+                (pcl_proj[:, 0] >= 0)
+                & (pcl_proj[:, 0] < w)
+                & (pcl_proj[:, 1] >= 0)
+                & (pcl_proj[:, 1] < h)
+            )
+            sparse_depth_img[pcl_proj[valid, 1], pcl_proj[valid, 0]] = (
+                pcl[valid, 2] * self.params.depth_scale
+            )
 
         if self.run_yolo:
             ignore_mask, keep_mask = self._create_mask(img_bgr)
@@ -306,7 +319,7 @@ class Segmenter(SegmenterBase):
                 new_observation.occluded_points = self._compute_occlusion_points(
                     points=points,
                     mask=mask,
-                    depth_img=depth_data,
+                    depth_img=sparse_depth_img if self.params.use_point_cloud else depth_data,
                     occlusion_edge_mask=occlusion_edge_mask,
                 )
 
@@ -560,10 +573,14 @@ class Segmenter(SegmenterBase):
 
         # For point cloud mode, skip depth-image-based occlusion pixel extraction
         # since we don't have a dense depth image to index into.
-        if not self.params.use_point_cloud and occlusion_edge_mask.size > 0:
+        if occlusion_edge_mask.size > 0:
             occluded_pixels = np.array(
                 np.where(np.bitwise_and(mask.astype(bool), occlusion_edge_mask))
             ).T  # (y, x)
+            # no edge occlusions for this mask, return just depth-based points
+            if occluded_pixels.size == 0:
+                return occluded_points
+
             occluded_pixels_depths = (
                 depth_img[occluded_pixels[:, 0], occluded_pixels[:, 1]]
                 / self.params.depth_scale
