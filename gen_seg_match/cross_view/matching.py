@@ -868,6 +868,7 @@ class CrossViewMatching:
         translation_only: bool = None,
         show_progress: bool = False,
         local_to_pixel_fn=None,
+        gt_trajectory=None,
     ) -> CrossViewMatchResult:
         """Match aerial and ground submaps without any I/O.
 
@@ -950,6 +951,12 @@ class CrossViewMatching:
                 ground_pose_ref = reference_trajectory.pose(
                     ground_submaps[ground_key].time
                 )
+            ground_pose_gt = None
+            if gt_trajectory is not None:
+                try:
+                    ground_pose_gt = gt_trajectory.pose(ground_submaps[ground_key].time)
+                except Exception:
+                    pass
             T_ground_odom_ground_robot = ground_sm_i.metadata["camera_pose"]
 
             for aerial_key, aerial_sm_j in aerial_submaps_2d.items():
@@ -983,6 +990,7 @@ class CrossViewMatching:
                     T_ground_odom_ground_robot,
                     do_translation_only,
                     local_to_pixel_fn=local_to_pixel_fn,
+                    ground_pose_gt=ground_pose_gt,
                 )
 
                 results_matrix[i_a, j_a] = single_result.pose_result
@@ -1085,17 +1093,33 @@ class CrossViewMatching:
         T_ground_odom_ground_robot: np.ndarray,
         translation_only: bool,
         local_to_pixel_fn=None,
+        ground_pose_gt=None,
     ) -> SingleMatchResult:
-        """Match a single aerial-ground submap pair."""
+        """Match a single aerial-ground submap pair.
+
+        Args:
+            ground_pose_ref: Reference pose for rotation constraint (may be PGO output).
+            ground_pose_gt: Actual ground truth pose for T_i_j computation. If None,
+                falls back to ground_pose_ref.
+        """
         # Compute rotation from reference trajectory if available
+        R_aerial_ground_2d = None
         if ground_pose_ref is not None:
-            T_aerial_camera = np.linalg.inv(aerial_sm.pose) @ ground_pose_ref
-            T_aerial_odom = T_aerial_camera @ np.linalg.inv(T_ground_odom_ground_robot)
+            T_aerial_camera_ref = np.linalg.inv(aerial_sm.pose) @ ground_pose_ref
+            T_aerial_odom = T_aerial_camera_ref @ np.linalg.inv(
+                T_ground_odom_ground_robot
+            )
             R_aerial_ground_2d = T_aerial_odom[:2, :2]
+
+        # Compute GT T_aerial_ground for T_i_j (visualization/error computation)
+        # Use actual GT when available, otherwise fall back to reference trajectory
+        gt_source = ground_pose_gt if ground_pose_gt is not None else ground_pose_ref
+        if gt_source is not None:
+            T_aerial_camera_gt = np.linalg.inv(aerial_sm.pose) @ gt_source
             if T_camera_flu is not None:
-                T_aerial_ground = T_aerial_camera @ T_camera_flu
+                T_aerial_ground = T_aerial_camera_gt @ T_camera_flu
             else:
-                T_aerial_ground = T_aerial_camera
+                T_aerial_ground = T_aerial_camera_gt
             # T_aerial_ground[:2, 3] is in UTM-delta frame (inv(pose_flu_UTM) @ UTM_pose).
             # T_aerial_ground_hat will be in pixel-meter frame (from segment registerer).
             # Convert GT translation to pixel-meter frame so errors are computed correctly.
@@ -1109,7 +1133,6 @@ class CrossViewMatching:
                 T_aerial_ground[1, 3] = row * pixel_len_m
         else:
             T_aerial_ground = np.zeros((4, 4)) * np.nan
-            R_aerial_ground_2d = None
 
         # Split long lines before matching
         ground_segs_i = ground_sm.segments.get_points() + split_long_lines(
@@ -1280,6 +1303,7 @@ class CrossViewMatching:
         translation_only: bool = None,
         show_progress: bool = False,
         local_to_pixel_fn=None,
+        gt_trajectory=None,
     ) -> CrossViewMatchResult:
         """Cross-view match using max_intersection mode.
 
@@ -1332,6 +1356,12 @@ class CrossViewMatching:
                 ground_pose_ref = reference_trajectory.pose(
                     ground_submaps[ground_key].time
                 )
+            ground_pose_gt = None
+            if gt_trajectory is not None:
+                try:
+                    ground_pose_gt = gt_trajectory.pose(ground_submaps[ground_key].time)
+                except Exception:
+                    pass
             T_ground_odom_ground_robot = ground_sm_i.metadata["camera_pose"]
 
             single_result = self._match_single_pair(
@@ -1343,6 +1373,7 @@ class CrossViewMatching:
                 T_ground_odom_ground_robot,
                 do_translation_only,
                 local_to_pixel_fn=local_to_pixel_fn,
+                ground_pose_gt=ground_pose_gt,
             )
 
             results_matrix[i_a, j_a] = single_result.pose_result

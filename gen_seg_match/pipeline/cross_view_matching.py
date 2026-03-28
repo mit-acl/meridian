@@ -414,6 +414,7 @@ class CrossViewMatchingPipeline:
         ground_dense_dir: pathlib.Path = None,
         local_to_pixel_fn=None,
         save_viz: bool = True,
+        gt_trajectory=None,
     ) -> CrossViewMatchResult:
         mode = matching_mode or self.algorithm.pipeline_params.matching_mode
         if mode == "max_intersection":
@@ -425,6 +426,7 @@ class CrossViewMatchingPipeline:
                 translation_only,
                 show_progress=True,
                 local_to_pixel_fn=local_to_pixel_fn,
+                gt_trajectory=gt_trajectory,
             )
         else:
             match_result = self.algorithm.cross_view_match(
@@ -436,6 +438,7 @@ class CrossViewMatchingPipeline:
                 translation_only,
                 show_progress=True,
                 local_to_pixel_fn=local_to_pixel_fn,
+                gt_trajectory=gt_trajectory,
             )
         if output_dir is not None:
             self._save_match_results(

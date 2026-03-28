@@ -116,6 +116,11 @@ class CrossViewRPGOParams(ParamsBase):
 
     rerun_match_with_known_rot: bool = True
 
+    # GT inlier selection (bypasses CLIPPER)
+    gt_inliers: bool = False
+    gt_inliers_rot_err_deg: float = 5.0
+    gt_inliers_trans_err_m: float = 1.0
+
     @property
     def rot_consistency_sigma_rad(self) -> float:
         return np.deg2rad(self.rot_consistency_sigma_deg)
