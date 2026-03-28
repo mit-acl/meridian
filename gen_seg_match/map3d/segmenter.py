@@ -211,10 +211,12 @@ class Segmenter(SegmenterBase):
             else:
                 occlusion_edge_mask = self._get_occlusion_edge_mask(depth_data)
 
+        # First pass: filter masks by point cloud, collect surviving entries
+        pending = []
         for mask in masks:
             mask = self.unapply_rotation(mask)
             points = None
-            semantic_descriptor = None
+            original_points = None
 
             # Extract point cloud of object from RGBD
             if depth_data is not None:
@@ -277,8 +279,9 @@ class Segmenter(SegmenterBase):
                 )
             ).astype("uint8")
 
+            # CLIP descriptors computed inline (not batchable)
+            semantic_descriptor = None
             if self.params.semantics == "clip":
-                ### Use bounding box
                 bbox = self.mask_bounding_box(mask.astype("uint8"))
                 min_col, min_row, max_col, max_row = bbox
                 img_bbox = self.apply_rotation(
@@ -291,35 +294,53 @@ class Segmenter(SegmenterBase):
                 clip_embedding = self.semantics_model.encode_image(
                     processed_img.unsqueeze(dim=0)
                 )
-                clip_embedding = clip_embedding.squeeze().cpu().detach().numpy()
-                semantic_descriptor = clip_embedding
-            elif self.params.semantics in ("dino", "dinov3", "dinov3-hf"):
-                assert (
-                    mask.shape[0] == dino_features.shape[0]
-                    and mask.shape[1] == dino_features.shape[1]
-                ), "Mask and DINO features must have the same shape."
-                semantic_descriptor = self._compute_mean_dino_descriptor(
-                    dino_features, mask
-                )
+                semantic_descriptor = clip_embedding.squeeze().cpu().detach().numpy()
 
+            pending.append(
+                {
+                    "mask": mask,
+                    "mask_downsampled": mask_downsampled,
+                    "semantic_descriptor": semantic_descriptor,
+                    "points": points,
+                    "original_points": original_points,
+                }
+            )
+
+        # Batch-compute DINO descriptors for all surviving masks
+        if (
+            self.params.semantics in ("dino", "dinov3", "dinov3-hf")
+            and pending
+            and dino_features is not None
+        ):
+            valid_masks = [entry["mask"] for entry in pending]
+            batch_descriptors = self._compute_batch_mean_dino_descriptors(
+                dino_features, valid_masks
+            )
+            for entry, desc in zip(pending, batch_descriptors):
+                entry["semantic_descriptor"] = desc
+
+        # Second pass: build Observation objects
+        for entry in pending:
             new_observation = Observation(
                 id=len(self.observations),
                 time=t,
                 pose=pose,
-                mask=mask,
-                mask_downsampled=mask_downsampled,
-                semantic_descriptor=semantic_descriptor,
+                mask=entry["mask"],
+                mask_downsampled=entry["mask_downsampled"],
+                semantic_descriptor=entry["semantic_descriptor"],
             )
 
             if depth_data is not None:
-                new_observation.point_cloud = points
-                new_observation.points_beyond_max_depth = original_points[
-                    original_points[:, 2] > self.params.max_depth
+                new_observation.point_cloud = entry["points"]
+                new_observation.points_beyond_max_depth = entry["original_points"][
+                    entry["original_points"][:, 2] > self.params.max_depth
                 ]
                 new_observation.occluded_points = self._compute_occlusion_points(
-                    points=points,
-                    mask=mask,
-                    depth_img=sparse_depth_img if self.params.use_point_cloud else depth_data,
+                    points=entry["points"],
+                    mask=entry["mask"],
+                    depth_img=sparse_depth_img
+                    if self.params.use_point_cloud
+                    else depth_data,
                     occlusion_edge_mask=occlusion_edge_mask,
                 )
 
@@ -426,21 +447,21 @@ class Segmenter(SegmenterBase):
 
         [numMasks, h, w] = masks.shape
 
-        to_delete = []
+        keep = np.ones(numMasks, dtype=bool)
         for maskId in range(numMasks):
             mask_this_id = masks[maskId, :, :]
 
             # filter out small masks
             num_pixels = mask_this_id.astype(np.int8).sum()
             if num_pixels < self._min_mask_pixels(image_bgr.shape):
-                to_delete.append(maskId)
+                keep[maskId] = False
                 continue
 
             # filter out ignore mask
             if ignore_mask is not None and np.any(
                 np.bitwise_and(mask_this_id.astype(np.int8), ignore_mask)
             ):
-                to_delete.append(maskId)
+                keep[maskId] = False
                 continue
 
             if (
@@ -452,10 +473,10 @@ class Segmenter(SegmenterBase):
                     * mask_this_id.astype(np.int8).sum()
                 )
             ):
-                to_delete.append(maskId)
+                keep[maskId] = False
                 continue
 
-        masks = np.delete(masks, to_delete, axis=0)
+        masks = masks[keep]
 
         return masks
 
