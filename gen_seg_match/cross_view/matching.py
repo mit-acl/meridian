@@ -892,6 +892,15 @@ class CrossViewMatching:
             else self.pipeline_params.translation_only
         )
 
+        if not aerial_submaps:
+            raise ValueError(
+                "No aerial submaps provided — check the aerial directory path."
+            )
+        if not ground_submaps:
+            raise ValueError(
+                "No ground submaps provided — check the ground directory path."
+            )
+
         aerial_submaps_2d, ground_submaps_2d = self._preprocess_submaps_2d(
             aerial_submaps, ground_submaps
         )
@@ -1230,27 +1239,28 @@ class CrossViewMatching:
             matched_aerial=matched_aerial,
         )
 
-    def _find_max_intersection_patch(
+    def _find_max_intersection_patches(
         self,
         ground_submap: Submap,
         aerial_submaps_2d: Dict[str, Submap],
         reference_trajectory,
         T_camera_flu: np.ndarray = None,
-    ) -> Optional[str]:
-        """Find the aerial patch with maximum overlap with the ground submap's
+        n: int = 1,
+    ) -> List[str]:
+        """Find the aerial patches with most overlap with the ground submap's
         estimated position circle.
 
         Uses shapely to compute circle-rectangle intersection area.
-        Returns the aerial key of the best patch, or None if no overlap.
+        Returns up to *n* aerial keys sorted by overlap (descending).
         """
         if reference_trajectory is None:
-            return None
+            return []
 
         try:
             from shapely.geometry import Point, box
         except ImportError:
             logger.warning("shapely not installed; max_intersection mode unavailable.")
-            return None
+            return []
 
         ground_pose = reference_trajectory.pose(ground_submap.time)
 
@@ -1276,8 +1286,7 @@ class CrossViewMatching:
         stride_m = stride * pixel_len_m
         patch_size_m = patch_size_px * pixel_len_m
 
-        best_key = None
-        best_area = 0.0
+        overlaps = []
         aerial_key_to_tuple = _aerial_key_to_tuple
 
         for aerial_key in aerial_submaps_2d:
@@ -1288,11 +1297,11 @@ class CrossViewMatching:
             y2_m = y1_m + patch_size_m
             patch_rect = box(x1_m, y1_m, x2_m, y2_m)
             area = ground_circle.intersection(patch_rect).area
-            if area > best_area:
-                best_area = area
-                best_key = aerial_key
+            if area > 0:
+                overlaps.append((area, aerial_key))
 
-        return best_key
+        overlaps.sort(reverse=True)
+        return [key for _, key in overlaps[:n]]
 
     def cross_view_match_max_intersection(
         self,
@@ -1307,9 +1316,19 @@ class CrossViewMatching:
     ) -> CrossViewMatchResult:
         """Cross-view match using max_intersection mode.
 
-        For each ground submap, finds the single best-overlapping aerial patch
-        and matches only against that one.
+        For each ground submap, finds the top-N best-overlapping aerial patches
+        (controlled by ``max_intersection_patches_per_ground_sm``) and matches
+        against each of them.
         """
+        if not aerial_submaps:
+            raise ValueError(
+                "No aerial submaps provided — check the aerial directory path."
+            )
+        if not ground_submaps:
+            raise ValueError(
+                "No ground submaps provided — check the ground directory path."
+            )
+
         do_translation_only = (
             translation_only
             if translation_only is not None
@@ -1336,20 +1355,19 @@ class CrossViewMatching:
             )
             details_for_ground = {}
 
-            best_aerial_key = self._find_max_intersection_patch(
+            n_patches = self.pipeline_params.max_intersection_patches_per_ground_sm
+            best_aerial_keys = self._find_max_intersection_patches(
                 ground_submaps[ground_key],
                 aerial_submaps_2d,
                 reference_trajectory,
                 T_camera_flu,
+                n=n_patches,
             )
 
-            if best_aerial_key is None:
+            if not best_aerial_keys:
                 all_results[ground_key] = results_matrix
                 all_details[ground_key] = details_for_ground
                 continue
-
-            aerial_sm_j = aerial_submaps_2d[best_aerial_key]
-            i_a, j_a = aerial_key_to_tuple(best_aerial_key)
 
             ground_pose_ref = None
             if reference_trajectory is not None:
@@ -1364,20 +1382,24 @@ class CrossViewMatching:
                     pass
             T_ground_odom_ground_robot = ground_sm_i.metadata["camera_pose"]
 
-            single_result = self._match_single_pair(
-                aerial_sm_j,
-                ground_sm_i,
-                reference_trajectory,
-                T_camera_flu,
-                ground_pose_ref,
-                T_ground_odom_ground_robot,
-                do_translation_only,
-                local_to_pixel_fn=local_to_pixel_fn,
-                ground_pose_gt=ground_pose_gt,
-            )
+            for aerial_key in best_aerial_keys:
+                aerial_sm_j = aerial_submaps_2d[aerial_key]
+                i_a, j_a = aerial_key_to_tuple(aerial_key)
 
-            results_matrix[i_a, j_a] = single_result.pose_result
-            details_for_ground[best_aerial_key] = single_result
+                single_result = self._match_single_pair(
+                    aerial_sm_j,
+                    ground_sm_i,
+                    reference_trajectory,
+                    T_camera_flu,
+                    ground_pose_ref,
+                    T_ground_odom_ground_robot,
+                    do_translation_only,
+                    local_to_pixel_fn=local_to_pixel_fn,
+                    ground_pose_gt=ground_pose_gt,
+                )
+
+                results_matrix[i_a, j_a] = single_result.pose_result
+                details_for_ground[aerial_key] = single_result
 
             all_results[ground_key] = results_matrix
             all_details[ground_key] = details_for_ground

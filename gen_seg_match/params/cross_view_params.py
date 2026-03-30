@@ -42,6 +42,7 @@ class CrossViewMatchingParams(ParamsBase):
         None  # None → same as aerial_img_patch_side_len_m
     )
     aerial_img_patch_overlap: float = 0.5
+    max_intersection_patches_per_ground_sm: int = 1
     aerial_min_dist_to_border_m: float = 0.5
 
     match_min_len_m: float = 5.0
