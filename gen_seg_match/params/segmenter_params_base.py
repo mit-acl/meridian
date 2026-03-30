@@ -22,6 +22,7 @@ class SegmenterParamsBase(ParamsBase):
     semantics: str = "dino"
     semantics_dim: int = 768
     semantics_size: str = "base"
+    dino_half: bool = False
     dinov3_path: str = "~/code/dinov3"
     dinov3_weights: str = None
 

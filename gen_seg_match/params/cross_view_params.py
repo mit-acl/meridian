@@ -42,6 +42,7 @@ class CrossViewMatchingParams(ParamsBase):
         None  # None → same as aerial_img_patch_side_len_m
     )
     aerial_img_patch_overlap: float = 0.5
+    max_intersection_patches_per_ground_sm: int = 1
     aerial_min_dist_to_border_m: float = 0.5
 
     match_min_len_m: float = 5.0
@@ -115,6 +116,11 @@ class CrossViewRPGOParams(ParamsBase):
     prior_rot_sigma_deg: float = 10.0
 
     rerun_match_with_known_rot: bool = True
+
+    # GT inlier selection (bypasses CLIPPER)
+    gt_inliers: bool = False
+    gt_inliers_rot_err_deg: float = 5.0
+    gt_inliers_trans_err_m: float = 1.0
 
     @property
     def rot_consistency_sigma_rad(self) -> float:

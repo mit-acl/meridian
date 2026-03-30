@@ -14,8 +14,10 @@ from gen_seg_match.cross_view.rpgo import (
     CrossViewRPGO,
     CrossViewRPGOResult,
     pose_data_from_trajectory,
+    se2_from_xytheta,
     se2_to_se3,
     se3_to_se2,
+    yaw_from_se2,
 )
 from gen_seg_match.map3d.submap import Submap
 from gen_seg_match.params import CrossViewRPGOParams
@@ -164,6 +166,8 @@ class CrossViewLocalization:
             ground_dense_dir = pathlib.Path(main_output_dir) / "ground" / "segments"
 
         # Re-run matching with full viz output via pipeline
+        # reference_trajectory provides the rotation constraint from PGO,
+        # gt_trajectory provides actual ground truth for T_i_j visualization/errors
         match_result = pipeline.run_match(
             aerial_submaps,
             ground_submaps,
@@ -178,6 +182,7 @@ class CrossViewLocalization:
             if data.geotiff_transform is not None
             else None,
             save_viz=save_viz,
+            gt_trajectory=data.gt_pose_data,
         )
 
         # Build candidates from in-memory match result
@@ -288,26 +293,65 @@ class CrossViewLocalization:
                 else:
                     T_odom_ground = ground_camera_pose
 
-                # T_i_j_hat is T_aerialmeter_ground (maps ground to aerial-meter frame)
-                # T_utm_odom = pose_flu @ T_hat @ inv(T_odom_ground)
-                T_utm_odom_4x4 = pose_flu @ T_i_j_hat @ np.linalg.inv(T_odom_ground)
+                # Compute T_utm_body with proper CRS conversion.
+                # pose_flu's linear mapping is inaccurate for non-UTM GeoTIFFs
+                # (e.g. EPSG:3857), so convert via pixel → native CRS → UTM.
+                T_full = pose_flu @ T_i_j_hat
 
                 # Reject improper rotations (reflections) from registration.
-                # Check on T_utm_odom (both frames are z-up) rather than T_i_j_hat
-                # which mixes camera/FLU and aerial-meter frame conventions.
-                if np.linalg.det(T_utm_odom_4x4[:2, :2]) < 0:
+                if np.linalg.det(T_full[:2, :2]) < 0:
                     logger.debug(
                         "Rejecting candidate with reflected rotation "
-                        f"(det(R_2x2)={np.linalg.det(T_utm_odom_4x4[:2, :2]):.4f})"
+                        f"(det(R_2x2)={np.linalg.det(T_full[:2, :2]):.4f})"
                     )
                     continue
 
+                # Yaw from pose_flu @ T_i_j_hat (rotation approx correct)
+                yaw = np.arctan2(T_full[1, 0], T_full[0, 0])
+
+                # Translation via proper CRS pipeline
+                pixel_len_m = data.aerial_img_scale
+                body_col = T_i_j_hat[0, 3] / pixel_len_m
+                body_row = T_i_j_hat[1, 3] / pixel_len_m
+                if (
+                    data.geotiff_transform is not None
+                    and data.native_crs is not None
+                    and data.utm_crs is not None
+                    and data.native_crs != data.utm_crs
+                ):
+                    utm_x, utm_y = data.aerial_pixel_to_utm(body_col, body_row)
+                else:
+                    utm_x = T_full[0, 3]
+                    utm_y = T_full[1, 3]
+
+                T_utm_body_se2 = se2_from_xytheta(utm_x, utm_y, yaw)
+
+                # Derive T_utm_odom from corrected T_utm_body
+                T_utm_odom_4x4 = se2_to_se3(T_utm_body_se2) @ np.linalg.inv(
+                    T_odom_ground
+                )
                 T_utm_odom_se2 = se3_to_se2(T_utm_odom_4x4)
+
+                # Compute GT T_utm_odom for gt_inlier selection
+                T_utm_odom_gt_se2 = None
+                if data.gt_pose_data is not None:
+                    try:
+                        gt_pose = data.gt_pose_data.pose(ground_submap.time)
+                        if data.T_camera_flu is not None:
+                            gt_body = gt_pose @ data.T_camera_flu
+                        else:
+                            gt_body = gt_pose
+                        T_utm_odom_gt = gt_body @ np.linalg.inv(T_odom_ground)
+                        T_utm_odom_gt_se2 = se3_to_se2(T_utm_odom_gt)
+                    except Exception:
+                        pass
 
                 candidates.append(
                     {
                         "T_utm_odom_se2": T_utm_odom_se2,
+                        "T_utm_body_se2": T_utm_body_se2,
                         "T_i_j_hat": T_i_j_hat,
+                        "T_i_j": result.T_i_j,
                         "aerial_pose": pose_flu,
                         "ground_camera_pose": ground_camera_pose,
                         "T_odom_ground": T_odom_ground,
@@ -315,6 +359,7 @@ class CrossViewLocalization:
                         "aerial_key": f"{idx[0]}_{idx[1]}",
                         "num_associations": result.num_associations,
                         "ground_submap_time": ground_submap.time,
+                        "T_utm_odom_gt_se2": T_utm_odom_gt_se2,
                     }
                 )
 
@@ -355,24 +400,60 @@ class CrossViewLocalization:
                 else:
                     T_odom_ground = ground_camera_pose
 
-                T_utm_odom_4x4 = pose_flu @ T_i_j_hat @ np.linalg.inv(T_odom_ground)
+                # Compute T_utm_body with proper CRS conversion
+                T_full = pose_flu @ T_i_j_hat
 
                 # Reject improper rotations (reflections) from registration.
-                # Check on T_utm_odom (both frames are z-up) rather than T_i_j_hat
-                # which mixes camera/FLU and aerial-meter frame conventions.
-                if np.linalg.det(T_utm_odom_4x4[:2, :2]) < 0:
+                if np.linalg.det(T_full[:2, :2]) < 0:
                     logger.debug(
                         "Rejecting candidate with reflected rotation "
-                        f"(det(R_2x2)={np.linalg.det(T_utm_odom_4x4[:2, :2]):.4f})"
+                        f"(det(R_2x2)={np.linalg.det(T_full[:2, :2]):.4f})"
                     )
                     continue
 
+                yaw = np.arctan2(T_full[1, 0], T_full[0, 0])
+
+                pixel_len_m = data.aerial_img_scale
+                body_col = T_i_j_hat[0, 3] / pixel_len_m
+                body_row = T_i_j_hat[1, 3] / pixel_len_m
+                if (
+                    data.geotiff_transform is not None
+                    and data.native_crs is not None
+                    and data.utm_crs is not None
+                    and data.native_crs != data.utm_crs
+                ):
+                    utm_x, utm_y = data.aerial_pixel_to_utm(body_col, body_row)
+                else:
+                    utm_x = T_full[0, 3]
+                    utm_y = T_full[1, 3]
+
+                T_utm_body_se2 = se2_from_xytheta(utm_x, utm_y, yaw)
+
+                T_utm_odom_4x4 = se2_to_se3(T_utm_body_se2) @ np.linalg.inv(
+                    T_odom_ground
+                )
                 T_utm_odom_se2 = se3_to_se2(T_utm_odom_4x4)
+
+                # Compute GT T_utm_odom for gt_inlier selection
+                T_utm_odom_gt_se2 = None
+                if data.gt_pose_data is not None:
+                    try:
+                        gt_pose = data.gt_pose_data.pose(ground_submap.time)
+                        if data.T_camera_flu is not None:
+                            gt_body = gt_pose @ data.T_camera_flu
+                        else:
+                            gt_body = gt_pose
+                        T_utm_odom_gt = gt_body @ np.linalg.inv(T_odom_ground)
+                        T_utm_odom_gt_se2 = se3_to_se2(T_utm_odom_gt)
+                    except Exception:
+                        pass
 
                 candidates.append(
                     {
                         "T_utm_odom_se2": T_utm_odom_se2,
+                        "T_utm_body_se2": T_utm_body_se2,
                         "T_i_j_hat": T_i_j_hat,
+                        "T_i_j": result.T_i_j,
                         "aerial_pose": pose_flu,
                         "ground_camera_pose": ground_camera_pose,
                         "T_odom_ground": T_odom_ground,
@@ -380,6 +461,7 @@ class CrossViewLocalization:
                         "aerial_key": f"{idx[0]}_{idx[1]}",
                         "num_associations": result.num_associations,
                         "ground_submap_time": ground_submap.time,
+                        "T_utm_odom_gt_se2": T_utm_odom_gt_se2,
                     }
                 )
 
@@ -566,23 +648,27 @@ class CrossViewLocalization:
 
         inlier_utm = []
         raw_utm = []
+        raw_yaws = []
+        raw_ground_keys = []
         for idx in inlier_indices:
             c = candidates[idx]
             ground_time = c["ground_submap_time"]
             traj_idx = int(np.argmin(np.abs(traj_times - ground_time)))
             # Optimized position
             inlier_utm.append(optimized_traj[traj_idx][:2, 3])
-            # Raw measurement position
-            T_odom_body = ground_map.trajectory[traj_idx]
-            if T_cam_flu is not None:
-                T_odom_body = T_odom_body @ T_cam_flu
-            T_utm_body_raw = se2_to_se3(c["T_utm_odom_se2"]) @ T_odom_body
-            raw_utm.append(T_utm_body_raw[:2, 3])
+            # Raw measurement position directly from registration (no lever arm)
+            T_utm_body_se2 = c["T_utm_body_se2"]
+            raw_utm.append(T_utm_body_se2[:2, 2])
+            raw_yaws.append(yaw_from_se2(T_utm_body_se2))
+            raw_ground_keys.append(c["ground_key"])
 
         inlier_utm = np.array(inlier_utm)
         raw_utm = np.array(raw_utm)
         inlier_px = utm_to_pixel(inlier_utm)
         raw_px = utm_to_pixel(raw_utm)
+
+        # Axis length in pixels for raw measurement orientation
+        axis_len_px = 12
 
         # Draw residual lines from optimized to raw measurement
         for i in range(len(inlier_indices)):
@@ -597,18 +683,40 @@ class CrossViewLocalization:
         ax.plot(
             inlier_px[:, 0],
             inlier_px[:, 1],
-            "r*",
+            "m*",
             markersize=8,
             label=f"Inliers ({len(inlier_indices)})",
         )
-        # Draw dots at raw measurement positions
-        ax.plot(
-            raw_px[:, 0],
-            raw_px[:, 1],
-            "ro",
-            markersize=4,
-            alpha=0.7,
-        )
+        # Draw raw measurement axes (x=red, y=green) and ground key labels
+        for i in range(len(inlier_indices)):
+            yaw = raw_yaws[i]
+            ox, oy = raw_px[i, 0], raw_px[i, 1]
+            # x-axis (red): UTM +x maps to pixel +x, UTM +y maps to pixel -y
+            dx_x, dx_y = np.cos(yaw), -np.sin(yaw)
+            ax.plot(
+                [ox, ox + axis_len_px * dx_x],
+                [oy, oy + axis_len_px * dx_y],
+                "r-",
+                linewidth=1.5,
+            )
+            # y-axis (green): 90° CCW from x in UTM, but pixel y is flipped
+            dy_x, dy_y = -np.sin(yaw), -np.cos(yaw)
+            ax.plot(
+                [ox, ox + axis_len_px * dy_x],
+                [oy, oy + axis_len_px * dy_y],
+                "g-",
+                linewidth=1.5,
+            )
+            # Ground submap label
+            ax.text(
+                ox + 4,
+                oy - 4,
+                raw_ground_keys[i],
+                fontsize=4,
+                color="r",
+                ha="left",
+                va="bottom",
+            )
 
         ax.legend()
         ax.set_title("Cross-View Localization")

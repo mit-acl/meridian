@@ -162,6 +162,19 @@ class Segmenter(SegmenterBase):
 
         if self.params.use_point_cloud:
             pcl, pcl_proj = depth_data
+            # Build a sparse depth image from the point cloud projections
+            # so occlusion edge logic can index it like a dense depth image.
+            h, w = img_bgr.shape[:2]
+            sparse_depth_img = np.zeros((h, w), dtype=np.float32)
+            valid = (
+                (pcl_proj[:, 0] >= 0)
+                & (pcl_proj[:, 0] < w)
+                & (pcl_proj[:, 1] >= 0)
+                & (pcl_proj[:, 1] < h)
+            )
+            sparse_depth_img[pcl_proj[valid, 1], pcl_proj[valid, 0]] = (
+                pcl[valid, 2] * self.params.depth_scale
+            )
 
         if self.run_yolo:
             ignore_mask, keep_mask = self._create_mask(img_bgr)
@@ -306,7 +319,9 @@ class Segmenter(SegmenterBase):
                 new_observation.occluded_points = self._compute_occlusion_points(
                     points=points,
                     mask=mask,
-                    depth_img=depth_data,
+                    depth_img=sparse_depth_img
+                    if self.params.use_point_cloud
+                    else depth_data,
                     occlusion_edge_mask=occlusion_edge_mask,
                 )
 
@@ -413,21 +428,21 @@ class Segmenter(SegmenterBase):
 
         [numMasks, h, w] = masks.shape
 
-        to_delete = []
+        keep = np.ones(numMasks, dtype=bool)
         for maskId in range(numMasks):
             mask_this_id = masks[maskId, :, :]
 
             # filter out small masks
             num_pixels = mask_this_id.astype(np.int8).sum()
             if num_pixels < self._min_mask_pixels(image_bgr.shape):
-                to_delete.append(maskId)
+                keep[maskId] = False
                 continue
 
             # filter out ignore mask
             if ignore_mask is not None and np.any(
                 np.bitwise_and(mask_this_id.astype(np.int8), ignore_mask)
             ):
-                to_delete.append(maskId)
+                keep[maskId] = False
                 continue
 
             if (
@@ -439,10 +454,10 @@ class Segmenter(SegmenterBase):
                     * mask_this_id.astype(np.int8).sum()
                 )
             ):
-                to_delete.append(maskId)
+                keep[maskId] = False
                 continue
 
-        masks = np.delete(masks, to_delete, axis=0)
+        masks = masks[keep]
 
         return masks
 
@@ -560,10 +575,14 @@ class Segmenter(SegmenterBase):
 
         # For point cloud mode, skip depth-image-based occlusion pixel extraction
         # since we don't have a dense depth image to index into.
-        if not self.params.use_point_cloud and occlusion_edge_mask.size > 0:
+        if occlusion_edge_mask.size > 0:
             occluded_pixels = np.array(
                 np.where(np.bitwise_and(mask.astype(bool), occlusion_edge_mask))
             ).T  # (y, x)
+            # no edge occlusions for this mask, return just depth-based points
+            if occluded_pixels.size == 0:
+                return occluded_points
+
             occluded_pixels_depths = (
                 depth_img[occluded_pixels[:, 0], occluded_pixels[:, 1]]
                 / self.params.depth_scale
