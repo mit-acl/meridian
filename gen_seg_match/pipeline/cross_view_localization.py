@@ -798,6 +798,11 @@ def cross_view_localization(
     data_params = CrossViewLocalizationDataParams.load(params)
     data = CrossViewLocalizationData.from_params(data_params)
 
+    # Save localization params (merges with matching params already in params.txt)
+    from gen_seg_match.utils import save_params
+
+    save_params(output_dir, rpgo_params, data_params)
+
     # Build pipeline + load submaps for rerun if enabled
     pipeline = None
     aerial_submaps = None
@@ -808,7 +813,6 @@ def cross_view_localization(
             CrossViewMatchingParams,
             CrossViewPlaceRecognitionParams,
             AerialSegmenterParams,
-            SubmapParams,
             RegisterParams,
         )
         from gen_seg_match.cross_view.place_recognition import CrossViewPlaceRecognition
@@ -833,7 +837,6 @@ def cross_view_localization(
             matcher=SegmentMatcher(segment_match_params),
             registerer=Registerer(RegisterParams.load(params)),
             aerial_segmenter=AerialSegmenter(AerialSegmenterParams.load(params)),
-            ground_submap_params=SubmapParams.load(params),
             place_recognition=place_recognition,
         )
         # Sync aerial segmenter pixel size with data
@@ -944,7 +947,6 @@ if __name__ == "__main__":
             CrossViewMatchingParams,
             CrossViewPlaceRecognitionParams,
             AerialSegmenterParams,
-            SubmapParams,
             RegisterParams,
         )
         from gen_seg_match.cross_view.place_recognition import CrossViewPlaceRecognition
@@ -969,7 +971,6 @@ if __name__ == "__main__":
             matcher=SegmentMatcher(segment_match_params),
             registerer=Registerer(RegisterParams.load(args.params)),
             aerial_segmenter=AerialSegmenter(AerialSegmenterParams.load(args.params)),
-            ground_submap_params=SubmapParams.load(args.params),
             place_recognition=place_recognition,
         )
         # Sync aerial segmenter pixel size with data

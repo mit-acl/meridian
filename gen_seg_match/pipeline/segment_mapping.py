@@ -1,7 +1,6 @@
 import numpy as np
 import os
 import argparse
-import shutil
 import tqdm
 import time
 import cv2 as cv
@@ -362,13 +361,11 @@ def segment_mapping(
     # except Exception as e:
     #     print(f"Warning: could not render 3D visualization: {e}")
 
-    # Copy params to output dir
-    if os.path.isfile(params_path):
-        shutil.copy2(
-            params_path, os.path.join(output_dir, os.path.basename(params_path))
-        )
-    else:
-        shutil.copytree(params_path, output_dir, dirs_exist_ok=True)
+    # Save all params (including defaults) and commit hash
+    from gen_seg_match.utils import save_params, save_commit_hash
+
+    save_params(output_dir, mapping_params, data_params, segmenter_params)
+    save_commit_hash(output_dir)
 
     print("Done.")
 

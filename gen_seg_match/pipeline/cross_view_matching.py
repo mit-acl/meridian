@@ -10,7 +10,6 @@ import pathlib
 import matplotlib
 import matplotlib.pyplot as plt
 import pickle
-import shutil
 
 from gen_seg_match.params import (
     SegmentMatchParams,
@@ -18,7 +17,6 @@ from gen_seg_match.params import (
     CrossViewLocalizationDataParams,
     CrossViewPlaceRecognitionParams,
     AerialSegmenterParams,
-    SubmapParams,
     RegisterParams,
 )
 from gen_seg_match.cross_view.place_recognition import CrossViewPlaceRecognition
@@ -725,7 +723,6 @@ def cross_view_matching(
         matcher=SegmentMatcher(segment_match_params),
         registerer=Registerer(RegisterParams.load(params)),
         aerial_segmenter=AerialSegmenter(AerialSegmenterParams.load(params)),
-        ground_submap_params=SubmapParams.load(params),
         place_recognition=place_recognition,
     )
     pipeline = CrossViewMatchingPipeline(algorithm=algorithm)
@@ -760,17 +757,19 @@ def cross_view_matching(
 
     match_output_dir = os.path.join(output_dir, "match")
 
-    # copy params to main output directory
-    if os.path.isfile(params):
-        # don't copy if params is already in output_dir
-        if not os.path.exists(
-            os.path.join(output_dir, os.path.basename(params))
-        ) or not os.path.samefile(
-            params, os.path.join(output_dir, os.path.basename(params))
-        ):
-            shutil.copy2(params, os.path.join(output_dir, os.path.basename(params)))
-    else:
-        shutil.copytree(params, output_dir, dirs_exist_ok=True)
+    # Save all params (including defaults) and commit hash
+    from gen_seg_match.utils import save_params, save_commit_hash
+
+    all_params = [
+        pipeline_params,
+        segment_match_params,
+        algorithm.registerer.params,
+        algorithm.aerial_segmenter.params,
+    ]
+    if pr_params is not None:
+        all_params.append(pr_params)
+    save_params(output_dir, *all_params)
+    save_commit_hash(output_dir)
 
     # Extract aerial segments
     if not skip_aerial:
