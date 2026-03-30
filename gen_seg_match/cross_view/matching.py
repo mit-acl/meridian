@@ -20,7 +20,6 @@ from gen_seg_match.match.segment_matcher import SegmentMatcher
 from gen_seg_match.params import (
     CrossViewMatchingParams,
     GroundSegmenterParams,
-    SubmapParams,
 )
 from gen_seg_match.pipeline.result import (
     PoseEstimationResult,
@@ -461,17 +460,12 @@ class CrossViewMatching:
     aerial_segmenter: AerialSegmenter
     matcher: SegmentMatcher
     registerer: Registerer
-    ground_submap_params: SubmapParams = (
-        None  # TODO This shouldn't be used anymore... Remove?
-    )
     ground_segmenter: GroundSegmenter = None
     place_recognition: CrossViewPlaceRecognition = None
 
     def __post_init__(self):
         if self.ground_segmenter is None:
             self.ground_segmenter = GroundSegmenter(GroundSegmenterParams())
-        if self.ground_submap_params is None:
-            self.ground_submap_params = SubmapParams()
 
     # ------------------------------------------------------------------
     # Single-patch methods (unchanged from original)

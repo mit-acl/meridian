@@ -272,7 +272,6 @@ def cross_view_place_recognition(
         SegmentMatchParams,
         AerialSegmenterParams,
         RegisterParams,
-        SubmapParams,
     )
     from gen_seg_match.match.segment_matcher import SegmentMatcher
     from gen_seg_match.register.registerer import Registerer
@@ -284,7 +283,6 @@ def cross_view_place_recognition(
         matcher=SegmentMatcher(SegmentMatchParams.load(params)),
         registerer=Registerer(RegisterParams.load(params)),
         aerial_segmenter=AerialSegmenter(AerialSegmenterParams.load(params)),
-        ground_submap_params=SubmapParams.load(params),
     )
 
     aerial_seg_dir = os.path.join(

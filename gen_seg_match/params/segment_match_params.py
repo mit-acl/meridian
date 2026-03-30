@@ -45,25 +45,25 @@ class SegmentMatchParams(ParamsBase):
     # Parameters
     dim: int = 3
     ratio_feature_dim: int = 0
-    cos_feature_dim: int = 0
-    sigma_dist: float = 0.4
-    epsilon_dist: float = 0.6
-    min_dist: float = 0.0
-    sigma_angle_rad: float = np.deg2rad(10.0)
+    cos_feature_dim: int = 1024
+    sigma_dist: float = 2.0
+    epsilon_dist: float = 2.0
+    min_dist: float = 3.0
+    sigma_angle_rad: float = np.deg2rad(20.0)
     epsilon_angle_rad: float = np.deg2rad(20.0)
-    min_angle_rad: float = 0.0
+    min_angle_rad: float = np.deg2rad(10.0)
     distance_weight: float = 1.0
     ratio_weight: float = 1.0
     cosine_weight: float = 1.0
     ratio_epsilon: np.ndarray = field(default_factory=lambda: np.zeros(0))
-    cosine_min: float = 0.5
-    cosine_max: float = 0.7
+    cosine_min: float = 0.2
+    cosine_max: float = 0.5
     z_dir_constrained: bool = False
     xyz_dir_constrained: bool = False
     xy_dir_constrained_2d: bool = False
-    rot_unc_ang_rad: float = 0.0
+    rot_unc_ang_rad: float = np.deg2rad(20.0)
     point_noise_from_angle: bool = True
-    k_nearest_neighbors: int = None  # None = all-to-all (current behavior)
+    k_nearest_neighbors: int = 5  # None = all-to-all
 
     def to_clipper(
         self,

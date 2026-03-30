@@ -10,7 +10,7 @@ class SegmenterParams(SegmenterParamsBase):
     params_key: ClassVar[str] = "segmenter"
 
     # Override base default
-    frame_descriptor: str = "dino-gem"
+    # None now
 
     # Ground-specific fields
     yolo_weights_path: str = "$ROMAN_WEIGHTS/yolov7.pt"
@@ -33,7 +33,7 @@ class SegmenterParams(SegmenterParamsBase):
     occlusion_edge_img_frac: float = 0.02
     occlusion_edge_max_img_frac: float = 0.15
     occlusion_max_depth: float = 7.0
-    outlier_removal_std: float = None
+    outlier_removal_std: float = 1.0
     outlier_removal_dbscan_eps: float = 0.5
     outlier_removal_dbscan_min_points: int = 10
     min_occluded_unoccluded_dist_m: float = 0.1
