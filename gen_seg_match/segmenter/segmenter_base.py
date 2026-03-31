@@ -22,8 +22,14 @@ class SegmenterBase:
         self.params = params
         self.semantic_patches_shape = None
 
-        self._init_segmentation_model()
-        self._init_semantics_model()
+        # Lazy-init flags — models loaded on first use
+        self._segmentation_model_loaded = False
+        self._semantics_model_loaded = False
+        self._anyloc_loaded = False
+
+        self.model = None
+        self.semantics_model = None
+        self.semantics_preprocess = None
 
         self.frame_descriptor_type = params.frame_descriptor
         self._anyloc_extractor = None
@@ -36,8 +42,21 @@ class SegmenterBase:
             ), (
                 "Frame descriptor only supported with DINO, DINOv3, DINOv3-HF semantics, or 'anyloc'."
             )
-            if params.frame_descriptor == "anyloc":
-                self._init_anyloc()
+
+    def _ensure_segmentation_model(self):
+        if not self._segmentation_model_loaded:
+            self._init_segmentation_model()
+            self._segmentation_model_loaded = True
+
+    def _ensure_semantics_model(self):
+        if not self._semantics_model_loaded:
+            self._init_semantics_model()
+            self._semantics_model_loaded = True
+
+    def _ensure_anyloc(self):
+        if not self._anyloc_loaded:
+            self._init_anyloc()
+            self._anyloc_loaded = True
 
     def _init_segmentation_model(self):
         if self.params.get_model_type() == "fastsam":
@@ -64,6 +83,8 @@ class SegmenterBase:
             self.semantics_model = AutoModel.from_pretrained(dino_model_name)
             self.semantics_model.eval()
             self.semantics_model.to(self.params.device)
+            if self.params.dino_half:
+                self.semantics_model.half()
             self._num_register_tokens = 0
         elif self.params.semantics.lower() == "dinov3-hf":
             size_to_hf_name = {
@@ -83,6 +104,8 @@ class SegmenterBase:
             self.semantics_model = AutoModel.from_pretrained(hf_name)
             self.semantics_model.eval()
             self.semantics_model.to(self.params.device)
+            if self.params.dino_half:
+                self.semantics_model.half()
             self._num_register_tokens = self.semantics_model.config.num_register_tokens
         elif self.params.semantics.lower() == "dinov3":
             import torchvision.transforms as T
@@ -106,6 +129,8 @@ class SegmenterBase:
             )
             self.semantics_model.eval()
             self.semantics_model.to(self.params.device)
+            if self.params.dino_half:
+                self.semantics_model.half()
             self.dinov3_transform = T.Compose(
                 [
                     T.ToTensor(),
@@ -127,15 +152,50 @@ class SegmenterBase:
         Returns:
             masks: (N, H, W) numpy array of binary masks, or empty list if none found.
         """
+        self._ensure_segmentation_model()
         if self.params.get_model_type() == "fastsam":
-            everything_results = self.model(
-                image_rgb,
-                retina_masks=True,
-                device=self.params.device,
-                imgsz=self.params.imgsz,
-                conf=self.params.conf,
-                iou=self.params.iou,
-            )
+            # Cache the predictor to avoid per-frame warmup + AutoBackend init.
+            # We call preprocess/model/postprocess directly instead of going
+            # through stream_inference, which has issues with empty results
+            # on reused predictors and adds unnecessary cuda_synchronize overhead.
+            if (
+                not hasattr(self, "_fastsam_predictor")
+                or self._fastsam_predictor is None
+            ):
+                from fastsam.predict import FastSAMPredictor
+
+                overrides = self.model.overrides.copy()
+                overrides["retina_masks"] = True
+                overrides["device"] = self.params.device
+                overrides["imgsz"] = self.params.imgsz
+                overrides["conf"] = self.params.conf
+                overrides["iou"] = self.params.iou
+                overrides["mode"] = "predict"
+                overrides["save"] = False
+                self._fastsam_predictor = FastSAMPredictor(overrides=overrides)
+                self._fastsam_predictor.setup_model(
+                    model=self.model.model, verbose=False
+                )
+                # Trigger warmup once
+                self._fastsam_predictor.setup_source(image_rgb)
+                self._fastsam_predictor.model.warmup(
+                    imgsz=(1, 3, *self._fastsam_predictor.imgsz)
+                )
+                self._fastsam_predictor.done_warmup = True
+
+            pred = self._fastsam_predictor
+            pred.setup_source(image_rgb)
+            for batch in pred.dataset:
+                pred.batch = batch
+                _, im0s, _, _ = batch
+                im = pred.preprocess(im0s)
+                preds = pred.model(im)
+                everything_results = pred.postprocess(preds, im, im0s)
+                break  # single image, one batch
+
+            if not everything_results or everything_results[0].masks is None:
+                return []
+
             prompt_process = FastSAMPrompt(
                 image_rgb, everything_results, device=self.params.device
             )
@@ -169,11 +229,14 @@ class SegmenterBase:
                 per_pixel_features: (H, W, C) tensor of per-pixel features.
                 output_patches: (1, h, w, C) tensor of patch features.
         """
+        self._ensure_semantics_model()
         if self.params.semantics in ("dino", "dinov3-hf"):
             img_rgb = cv.cvtColor(img_bgr, cv.COLOR_BGR2RGB)
             preprocessed = self.semantics_preprocess(
                 images=img_rgb, return_tensors="pt"
             ).to(self.params.device)
+            if self.params.dino_half:
+                preprocessed["pixel_values"] = preprocessed["pixel_values"].half()
             dino_output = self.semantics_model(**preprocessed)
             output_patches = self.get_output_patches(
                 model_output=dino_output.last_hidden_state,
@@ -189,6 +252,8 @@ class SegmenterBase:
             img_tensor = (
                 self.dinov3_transform(img_rgb).unsqueeze(0).to(self.params.device)
             )
+            if self.params.dino_half:
+                img_tensor = img_tensor.half()
             with torch.no_grad():
                 features = self.semantics_model.get_intermediate_layers(
                     img_tensor, n=1, reshape=True, return_class_token=False, norm=True
@@ -213,7 +278,7 @@ class SegmenterBase:
             Normalized 1-D numpy array of shape (C,).
         """
         with torch.no_grad():
-            features_flat = patch_features.reshape(-1, patch_features.shape[-1])
+            features_flat = patch_features.reshape(-1, patch_features.shape[-1]).float()
             cubed = torch.mean(features_flat**3, dim=0)
             descriptor = torch.sign(cubed) * (
                 torch.abs(cubed).clamp(min=1e-12) ** (1.0 / 3)
@@ -231,11 +296,38 @@ class SegmenterBase:
         Returns:
             Normalized 1-D numpy array of shape (C,).
         """
-        dino_mask = dino_features[mask.astype(bool)]  # num-pixels x C
-        dino_mask = dino_mask.cpu().detach().numpy()
-        mean_dino = np.mean(dino_mask, axis=0)
-        mean_dino = mean_dino / np.linalg.norm(mean_dino)
-        return mean_dino
+        with torch.no_grad():
+            mask_tensor = torch.from_numpy(mask.astype(bool)).to(dino_features.device)
+            dino_mask = dino_features[mask_tensor].float()  # (K, C) on GPU, float32
+            mean_dino = dino_mask.mean(dim=0)  # (C,) on GPU
+            mean_dino = mean_dino / mean_dino.norm()
+        return mean_dino.cpu().numpy()
+
+    def _compute_batch_mean_dino_descriptors(self, dino_features, masks):
+        """Compute normalized mean DINO descriptors for multiple masks at once.
+
+        Uses a single GPU matmul instead of per-mask transfers.
+
+        Args:
+            dino_features: (H, W, C) tensor of per-pixel features on GPU.
+            masks: list of (H, W) numpy binary masks.
+
+        Returns:
+            List of normalized numpy arrays, each of shape (C,).
+        """
+        with torch.no_grad():
+            H, W, C = dino_features.shape
+            # Cast to float32 for accumulation to avoid float16 overflow
+            features_flat = dino_features.reshape(H * W, C).float()
+            mask_np = np.stack([m.astype(bool).ravel() for m in masks])
+            mask_tensor = torch.from_numpy(mask_np.astype(np.float32)).to(
+                dino_features.device
+            )
+            counts = mask_tensor.sum(dim=1, keepdim=True).clamp(min=1)
+            means = (mask_tensor @ features_flat) / counts
+            norms = means.norm(dim=1, keepdim=True).clamp(min=1e-12)
+            descriptors = means / norms
+        return list(descriptors.cpu().numpy())
 
     def get_output_patches(
         self, model_output: ArrayLike, img_shape: ArrayLike, feature_dim: int
@@ -376,6 +468,7 @@ class SegmenterBase:
         Returns:
             Normalized 1-D numpy array of shape (num_clusters * desc_dim,).
         """
+        self._ensure_anyloc()
         import torchvision.transforms as tvf
         from PIL import Image as PILImage
 

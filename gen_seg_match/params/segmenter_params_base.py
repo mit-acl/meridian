@@ -13,15 +13,16 @@ class SegmenterParamsBase(ParamsBase):
     # Segmentation model
     model_type: str = "fastsam"
     weights_path: str = "$ROMAN_WEIGHTS/FastSAM-x.pt"
-    imgsz: Tuple[int, int] = (256, 256)
+    imgsz: Tuple[int, int] = (1024, 1024)
     conf: float = 0.5
     iou: float = 0.9
     device: str = "cuda"
 
     # Semantics
     semantics: str = "dino"
-    semantics_dim: int = 768
-    semantics_size: str = "base"
+    semantics_dim: int = 1024
+    semantics_size: str = "large"
+    dino_half: bool = False
     dinov3_path: str = "~/code/dinov3"
     dinov3_weights: str = None
 
@@ -29,7 +30,7 @@ class SegmenterParamsBase(ParamsBase):
     triangle_ignore_masks: List[
         Tuple[Tuple[int, int], Tuple[int, int], Tuple[int, int]]
     ] = None
-    frame_descriptor: str = None
+    frame_descriptor: str = "anyloc"
 
     # AnyLoc params (used when frame_descriptor == "anyloc")
     anyloc_path: str = "~/code/AnyLoc"

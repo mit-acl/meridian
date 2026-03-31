@@ -110,6 +110,22 @@ class CrossViewLocalizationData:
         row = (native_y - self.geotiff_transform.f) / self.geotiff_transform.e
         return col, row
 
+    def aerial_pixel_to_utm(self, col: float, row: float):
+        """Convert image pixel (col, row) to absolute UTM (x, y)."""
+        native_x = self.geotiff_transform.c + col * self.geotiff_transform.a
+        native_y = self.geotiff_transform.f + row * self.geotiff_transform.e
+        if (
+            self.geotiff_transform is not None
+            and self.native_crs is not None
+            and self.utm_crs is not None
+            and self.native_crs != self.utm_crs
+        ):
+            xs, ys = warp_transform(
+                self.native_crs, self.utm_crs, [native_x], [native_y]
+            )
+            return float(xs[0]), float(ys[0])
+        return native_x, native_y
+
     def aerial_utm_to_pixel(self, utm_xy: np.ndarray) -> np.ndarray:
         """Convert absolute UTM XY coordinates to aerial image pixel (col, row).
 

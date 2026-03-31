@@ -32,8 +32,8 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 
-def _ground_seg_to_utm(seg, submap: Submap, gt_pose_data: PoseData):
-    """Return a copy of `seg` transformed to the UTM frame."""
+def _ground_seg_to_utm_2d(seg, submap: Submap, gt_pose_data: PoseData):
+    """Return a 2-D (XY) UTM copy of a ground segment."""
     if submap.segment_frame == FrameType.CAMERA:
         # segments are in camera frame at observation time — use segment mean time
         t_mean = (seg.first_seen + seg.last_seen) / 2.0
@@ -51,14 +51,46 @@ def _ground_seg_to_utm(seg, submap: Submap, gt_pose_data: PoseData):
         )
     seg_utm = seg.to_dim(3).copy()
     seg_utm.transform(T)
-    return seg_utm
+    return seg_utm.to_dim(2)
 
 
-def _aerial_seg_to_utm(seg, submap: Submap):
-    """Return a UTM-frame copy of an aerial segment, applying submap.pose to get absolute UTM."""
+def _aerial_seg_to_utm_2d(seg, submap: Submap):
+    """Return a 2-D (XY) UTM copy of an aerial segment."""
     seg_utm = seg.to_dim(3).copy()
     seg_utm.transform(submap.pose)
-    return seg_utm
+    return seg_utm.to_dim(2)
+
+
+def _pad_to_homogeneous(pt):
+    """Pad a 2D or 3D point to a 4-element homogeneous vector."""
+    pt = np.asarray(pt).flatten()
+    if len(pt) == 2:
+        return np.array([pt[0], pt[1], 0.0, 1.0])
+    return np.array([pt[0], pt[1], pt[2], 1.0])
+
+
+def _ground_submap_utm_centroid_xy(submap: Submap, gt_pose_data: PoseData):
+    """Return the 2-D XY UTM centroid of a ground submap's segments."""
+    if submap.segment_frame == FrameType.CAMERA:
+        T = gt_pose_data.pose(submap.time)
+    elif submap.segment_frame == FrameType.ODOMETRY:
+        T_utm_cam = gt_pose_data.pose(submap.time)
+        T_odom_cam = submap.metadata["camera_pose"]
+        T = T_utm_cam @ np.linalg.inv(T_odom_cam)
+    else:
+        raise ValueError(f"Unsupported ground segment_frame: {submap.segment_frame}")
+    pts = np.array([seg.point.flatten() for seg in submap.segments])
+    centroid_local = pts.mean(axis=0)
+    centroid_utm = (T @ _pad_to_homogeneous(centroid_local))[:2]
+    return centroid_utm
+
+
+def _aerial_submap_utm_centroid_xy(submap: Submap):
+    """Return the 2-D XY UTM centroid of an aerial submap's segments."""
+    pts = np.array([seg.point.flatten() for seg in submap.segments])
+    centroid_local = pts.mean(axis=0)
+    centroid_utm = (submap.pose @ _pad_to_homogeneous(centroid_local))[:2]
+    return centroid_utm
 
 
 def _seg_point_2d(seg_utm):
@@ -215,6 +247,16 @@ def semantic_match_evaluation(params_path: str, output_dir: str, run: str = None
             g_sm = ground_submaps[g_key]
             a_sm = aerial_submaps[a_key]
 
+            # ---- skip non-overlapping submap pairs -------------------------
+            try:
+                g_xy = _ground_submap_utm_centroid_xy(g_sm, gt_pose_data)
+                a_xy = _aerial_submap_utm_centroid_xy(a_sm)
+                submap_dist = np.linalg.norm(g_xy - a_xy)
+                if submap_dist > params.submap_max_dist_m:
+                    continue
+            except Exception:
+                continue
+
             # ---- POINTS ----------------------------------------------------
             if len(point_match_sims) < n_point_target:
                 g_points = list(g_sm.segments.get_points())
@@ -228,13 +270,13 @@ def semantic_match_evaluation(params_path: str, output_dir: str, run: str = None
                         continue
                     # transform ground segment to UTM
                     try:
-                        g_utm = _ground_seg_to_utm(g_seg, g_sm, gt_pose_data)
+                        g_utm = _ground_seg_to_utm_2d(g_seg, g_sm, gt_pose_data)
                     except Exception:
                         continue
                     g_xy = _seg_point_2d(g_utm)
 
                     # pre-transform all aerial points for this submap
-                    a_utms = [_aerial_seg_to_utm(a, a_sm) for a in a_points]
+                    a_utms = [_aerial_seg_to_utm_2d(a, a_sm) for a in a_points]
                     a_xys = [_seg_point_2d(a) for a in a_utms]
 
                     random.shuffle(paired := list(zip(a_points, a_utms, a_xys)))
@@ -259,7 +301,7 @@ def semantic_match_evaluation(params_path: str, output_dir: str, run: str = None
                             if o_g.id == g_seg.id or o_g.cos_feature is None:
                                 continue
                             try:
-                                o_g_utm = _ground_seg_to_utm(o_g, g_sm, gt_pose_data)
+                                o_g_utm = _ground_seg_to_utm_2d(o_g, g_sm, gt_pose_data)
                             except Exception:
                                 continue
                             if (
@@ -293,6 +335,7 @@ def semantic_match_evaluation(params_path: str, output_dir: str, run: str = None
             if len(line_match_sims) < n_line_target:
                 g_lines = list(g_sm.segments.get_lines())
                 a_lines = list(a_sm.segments.get_lines())
+
                 random.shuffle(g_lines)
 
                 for g_seg in g_lines:
@@ -301,11 +344,11 @@ def semantic_match_evaluation(params_path: str, output_dir: str, run: str = None
                     if g_seg.cos_feature is None:
                         continue
                     try:
-                        g_utm = _ground_seg_to_utm(g_seg, g_sm, gt_pose_data)
+                        g_utm = _ground_seg_to_utm_2d(g_seg, g_sm, gt_pose_data)
                     except Exception:
                         continue
 
-                    a_utms = [_aerial_seg_to_utm(a, a_sm) for a in a_lines]
+                    a_utms = [_aerial_seg_to_utm_2d(a, a_sm) for a in a_lines]
 
                     paired_lines = list(zip(a_lines, a_utms))
                     random.shuffle(paired_lines)
@@ -343,7 +386,7 @@ def semantic_match_evaluation(params_path: str, output_dir: str, run: str = None
                             if o_g.id == g_seg.id or o_g.cos_feature is None:
                                 continue
                             try:
-                                o_g_utm = _ground_seg_to_utm(o_g, g_sm, gt_pose_data)
+                                o_g_utm = _ground_seg_to_utm_2d(o_g, g_sm, gt_pose_data)
                             except Exception:
                                 continue
                             o_dist = _line_min_dist(o_g_utm, a_seg_utm)

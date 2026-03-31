@@ -44,6 +44,7 @@ class AerialSegmenter(SegmenterBase):
         if self.frame_descriptor_type == "anyloc":
             return self._compute_anyloc_descriptor(img_bgr)
 
+        self._ensure_semantics_model()
         if self.semantics_model is None:
             return None
 
@@ -104,7 +105,8 @@ class AerialSegmenter(SegmenterBase):
             img_bgr_ds = cv.cvtColor(image_rgb, cv.COLOR_RGB2BGR)
             dino_features, _ = self._extract_dino_features(img_bgr_ds)
 
-        aerial_segments = []
+        # First pass: filter masks by area and compute geometry
+        valid_entries = []
         for i, mask in enumerate(masks):
             area = (
                 np.sum(mask)
@@ -119,22 +121,30 @@ class AerialSegmenter(SegmenterBase):
                 * self.params.pixel_len_m
                 + img_origin * self.params.pixel_len_m
             )
-            semantic_descriptor = None
-            if dino_features is not None:
-                assert (
-                    mask.shape[0] == dino_features.shape[0]
-                    and mask.shape[1] == dino_features.shape[1]
-                ), "Mask and DINO features must have the same shape."
-                semantic_descriptor = self._compute_mean_dino_descriptor(
-                    dino_features, mask
-                )
+            valid_entries.append((i, mask, points, area))
+
+        # Batch-compute DINO descriptors on GPU
+        descriptors = [None] * len(valid_entries)
+        if dino_features is not None and valid_entries:
+            valid_masks = [entry[1] for entry in valid_entries]
+            assert (
+                valid_masks[0].shape[0] == dino_features.shape[0]
+                and valid_masks[0].shape[1] == dino_features.shape[1]
+            ), "Mask and DINO features must have the same shape."
+            descriptors = self._compute_batch_mean_dino_descriptors(
+                dino_features, valid_masks
+            )
+
+        # Build segments
+        aerial_segments = []
+        for (i, mask, points, area), desc in zip(valid_entries, descriptors):
             aerial_segments.append(
                 AerialSegment(
                     id=i,
                     center=np.mean(points, axis=0),
                     area=area,
                     points=points,
-                    semantic_descriptor=semantic_descriptor,
+                    semantic_descriptor=desc,
                 )
             )
         return aerial_segments

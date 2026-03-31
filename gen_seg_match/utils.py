@@ -1,7 +1,88 @@
+import dataclasses
+import logging
+import os
+import subprocess
+
 import numpy as np
 from typing import Tuple, List, Union
 from os.path import expandvars, expanduser
 import open3d as o3d
+import yaml
+
+logger = logging.getLogger(__name__)
+
+
+def _yaml_represent_numpy(dumper, data):
+    if isinstance(data, np.floating):
+        if np.isinf(data):
+            return dumper.represent_scalar(
+                "tag:yaml.org,2002:float", ".inf" if data > 0 else "-.inf"
+            )
+        return dumper.represent_float(float(data))
+    if isinstance(data, np.integer):
+        return dumper.represent_int(int(data))
+    if isinstance(data, np.ndarray):
+        return dumper.represent_list(data.tolist())
+    return dumper.represent_data(data)
+
+
+def _get_yaml_dumper():
+    dumper = yaml.Dumper
+    dumper.add_representer(np.float64, _yaml_represent_numpy)
+    dumper.add_representer(np.float32, _yaml_represent_numpy)
+    dumper.add_representer(np.int64, _yaml_represent_numpy)
+    dumper.add_representer(np.int32, _yaml_represent_numpy)
+    dumper.add_representer(np.ndarray, _yaml_represent_numpy)
+    dumper.add_representer(tuple, lambda d, data: d.represent_list(list(data)))
+    return dumper
+
+
+def save_params(output_dir, *param_objects):
+    """Save parameter objects to params.yaml in the output directory.
+
+    Merges with existing params.yaml if present, so multiple pipeline stages
+    can append their params to the same file.
+    """
+    params_path = os.path.join(output_dir, "params.yaml")
+
+    # Load existing params if file exists
+    existing = {}
+    if os.path.isfile(params_path):
+        with open(params_path, "r") as f:
+            existing = yaml.full_load(f) or {}
+
+    # Build dict from param objects
+    for obj in param_objects:
+        key = obj.params_key
+        existing[key] = dataclasses.asdict(obj)
+
+    with open(params_path, "w") as f:
+        yaml.dump(
+            existing,
+            f,
+            Dumper=_get_yaml_dumper(),
+            default_flow_style=False,
+            sort_keys=False,
+        )
+
+
+def save_commit_hash(output_dir):
+    """Write the current git commit hash to commit.txt in the output directory."""
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            capture_output=True,
+            text=True,
+            cwd=os.path.dirname(__file__),
+        )
+        if result.returncode == 0:
+            commit_hash = result.stdout.strip()
+            with open(os.path.join(output_dir, "commit.txt"), "w") as f:
+                f.write(commit_hash + "\n")
+        else:
+            logger.warning("Could not get git commit hash: %s", result.stderr.strip())
+    except FileNotFoundError:
+        logger.warning("git not found — skipping commit.txt")
 
 
 def sort_time_intervals(

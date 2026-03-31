@@ -1,7 +1,6 @@
 import numpy as np
 import os
 import argparse
-import shutil
 import tqdm
 import time
 import cv2 as cv
@@ -33,6 +32,11 @@ class SegmentMapping:
     show_occluded: bool = False
     output_dir: str = None
     _video_writer: object = field(default=None, init=False, repr=False)
+    _timing: dict = field(
+        default_factory=lambda: {"data": [], "segment": [], "map": []},
+        init=False,
+        repr=False,
+    )
 
     def run(self, data: SegmentMappingData):
         if data.use_point_cloud:
@@ -50,6 +54,7 @@ class SegmentMapping:
         print(f"Processing {len(times)} frames from t={t0:.2f} to t={tf:.2f}")
 
         for t in tqdm.tqdm(times, desc="Mapping"):
+            t_data_start = time.time()
             try:
                 img_t = data.img_data.nearest_time(t)
                 img = data.img_data.img(img_t)
@@ -65,10 +70,17 @@ class SegmentMapping:
             except NoDataNearTimeException:
                 continue
 
+            t_seg_start = time.time()
             observations, frame_descriptor = self.segmenter.segment(
                 img, img_t, pose, depth
             )
+            t_map_start = time.time()
             self.mapper.update(img_t, pose, observations, frame_descriptor)
+            t_end = time.time()
+
+            self._timing["data"].append(t_seg_start - t_data_start)
+            self._timing["segment"].append(t_map_start - t_seg_start)
+            self._timing["map"].append(t_end - t_map_start)
 
             if self._video_writer is not None:
                 frame = self._draw(img_t, img, pose)
@@ -290,7 +302,35 @@ def segment_mapping(
             chunk_start = chunk_end
             chunk_idx += 1
 
-    print(f"Mapping took {time.time() - wc_t0:.2f} seconds")
+    wall_time = time.time() - wc_t0
+    print(f"Mapping took {wall_time:.2f} seconds")
+
+    # Save per-frame timing breakdown
+    timing = pipeline._timing
+    n_frames = len(timing["data"])
+    if n_frames > 0:
+        mean_data = np.mean(timing["data"])
+        mean_seg = np.mean(timing["segment"])
+        mean_map = np.mean(timing["map"])
+        mean_total = mean_data + mean_seg + mean_map
+        timing_path = os.path.join(output_dir, "timing.txt")
+        with open(timing_path, "w") as f:
+            f.write(f"Frames:           {n_frames}\n")
+            f.write(f"Wall-clock time:  {wall_time:.2f}s\n")
+            f.write(f"\nPer-frame averages:\n")
+            f.write(
+                f"  Data fetch:     {mean_data:.4f}s  ({mean_data / mean_total * 100:.1f}%)\n"
+            )
+            f.write(
+                f"  Segmenter:      {mean_seg:.4f}s  ({mean_seg / mean_total * 100:.1f}%)\n"
+            )
+            f.write(
+                f"  Mapper update:  {mean_map:.4f}s  ({mean_map / mean_total * 100:.1f}%)\n"
+            )
+            f.write(
+                f"  Total:          {mean_total:.4f}s  ({1 / mean_total:.1f} fps)\n"
+            )
+        print(f"Saved timing breakdown to {timing_path}")
 
     # Release video writer
     if pipeline._video_writer is not None:
@@ -310,24 +350,22 @@ def segment_mapping(
     print(f"Saved segment map to {map_path}")
 
     # Render 3D visualization
-    try:
-        from gen_seg_match.viz.viz_map import render_segment_map_image
+    # try:
+    #     from gen_seg_match.viz.viz_map import render_segment_map_image
 
-        print("Rendering 3D visualization...")
-        viz_img = render_segment_map_image(segment_map)
-        viz_path = os.path.join(output_dir, "segment_map_3d.png")
-        cv.imwrite(viz_path, viz_img)
-        print(f"Saved 3D visualization to {viz_path}")
-    except Exception as e:
-        print(f"Warning: could not render 3D visualization: {e}")
+    #     print("Rendering 3D visualization...")
+    #     viz_img = render_segment_map_image(segment_map)
+    #     viz_path = os.path.join(output_dir, "segment_map_3d.png")
+    #     cv.imwrite(viz_path, viz_img)
+    #     print(f"Saved 3D visualization to {viz_path}")
+    # except Exception as e:
+    #     print(f"Warning: could not render 3D visualization: {e}")
 
-    # Copy params to output dir
-    if os.path.isfile(params_path):
-        shutil.copy2(
-            params_path, os.path.join(output_dir, os.path.basename(params_path))
-        )
-    else:
-        shutil.copytree(params_path, output_dir, dirs_exist_ok=True)
+    # Save all params (including defaults) and commit hash
+    from gen_seg_match.utils import save_params, save_commit_hash
+
+    save_params(output_dir, mapping_params, data_params, segmenter_params)
+    save_commit_hash(output_dir)
 
     print("Done.")
 

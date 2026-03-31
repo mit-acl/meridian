@@ -16,7 +16,7 @@ class SegmentMappingParams(ParamsBase):
     geometric_association_method: str = "iom"
     semantic_association_method: str = "cosine_similarity"
     geometric_score_range: Tuple[float] = (0.2, 1.0)
-    semantic_score_range: Tuple[float] = (0.7, 1.0)
+    semantic_score_range: Tuple[float] = (0.8, 1.0)
     min_2d_iou: Union[float, None] = None
 
     # Lifecycle
@@ -35,7 +35,7 @@ class SegmentMappingParams(ParamsBase):
     iou_voxel_size: float = 0.25
     segment_voxel_size: float = 0.05
     segment_outlier_removal_std: float = 0.0  # disabled by default
-    segment_dbscan_eps: float = 0.5
+    segment_dbscan_eps: float = 1.0
     segment_dbscan_min_points: int = 10
     unocclude_point_dist_m: float = 0.1
 

@@ -98,3 +98,4 @@ class SemanticMatchEvaluationParams(ParamsBase):
     line_match_max_ang_diff_deg: float = 10.0
     line_other_min_dist_m: float = 1.0
     line_other_min_ang_diff_deg: float = 10.0
+    submap_max_dist_m: float = 30.0

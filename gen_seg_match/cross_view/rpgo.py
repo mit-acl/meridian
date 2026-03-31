@@ -177,10 +177,18 @@ class CrossViewRPGO:
         Returns:
             CrossViewRPGOResult with T_utm_odom and optimized_trajectory.
         """
-        inlier_indices, M, C = self.run_clipper_cpp(candidates)
+        if self.params.gt_inliers:
+            inlier_indices = self._gt_inlier_selection(candidates)
+            M, C = None, None
+        else:
+            inlier_indices, M, C = self.run_clipper_cpp(candidates)
 
         if len(inlier_indices) == 0:
-            logger.warning("CLIPPER returned empty solution.")
+            logger.warning(
+                "GT inlier selection returned empty solution."
+                if self.params.gt_inliers
+                else "CLIPPER returned empty solution."
+            )
             return CrossViewRPGOResult(success=False, M=M, C=C, candidates=candidates)
 
         if len(inlier_indices) == 1:
@@ -211,6 +219,32 @@ class CrossViewRPGO:
             C=C,
             candidates=candidates,
         )
+
+    def _gt_inlier_selection(self, candidates: List[dict]) -> np.ndarray:
+        """Select inliers by comparing each candidate's T_i_j_hat to GT T_i_j.
+
+        Uses the same error metrics as matching visualization (direct pose
+        comparison in the aerial-ground frame) to avoid lever-arm effects
+        from comparing in the UTM-odom frame.
+        """
+        rot_thresh = np.deg2rad(self.params.gt_inliers_rot_err_deg)
+        trans_thresh = self.params.gt_inliers_trans_err_m
+        inlier_indices = []
+        for i, c in enumerate(candidates):
+            T_i_j = c.get("T_i_j")
+            T_i_j_hat = c.get("T_i_j_hat")
+            if T_i_j is None or np.any(np.isnan(T_i_j)):
+                continue
+            trans_err = np.linalg.norm((T_i_j - T_i_j_hat)[:3, 3])
+            T_error = np.linalg.inv(T_i_j_hat) @ T_i_j
+            rot_err = Rot.from_matrix(T_error[:3, :3]).magnitude()
+            if rot_err < rot_thresh and trans_err < trans_thresh:
+                inlier_indices.append(i)
+        logger.info(
+            f"GT inlier selection: {len(inlier_indices)}/{len(candidates)} candidates "
+            f"within {self.params.gt_inliers_rot_err_deg}° / {self.params.gt_inliers_trans_err_m}m"
+        )
+        return np.array(inlier_indices, dtype=int)
 
     def _build_affinity_matrix_python(
         self, candidates: List[dict]
@@ -397,10 +431,8 @@ class CrossViewRPGO:
             ground_time = c["ground_submap_time"]
             traj_idx = int(np.argmin(np.abs(times_arr - ground_time)))
 
-            # Prior: T_utm_body at this timestep from this candidate
-            T_utm_odom_c = se2_to_se3(c["T_utm_odom_se2"])
-            T_utm_body_c = T_utm_odom_c @ T_odom_body_list[traj_idx]
-            se2_prior = se3_to_se2(T_utm_body_c)
+            # Prior: T_utm_body directly from registration (avoids SE2 lever arm)
+            se2_prior = c["T_utm_body_se2"]
             prior_pose2 = gtsam.Pose2(
                 se2_prior[0, 2], se2_prior[1, 2], yaw_from_se2(se2_prior)
             )
