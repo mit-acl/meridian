@@ -275,48 +275,50 @@ class CrossViewLocalization:
             results_matrix = PoseEstimationResultMatrix.load(str(result_file))
 
             for idx in np.ndindex(results_matrix.shape):
-                result = results_matrix[idx]
-                if result.num_associations < min_assoc:
-                    continue
-                T_i_j_hat = result.T_i_j_hat
-                if np.any(np.isnan(T_i_j_hat)):
-                    continue
+                cell = results_matrix[idx]
+                hypotheses = cell if isinstance(cell, list) else [cell]
+                for result in hypotheses:
+                    if result.num_associations < min_assoc:
+                        continue
+                    T_i_j_hat = result.T_i_j_hat
+                    if np.any(np.isnan(T_i_j_hat)):
+                        continue
 
-                # Compute T_odom_ground
-                if data.T_camera_flu is not None:
-                    T_odom_ground = ground_camera_pose @ data.T_camera_flu
-                else:
-                    T_odom_ground = ground_camera_pose
+                    # Compute T_odom_ground
+                    if data.T_camera_flu is not None:
+                        T_odom_ground = ground_camera_pose @ data.T_camera_flu
+                    else:
+                        T_odom_ground = ground_camera_pose
 
-                # T_i_j_hat is T_aerialmeter_ground (maps ground to aerial-meter frame)
-                # T_utm_odom = pose_flu @ T_hat @ inv(T_odom_ground)
-                T_utm_odom_4x4 = pose_flu @ T_i_j_hat @ np.linalg.inv(T_odom_ground)
+                    # T_i_j_hat is T_aerialmeter_ground (maps ground to aerial-meter frame)
+                    # T_utm_odom = pose_flu @ T_hat @ inv(T_odom_ground)
+                    T_utm_odom_4x4 = pose_flu @ T_i_j_hat @ np.linalg.inv(T_odom_ground)
 
-                # Reject improper rotations (reflections) from registration.
-                # Check on T_utm_odom (both frames are z-up) rather than T_i_j_hat
-                # which mixes camera/FLU and aerial-meter frame conventions.
-                if np.linalg.det(T_utm_odom_4x4[:2, :2]) < 0:
-                    logger.debug(
-                        "Rejecting candidate with reflected rotation "
-                        f"(det(R_2x2)={np.linalg.det(T_utm_odom_4x4[:2, :2]):.4f})"
+                    # Reject improper rotations (reflections) from registration.
+                    # Check on T_utm_odom (both frames are z-up) rather than T_i_j_hat
+                    # which mixes camera/FLU and aerial-meter frame conventions.
+                    if np.linalg.det(T_utm_odom_4x4[:2, :2]) < 0:
+                        logger.debug(
+                            "Rejecting candidate with reflected rotation "
+                            f"(det(R_2x2)={np.linalg.det(T_utm_odom_4x4[:2, :2]):.4f})"
+                        )
+                        continue
+
+                    T_utm_odom_se2 = se3_to_se2(T_utm_odom_4x4)
+
+                    candidates.append(
+                        {
+                            "T_utm_odom_se2": T_utm_odom_se2,
+                            "T_i_j_hat": T_i_j_hat,
+                            "aerial_pose": pose_flu,
+                            "ground_camera_pose": ground_camera_pose,
+                            "T_odom_ground": T_odom_ground,
+                            "ground_key": ground_key,
+                            "aerial_key": f"{idx[0]}_{idx[1]}",
+                            "num_associations": result.num_associations,
+                            "ground_submap_time": ground_submap.time,
+                        }
                     )
-                    continue
-
-                T_utm_odom_se2 = se3_to_se2(T_utm_odom_4x4)
-
-                candidates.append(
-                    {
-                        "T_utm_odom_se2": T_utm_odom_se2,
-                        "T_i_j_hat": T_i_j_hat,
-                        "aerial_pose": pose_flu,
-                        "ground_camera_pose": ground_camera_pose,
-                        "T_odom_ground": T_odom_ground,
-                        "ground_key": ground_key,
-                        "aerial_key": f"{idx[0]}_{idx[1]}",
-                        "num_associations": result.num_associations,
-                        "ground_submap_time": ground_submap.time,
-                    }
-                )
 
         logger.info(f"Loaded {len(candidates)} candidates.")
         return candidates
@@ -343,45 +345,47 @@ class CrossViewLocalization:
             ground_camera_pose = ground_submap.metadata["camera_pose"]
 
             for idx in np.ndindex(results_matrix.shape):
-                result = results_matrix[idx]
-                if result.num_associations < min_assoc:
-                    continue
-                T_i_j_hat = result.T_i_j_hat
-                if np.any(np.isnan(T_i_j_hat)):
-                    continue
+                cell = results_matrix[idx]
+                hypotheses = cell if isinstance(cell, list) else [cell]
+                for result in hypotheses:
+                    if result.num_associations < min_assoc:
+                        continue
+                    T_i_j_hat = result.T_i_j_hat
+                    if np.any(np.isnan(T_i_j_hat)):
+                        continue
 
-                if data.T_camera_flu is not None:
-                    T_odom_ground = ground_camera_pose @ data.T_camera_flu
-                else:
-                    T_odom_ground = ground_camera_pose
+                    if data.T_camera_flu is not None:
+                        T_odom_ground = ground_camera_pose @ data.T_camera_flu
+                    else:
+                        T_odom_ground = ground_camera_pose
 
-                T_utm_odom_4x4 = pose_flu @ T_i_j_hat @ np.linalg.inv(T_odom_ground)
+                    T_utm_odom_4x4 = pose_flu @ T_i_j_hat @ np.linalg.inv(T_odom_ground)
 
-                # Reject improper rotations (reflections) from registration.
-                # Check on T_utm_odom (both frames are z-up) rather than T_i_j_hat
-                # which mixes camera/FLU and aerial-meter frame conventions.
-                if np.linalg.det(T_utm_odom_4x4[:2, :2]) < 0:
-                    logger.debug(
-                        "Rejecting candidate with reflected rotation "
-                        f"(det(R_2x2)={np.linalg.det(T_utm_odom_4x4[:2, :2]):.4f})"
+                    # Reject improper rotations (reflections) from registration.
+                    # Check on T_utm_odom (both frames are z-up) rather than T_i_j_hat
+                    # which mixes camera/FLU and aerial-meter frame conventions.
+                    if np.linalg.det(T_utm_odom_4x4[:2, :2]) < 0:
+                        logger.debug(
+                            "Rejecting candidate with reflected rotation "
+                            f"(det(R_2x2)={np.linalg.det(T_utm_odom_4x4[:2, :2]):.4f})"
+                        )
+                        continue
+
+                    T_utm_odom_se2 = se3_to_se2(T_utm_odom_4x4)
+
+                    candidates.append(
+                        {
+                            "T_utm_odom_se2": T_utm_odom_se2,
+                            "T_i_j_hat": T_i_j_hat,
+                            "aerial_pose": pose_flu,
+                            "ground_camera_pose": ground_camera_pose,
+                            "T_odom_ground": T_odom_ground,
+                            "ground_key": ground_key,
+                            "aerial_key": f"{idx[0]}_{idx[1]}",
+                            "num_associations": result.num_associations,
+                            "ground_submap_time": ground_submap.time,
+                        }
                     )
-                    continue
-
-                T_utm_odom_se2 = se3_to_se2(T_utm_odom_4x4)
-
-                candidates.append(
-                    {
-                        "T_utm_odom_se2": T_utm_odom_se2,
-                        "T_i_j_hat": T_i_j_hat,
-                        "aerial_pose": pose_flu,
-                        "ground_camera_pose": ground_camera_pose,
-                        "T_odom_ground": T_odom_ground,
-                        "ground_key": ground_key,
-                        "aerial_key": f"{idx[0]}_{idx[1]}",
-                        "num_associations": result.num_associations,
-                        "ground_submap_time": ground_submap.time,
-                    }
-                )
 
         logger.info(f"Loaded {len(candidates)} rerun candidates from in-memory result.")
         return candidates

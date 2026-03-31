@@ -323,7 +323,7 @@ class RGBDPoseEstimation:
                             output_file=f"{output_file_prefix}_reg.png",
                         )
 
-                results_matrix[i, j] = result
+                results_matrix[i, j] = [result]
 
         results_matrix.save(f"{self.match_directory}/results.npz")
         results_matrix.plot()

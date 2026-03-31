@@ -325,7 +325,13 @@ class CrossViewMatchingPipeline:
 
             details = match_result.match_details.get(ground_key, {})
 
-            for aerial_key, single_result in details.items():
+            for aerial_key, single_results_list in details.items():
+                # match_details now holds List[SingleMatchResult] per pair;
+                # visualize and save only the primary (best) hypothesis.
+                if isinstance(single_results_list, list):
+                    single_result = single_results_list[0]
+                else:
+                    single_result = single_results_list
                 i_a, j_a = aerial_key_to_tuple(aerial_key)
                 result = single_result.pose_result
 
@@ -425,7 +431,9 @@ class CrossViewMatchingPipeline:
             # Compute GT patch indices from T_i_j
             gt_patches = None
             for idx in np.ndindex(results_matrix.shape):
-                t = results_matrix[idx].T_i_j
+                cell = results_matrix[idx]
+                primary = cell[0] if isinstance(cell, list) else cell
+                t = primary.T_i_j
                 if not np.any(np.isnan(t)):
                     ground_pos = t[:2, 3]
                     gt_patches = []

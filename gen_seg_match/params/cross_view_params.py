@@ -61,6 +61,28 @@ class CrossViewMatchingParams(ParamsBase):
     match_viz_target_size_kb: int = 200
     dense_points_max_n: int = 5000
 
+    # Matching method: "clipper" (single-hypothesis) or "langevin" (multi-hypothesis)
+    matching_method: str = "langevin"
+
+    # Langevin parameters
+    langevin_n_particles: int = 5000
+    langevin_n_iter: int = 1000
+    langevin_step_size: float = 1.0
+    langevin_adagrad: bool = True
+    langevin_alpha: float = 0.9
+    langevin_device: str = "cuda"
+    langevin_min_associations: int = 2
+    langevin_anneal_noise: bool = True
+    langevin_no_noise: bool = False
+    langevin_early_stop: bool = True
+    langevin_check_interval: int = 10
+    langevin_obj_tol: float = 1e-5
+    langevin_patience: int = 3
+
+    # Post-processing: cluster hypotheses by transformation similarity
+    langevin_cluster_trans_thresh_m: float = 2.0
+    langevin_cluster_rot_thresh_deg: float = 5.0
+
     translation_only: bool = False
     rot_bias_deg: float = 0.0
     uniform_rot_noise_bounds_deg: Tuple[float, float] = (0.0, 0.0)

@@ -121,13 +121,23 @@ class SegmentMatcher:
         return Ain_by_ids
 
     def get_MCA(self, map1: List[GeneralSegment], map2: List[GeneralSegment]):
+        M, C, A_init, _, _ = self.get_MCA_with_maps(map1, map2)
+        return M, C, A_init
+
+    def get_MCA_with_maps(self, map1: List[GeneralSegment], map2: List[GeneralSegment]):
+        """Return affinity matrix, constraint matrix, putative associations, and ordered maps.
+
+        The returned map1/map2 SegmentLists are in type-ordered form (points + lines + planes)
+        matching the index space of M, C, and A_init. These are needed for
+        assoc_idx_to_ids() to convert association indices back to segment IDs.
+        """
         map1 = SegmentList(map1)
         map2 = SegmentList(map2)
         clipper = self._setup_solver()
         clipper, A_init = self._setup_problem(clipper, map1, map2)
         M = clipper.get_affinity_matrix()
         C = clipper.get_constraint_matrix()
-        return M, C, A_init
+        return M, C, A_init, map1, map2
 
     def match_multiple(
         self, map1: List[GeneralSegment], map2: List[GeneralSegment], num_solutions=2
@@ -439,17 +449,30 @@ class SegmentMatcher:
         ]
         return np.array(map1_lists), np.array(map2_lists)
 
-    def _assoc_idx_to_ids(
+    def assoc_idx_to_ids(
         self,
         association_matrix: np.ndarray,
         map1: SegmentList,
         map2: SegmentList,
     ) -> np.ndarray:
+        """Convert association index pairs to segment ID pairs.
+
+        Args:
+            association_matrix: (n, 2) array of type-ordered indices.
+            map1: Source SegmentList (as returned by get_MCA_with_maps).
+            map2: Target SegmentList (as returned by get_MCA_with_maps).
+
+        Returns:
+            (n, 2) array of segment IDs.
+        """
         Ain_by_ids = np.zeros_like(association_matrix)
         for i in range(association_matrix.shape[0]):
             Ain_by_ids[i, 0] = map1.get_type_ordered_idx(association_matrix[i, 0]).id
             Ain_by_ids[i, 1] = map2.get_type_ordered_idx(association_matrix[i, 1]).id
         return Ain_by_ids
+
+    # Keep backward-compatible alias
+    _assoc_idx_to_ids = assoc_idx_to_ids
 
     def _get_seg_array(self, seg: GeneralSegment) -> np.ndarray:
         return seg.to_array(

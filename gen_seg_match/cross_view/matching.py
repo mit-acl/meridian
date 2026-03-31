@@ -87,9 +87,9 @@ class SingleMatchResult:
 @dataclass
 class CrossViewMatchResult:
     results: Dict[str, PoseEstimationResultMatrix]  # ground_key -> matrix
-    match_details: Dict[str, Dict[str, SingleMatchResult]] = field(
+    match_details: Dict[str, Dict[str, List[SingleMatchResult]]] = field(
         default_factory=dict
-    )  # ground_key -> aerial_key -> detail
+    )  # ground_key -> aerial_key -> list of match hypotheses
 
 
 # ---------------------------------------------------------------------------
@@ -437,6 +437,30 @@ class CrossViewMatching:
             self.ground_segmenter = GroundSegmenter(GroundSegmenterParams())
         if self.ground_submap_params is None:
             self.ground_submap_params = SubmapParams()
+
+        self.langevin_matcher = None
+        if self.pipeline_params.matching_method == "langevin":
+            from gen_seg_match.match.langevin_matcher import (
+                LangevinMatcher,
+                LangevinMatcherParams,
+            )
+
+            langevin_params = LangevinMatcherParams(
+                n_particles=self.pipeline_params.langevin_n_particles,
+                n_iter=self.pipeline_params.langevin_n_iter,
+                step_size=self.pipeline_params.langevin_step_size,
+                adagrad=self.pipeline_params.langevin_adagrad,
+                alpha=self.pipeline_params.langevin_alpha,
+                device=self.pipeline_params.langevin_device,
+                min_associations=self.pipeline_params.langevin_min_associations,
+                anneal_noise=self.pipeline_params.langevin_anneal_noise,
+                no_noise=self.pipeline_params.langevin_no_noise,
+                early_stop=self.pipeline_params.langevin_early_stop,
+                check_interval=self.pipeline_params.langevin_check_interval,
+                obj_tol=self.pipeline_params.langevin_obj_tol,
+                patience=self.pipeline_params.langevin_patience,
+            )
+            self.langevin_matcher = LangevinMatcher(self.matcher, langevin_params)
 
     # ------------------------------------------------------------------
     # Single-patch methods (unchanged from original)
@@ -926,7 +950,7 @@ class CrossViewMatching:
                 if not filtered_keys:
                     continue
 
-                single_result = self._match_single_pair(
+                single_results = self._match_single_pair(
                     aerial_sm_j,
                     ground_sm_i,
                     reference_trajectory,
@@ -937,8 +961,8 @@ class CrossViewMatching:
                     local_to_pixel_fn=local_to_pixel_fn,
                 )
 
-                results_matrix[i_a, j_a] = single_result.pose_result
-                details_for_ground[aerial_key] = single_result
+                results_matrix[i_a, j_a] = [r.pose_result for r in single_results]
+                details_for_ground[aerial_key] = single_results
 
             all_results[ground_key] = results_matrix
             all_details[ground_key] = details_for_ground
@@ -1037,8 +1061,13 @@ class CrossViewMatching:
         T_ground_odom_ground_robot: np.ndarray,
         translation_only: bool,
         local_to_pixel_fn=None,
-    ) -> SingleMatchResult:
-        """Match a single aerial-ground submap pair."""
+    ) -> List[SingleMatchResult]:
+        """Match a single aerial-ground submap pair.
+
+        Returns a list of SingleMatchResult hypotheses. For CLIPPER matching
+        this is always a length-1 list. For Langevin matching, multiple
+        hypotheses may be returned.
+        """
         # Compute rotation from reference trajectory if available
         if ground_pose_ref is not None:
             T_aerial_camera = np.linalg.inv(aerial_sm.pose) @ ground_pose_ref
@@ -1109,15 +1138,43 @@ class CrossViewMatching:
             # Ensure the matcher uses the direction constraints
             self.matcher.params.xy_dir_constrained_2d = True
 
+        # no z component in GT
+        T_aerial_ground[2, 3] = 0.0
+
+        if self.langevin_matcher is not None:
+            results = self._match_single_pair_langevin(
+                aerial_segs_j, ground_segs_i, T_aerial_ground,
+                T_ground_odom_ground_robot, T_camera_flu,
+            )
+        else:
+            results = self._match_single_pair_clipper(
+                aerial_segs_j, ground_segs_i, T_aerial_ground,
+                T_ground_odom_ground_robot, T_camera_flu,
+                match_kwargs,
+            )
+
+        # Restore default so non-translation-only calls are unaffected
+        if translation_only and R_aerial_ground_2d is not None:
+            self.matcher.params.xy_dir_constrained_2d = False
+
+        return results
+
+    def _match_single_pair_clipper(
+        self,
+        aerial_segs_j: SegmentList,
+        ground_segs_i: SegmentList,
+        T_aerial_ground: np.ndarray,
+        T_ground_odom_ground_robot: np.ndarray,
+        T_camera_flu: Optional[np.ndarray],
+        match_kwargs: dict,
+    ) -> List[SingleMatchResult]:
+        """CLIPPER matching: returns a length-1 list."""
         matches = self.matcher.match(
             aerial_segs_j,
             ground_segs_i,
             **match_kwargs,
         )
 
-        # Restore default so non-translation-only calls are unaffected
-        if translation_only and R_aerial_ground_2d is not None:
-            self.matcher.params.xy_dir_constrained_2d = False
         try:
             T_aerial_ground_odom_hat = self.registerer.register(
                 aerial_segs_j.to_dim(3),
@@ -1130,8 +1187,6 @@ class CrossViewMatching:
         except InsufficientAssociationsException:
             T_aerial_ground_hat = np.zeros((4, 4)) * np.nan
 
-        # no z component estimated
-        T_aerial_ground[2, 3] = 0.0
         if not np.any(np.isnan(T_aerial_ground_hat)):
             T_aerial_ground_hat[2, 3] = 0.0
 
@@ -1148,13 +1203,142 @@ class CrossViewMatching:
             [aerial_segs_j.get_segment_from_id(a_id) for _, a_id in matches]
         )
 
-        return SingleMatchResult(
-            pose_result=pose_result,
-            aerial_segs_processed=aerial_segs_j,
-            ground_segs_processed=ground_segs_i,
-            matched_ground=matched_ground,
-            matched_aerial=matched_aerial,
+        return [
+            SingleMatchResult(
+                pose_result=pose_result,
+                aerial_segs_processed=aerial_segs_j,
+                ground_segs_processed=ground_segs_i,
+                matched_ground=matched_ground,
+                matched_aerial=matched_aerial,
+            )
+        ]
+
+    def _match_single_pair_langevin(
+        self,
+        aerial_segs_j: SegmentList,
+        ground_segs_i: SegmentList,
+        T_aerial_ground: np.ndarray,
+        T_ground_odom_ground_robot: np.ndarray,
+        T_camera_flu: Optional[np.ndarray],
+    ) -> List[SingleMatchResult]:
+        """Langevin matching: returns multiple hypotheses, clustered by transformation."""
+        hypotheses = self.langevin_matcher.match(aerial_segs_j, ground_segs_i)
+
+        # First pass: compute transformations for all hypotheses
+        raw_results = []  # (SingleMatchResult, particle_count)
+        for matches, score, count in hypotheses:
+            try:
+                T_aerial_ground_odom_hat = self.registerer.register(
+                    aerial_segs_j.to_dim(3),
+                    ground_segs_i.to_dim(3),
+                    correspondences=matches,
+                ).transformation
+                T_aerial_ground_hat = (
+                    T_aerial_ground_odom_hat @ T_ground_odom_ground_robot
+                )
+                if T_camera_flu is not None:
+                    T_aerial_ground_hat = T_aerial_ground_hat @ T_camera_flu
+            except InsufficientAssociationsException:
+                continue
+
+            if np.any(np.isnan(T_aerial_ground_hat)):
+                continue
+
+            T_aerial_ground_hat[2, 3] = 0.0
+
+            pose_result = PoseEstimationResult(
+                T_i_j_hat=T_aerial_ground_hat,
+                T_i_j=T_aerial_ground,
+                associations=matches,
+            )
+
+            matched_ground = SegmentList(
+                [ground_segs_i.get_segment_from_id(g_id) for g_id, _ in matches]
+            )
+            matched_aerial = SegmentList(
+                [aerial_segs_j.get_segment_from_id(a_id) for _, a_id in matches]
+            )
+
+            result = SingleMatchResult(
+                pose_result=pose_result,
+                aerial_segs_processed=aerial_segs_j,
+                ground_segs_processed=ground_segs_i,
+                matched_ground=matched_ground,
+                matched_aerial=matched_aerial,
+            )
+            raw_results.append((result, count))
+
+        # Cluster by transformation similarity and rank by total particle count
+        results = self._cluster_langevin_results(raw_results)
+
+        # Return at least one empty result if no valid hypotheses
+        if not results:
+            results = [
+                SingleMatchResult(
+                    pose_result=PoseEstimationResult(
+                        T_i_j=T_aerial_ground,
+                    ),
+                    aerial_segs_processed=aerial_segs_j,
+                    ground_segs_processed=ground_segs_i,
+                )
+            ]
+
+        return results
+
+    @staticmethod
+    def _se2_distance(T1: np.ndarray, T2: np.ndarray):
+        """Compute SE(2) translation and rotation distance between two 4x4 transforms."""
+        trans_dist = np.linalg.norm(T1[:2, 3] - T2[:2, 3])
+        yaw1 = np.arctan2(T1[1, 0], T1[0, 0])
+        yaw2 = np.arctan2(T2[1, 0], T2[0, 0])
+        rot_dist = abs(yaw1 - yaw2)
+        rot_dist = min(rot_dist, 2 * np.pi - rot_dist)
+        return trans_dist, rot_dist
+
+    def _cluster_langevin_results(
+        self,
+        raw_results: List,
+    ) -> List["SingleMatchResult"]:
+        """Cluster hypotheses by transformation similarity, rank by particle count.
+
+        Greedy clustering: iterate results (sorted by objective), assign each to
+        the first existing cluster within thresholds, or start a new cluster.
+        The representative of each cluster is the member with the highest
+        objective score. Clusters are ranked by total particle count.
+        """
+        if not raw_results:
+            return []
+
+        trans_thresh = self.pipeline_params.langevin_cluster_trans_thresh_m
+        rot_thresh = np.deg2rad(
+            self.pipeline_params.langevin_cluster_rot_thresh_deg
         )
+
+        # Each cluster: (representative_result, total_count, [member results])
+        clusters = []
+        for result, count in raw_results:
+            T = result.pose_result.T_i_j_hat
+            assigned = False
+            for cluster in clusters:
+                T_rep = cluster[0].pose_result.T_i_j_hat
+                t_dist, r_dist = self._se2_distance(T, T_rep)
+                if t_dist <= trans_thresh and r_dist <= rot_thresh:
+                    cluster[1] += count
+                    assigned = True
+                    break
+            if not assigned:
+                clusters.append([result, count])
+
+        # Sort clusters by total particle count descending
+        clusters.sort(key=lambda c: c[1], reverse=True)
+
+        logger.info(
+            f"Langevin clustering: {len(raw_results)} hypotheses -> "
+            f"{len(clusters)} clusters, top counts: "
+            f"{[c[1] for c in clusters[:5]]}"
+        )
+
+        return [c[0] for c in clusters]
 
     def _find_max_intersection_patch(
         self,
@@ -1283,7 +1467,7 @@ class CrossViewMatching:
                 )
             T_ground_odom_ground_robot = ground_sm_i.metadata["camera_pose"]
 
-            single_result = self._match_single_pair(
+            single_results = self._match_single_pair(
                 aerial_sm_j,
                 ground_sm_i,
                 reference_trajectory,
@@ -1294,8 +1478,8 @@ class CrossViewMatching:
                 local_to_pixel_fn=local_to_pixel_fn,
             )
 
-            results_matrix[i_a, j_a] = single_result.pose_result
-            details_for_ground[best_aerial_key] = single_result
+            results_matrix[i_a, j_a] = [r.pose_result for r in single_results]
+            details_for_ground[best_aerial_key] = single_results
 
             all_results[ground_key] = results_matrix
             all_details[ground_key] = details_for_ground
