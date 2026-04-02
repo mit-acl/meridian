@@ -378,7 +378,11 @@ class CrossViewLocalization:
         first_aerial_key = next(iter(aerial_submaps))
         pose_flu = aerial_submaps[first_aerial_key].pose
 
-        min_assoc = self.rpgo_params.min_num_associations
+        min_assoc = (
+            self.rpgo_params.min_num_associations_rerun
+            if self.rpgo_params.min_num_associations_rerun is not None
+            else self.rpgo_params.min_num_associations
+        )
         candidates = []
 
         for ground_key, results_matrix in match_result.results.items():

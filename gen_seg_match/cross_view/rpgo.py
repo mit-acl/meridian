@@ -98,9 +98,28 @@ class CrossViewRPGOResult:
 # ---------------------------------------------------------------------------
 
 
+def _compute_cumulative_path_lengths(
+    trajectory: List[np.ndarray],
+) -> np.ndarray:
+    """Compute cumulative path length at each trajectory pose.
+
+    Returns an array of length len(trajectory) where entry i is the total
+    distance traveled from pose 0 to pose i.
+    """
+    cum = np.zeros(len(trajectory))
+    for i in range(1, len(trajectory)):
+        dx = trajectory[i][0, 3] - trajectory[i - 1][0, 3]
+        dy = trajectory[i][1, 3] - trajectory[i - 1][1, 3]
+        dz = trajectory[i][2, 3] - trajectory[i - 1][2, 3]
+        cum[i] = cum[i - 1] + np.sqrt(dx * dx + dy * dy + dz * dz)
+    return cum
+
+
 def _build_clipper_data(
     candidates: List[dict],
-) -> Tuple[np.ndarray, List[np.ndarray], List[np.ndarray]]:
+    trajectory: List[np.ndarray],
+    times: np.ndarray,
+) -> Tuple[np.ndarray, List[np.ndarray], List[np.ndarray], List[float]]:
     """Build CLIPPER data matrix and unique pose lists from candidates.
 
     Each column of D encodes one candidate:
@@ -112,11 +131,16 @@ def _build_clipper_data(
         D: 18×N data matrix
         aerial_poses: list of unique 4×4 aerial pose matrices
         ground_poses: list of unique 4×4 ground pose matrices
+        ground_distances: list of cumulative path lengths for each unique ground pose
     """
+    cum_path = _compute_cumulative_path_lengths(trajectory)
+    times_arr = np.asarray(times)
+
     aerial_key_to_idx: dict = {}
     aerial_poses: List[np.ndarray] = []
     ground_key_to_idx: dict = {}
     ground_poses: List[np.ndarray] = []
+    ground_distances: List[float] = []
 
     N = len(candidates)
     # Build D as (N, 18) row-major, then transpose to (18, N) Fortran-order
@@ -136,6 +160,10 @@ def _build_clipper_data(
         if ground_key not in ground_key_to_idx:
             ground_key_to_idx[ground_key] = len(ground_poses)
             ground_poses.append(c["T_odom_ground"].copy())
+            # Look up cumulative path length for this ground pose
+            ground_time = c["ground_submap_time"]
+            traj_idx = int(np.argmin(np.abs(times_arr - ground_time)))
+            ground_distances.append(float(cum_path[traj_idx]))
         ground_idx = ground_key_to_idx[ground_key]
 
         D_rows[k, 0] = aerial_idx
@@ -145,7 +173,7 @@ def _build_clipper_data(
     # Transpose to (18, N) Fortran-order — pybind11 passes this to Eigen as
     # a column-major MatrixXd where each column is one datum.
     D = D_rows.T  # shape (18, N), Fortran-order (C-contiguous rows → F-contiguous cols)
-    return D, aerial_poses, ground_poses
+    return D, aerial_poses, ground_poses, ground_distances
 
 
 # ---------------------------------------------------------------------------
@@ -181,7 +209,7 @@ class CrossViewRPGO:
             inlier_indices = self._gt_inlier_selection(candidates)
             M, C = None, None
         else:
-            inlier_indices, M, C = self.run_clipper_cpp(candidates)
+            inlier_indices, M, C = self.run_clipper_cpp(candidates, trajectory, times)
 
         if len(inlier_indices) == 0:
             logger.warning(
@@ -306,21 +334,28 @@ class CrossViewRPGO:
         return np.array(clipper.get_solution().nodes)
 
     def run_clipper_cpp(
-        self, candidates: List[dict]
+        self,
+        candidates: List[dict],
+        trajectory: List[np.ndarray],
+        times: np.ndarray,
     ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
         """Run CLIPPER using the C++ LoopClosureConsistency invariant.
 
         Returns:
             Tuple of (inlier_indices, M, C).
         """
-        D, aerial_poses, ground_poses = _build_clipper_data(candidates)
+        D, aerial_poses, ground_poses, ground_distances = _build_clipper_data(
+            candidates, trajectory, times
+        )
         iparams = clipperpy.invariants.LoopClosureConsistencyParams()
         iparams.rot_sigma_rad = self.params.rot_consistency_sigma_rad
         iparams.rot_eps_rad = self.params.rot_consistency_eps_rad
         iparams.trans_sigma_m = self.params.trans_consistency_sigma_m
         iparams.trans_eps_m = self.params.trans_consistency_eps_m
+        iparams.added_trans_noise_m_per_m = self.params.added_trans_noise_m_per_m
+        iparams.added_rot_noise_deg_per_m = self.params.added_rot_noise_deg_per_m
         invariant = clipperpy.invariants.LoopClosureConsistency(
-            aerial_poses, ground_poses, iparams
+            aerial_poses, ground_poses, ground_distances, iparams
         )
         clipper = clipperpy.CLIPPERPairwiseAndSingle(invariant, clipperpy.Params())
         N = D.shape[1]

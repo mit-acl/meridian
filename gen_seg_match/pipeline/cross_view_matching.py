@@ -761,6 +761,7 @@ def cross_view_matching(
     from gen_seg_match.utils import save_params, save_commit_hash
 
     all_params = [
+        data_params,
         pipeline_params,
         segment_match_params,
         algorithm.registerer.params,
