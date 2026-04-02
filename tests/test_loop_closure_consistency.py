@@ -66,8 +66,12 @@ def build_candidates(
     n_consistent: int = 5,
     n_outliers: int = 3,
     seed: int = 42,
-) -> list:
-    """Build synthetic loop closure candidates with n_consistent inliers + n_outliers."""
+) -> tuple:
+    """Build synthetic loop closure candidates with n_consistent inliers + n_outliers.
+
+    Returns (candidates, trajectory, times) where trajectory and times are
+    simple identity poses at integer timestamps matching ground_submap_time.
+    """
     rng = np.random.default_rng(seed)
 
     # Shared aerial patch
@@ -120,7 +124,12 @@ def build_candidates(
             }
         )
 
-    return candidates
+    # Build a simple trajectory with identity poses at integer timestamps
+    n_total = n_consistent + n_outliers
+    trajectory = [np.eye(4) for _ in range(n_total)]
+    times = np.arange(n_total, dtype=float)
+
+    return candidates, trajectory, times
 
 
 # ---------------------------------------------------------------------------
@@ -129,25 +138,38 @@ def build_candidates(
 
 
 def test_affinity_matrix_agrees():
-    """C++ invariant affinity matrix must match the Python reference."""
-    params = CrossViewRPGOParams()
+    """C++ invariant affinity matrix must match the Python reference.
+
+    Uses added_*_noise = 0 so that the C++ and Python results are comparable
+    (the Python reference does not implement distance-dependent noise).
+    """
+    params = CrossViewRPGOParams(
+        added_trans_noise_m_per_m=0.0,
+        added_rot_noise_deg_per_m=0.0,
+    )
     rpgo = CrossViewRPGO(params=params)
 
-    candidates = build_candidates(n_consistent=5, n_outliers=3, seed=0)
+    candidates, trajectory, times = build_candidates(
+        n_consistent=5, n_outliers=3, seed=0
+    )
     N = len(candidates)
 
     # Python reference
     M_py, _ = rpgo._build_affinity_matrix_python(candidates)
 
     # C++ via CLIPPERPairwiseAndSingle
-    D, aerial_poses, ground_poses = _build_clipper_data(candidates)
+    D, aerial_poses, ground_poses, ground_distances = _build_clipper_data(
+        candidates, trajectory, times
+    )
     iparams = clipperpy.invariants.LoopClosureConsistencyParams()
     iparams.rot_sigma_rad = params.rot_consistency_sigma_rad
     iparams.rot_eps_rad = params.rot_consistency_eps_rad
     iparams.trans_sigma_m = params.trans_consistency_sigma_m
     iparams.trans_eps_m = params.trans_consistency_eps_m
+    iparams.added_trans_noise_m_per_m = 0.0
+    iparams.added_rot_noise_deg_per_m = 0.0
     invariant = clipperpy.invariants.LoopClosureConsistency(
-        aerial_poses, ground_poses, iparams
+        aerial_poses, ground_poses, ground_distances, iparams
     )
     clipper = clipperpy.CLIPPERPairwiseAndSingle(invariant, clipperpy.Params())
     A = np.stack([np.arange(N), np.arange(N)], axis=1).astype(np.int32)
@@ -166,17 +188,21 @@ def test_affinity_matrix_agrees():
 def test_diagonal_ones():
     """Diagonal of the affinity matrix should be 1.0."""
     params = CrossViewRPGOParams()
-    candidates = build_candidates(n_consistent=4, n_outliers=2, seed=1)
+    candidates, trajectory, times = build_candidates(
+        n_consistent=4, n_outliers=2, seed=1
+    )
     N = len(candidates)
 
-    D, aerial_poses, ground_poses = _build_clipper_data(candidates)
+    D, aerial_poses, ground_poses, ground_distances = _build_clipper_data(
+        candidates, trajectory, times
+    )
     iparams = clipperpy.invariants.LoopClosureConsistencyParams()
     iparams.rot_sigma_rad = params.rot_consistency_sigma_rad
     iparams.rot_eps_rad = params.rot_consistency_eps_rad
     iparams.trans_sigma_m = params.trans_consistency_sigma_m
     iparams.trans_eps_m = params.trans_consistency_eps_m
     invariant = clipperpy.invariants.LoopClosureConsistency(
-        aerial_poses, ground_poses, iparams
+        aerial_poses, ground_poses, ground_distances, iparams
     )
     clipper = clipperpy.CLIPPERPairwiseAndSingle(invariant, clipperpy.Params())
     A = np.stack([np.arange(N), np.arange(N)], axis=1).astype(np.int32)
@@ -190,9 +216,11 @@ def test_run_clipper_cpp_finds_inliers():
     """run_clipper_cpp should return at least the consistent cluster."""
     params = CrossViewRPGOParams()
     rpgo = CrossViewRPGO(params=params)
-    candidates = build_candidates(n_consistent=5, n_outliers=3, seed=2)
+    candidates, trajectory, times = build_candidates(
+        n_consistent=5, n_outliers=3, seed=2
+    )
 
-    inlier_indices, M, C = rpgo.run_clipper_cpp(candidates)
+    inlier_indices, M, C = rpgo.run_clipper_cpp(candidates, trajectory, times)
 
     # All returned indices should be within the consistent cluster (indices 0..4)
     assert len(inlier_indices) > 0, "No inliers found"
