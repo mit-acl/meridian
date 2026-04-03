@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from typing import ClassVar, Tuple
+from typing import ClassVar, Optional, Tuple
 
 import numpy as np
 
@@ -42,7 +42,7 @@ class CrossViewMatchingParams(ParamsBase):
         None  # None → same as aerial_img_patch_side_len_m
     )
     aerial_img_patch_overlap: float = 0.5
-    max_intersection_patches_per_ground_sm: int = 2
+    max_intersection_patches_per_ground_sm: int = 4
     aerial_min_dist_to_border_m: float = 0.5
 
     match_min_len_m: float = 4.0
@@ -128,11 +128,14 @@ class CrossViewRPGOParams(ParamsBase):
     params_key: ClassVar[str] = "cross_view_rpgo"
 
     # CLIPPER consistency
-    rot_consistency_sigma_deg: float = 15.0
-    rot_consistency_eps_deg: float = 15.0
-    trans_consistency_sigma_m: float = 15.0
-    trans_consistency_eps_m: float = 15.0
+    rot_consistency_sigma_deg: float = 5.0
+    rot_consistency_eps_deg: float = 5.0
+    trans_consistency_sigma_m: float = 2.0
+    trans_consistency_eps_m: float = 2.0
+    added_trans_noise_m_per_m: float = 0.01
+    added_rot_noise_deg_per_m: float = 0.01
     min_num_associations: int = 3
+    min_num_associations_rerun: Optional[int] = None
 
     # Optimization method
     optimization_method: str = "pgo"  # "frame_align" or "pgo"
@@ -140,8 +143,8 @@ class CrossViewRPGOParams(ParamsBase):
     # PGO noise parameters
     odom_trans_sigma_m: float = 0.1
     odom_rot_sigma_deg: float = 0.5
-    prior_trans_sigma_m: float = 5.0
-    prior_rot_sigma_deg: float = 10.0
+    prior_trans_sigma_m: float = 2.0
+    prior_rot_sigma_deg: float = 5.0
 
     rerun_match_with_known_rot: bool = True
 
