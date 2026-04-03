@@ -66,7 +66,9 @@ class CrossViewMatchingParams(ParamsBase):
     dense_points_max_n: int = 5000
 
     # Matching method: "clipper" (single-hypothesis) or "langevin" (multi-hypothesis)
-    matching_method: str = "langevin"
+    matching_method: str = "clipper"
+    # Use CLIPPER instead of Langevin for pass 2 (rerun with known rotation)
+    langevin_clipper_pass2: bool = False
 
     # Langevin parameters
     langevin_n_particles: int = 5000
@@ -75,7 +77,7 @@ class CrossViewMatchingParams(ParamsBase):
     langevin_adagrad: bool = True
     langevin_alpha: float = 0.9
     langevin_device: str = "cuda"
-    langevin_min_associations: int = 2
+    langevin_min_associations: int = 3
     langevin_anneal_noise: bool = True
     langevin_no_noise: bool = False
     langevin_early_stop: bool = True
@@ -86,6 +88,10 @@ class CrossViewMatchingParams(ParamsBase):
     # Post-processing: cluster hypotheses by transformation similarity
     langevin_cluster_trans_thresh_m: float = 2.0
     langevin_cluster_rot_thresh_deg: float = 5.0
+
+    # Pre-clustering: merge hypotheses with similar association sets (Jaccard)
+    langevin_jaccard_pruning: bool = False
+    langevin_jaccard_thresh: float = 0.3
 
     translation_only: bool = False
     rot_bias_deg: float = 0.0

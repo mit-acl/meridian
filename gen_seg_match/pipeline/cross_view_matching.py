@@ -563,7 +563,11 @@ class CrossViewMatchingPipeline:
                     details = match_result.match_details.get(ground_key, {})
                     dense_points_by_id = dense_points_all[ground_key]
 
-                    for aerial_key, single_result in details.items():
+                    for aerial_key, single_results_list in details.items():
+                        if isinstance(single_results_list, list):
+                            single_result = single_results_list[0]
+                        else:
+                            single_result = single_results_list
                         i_a, j_a = aerial_key_to_tuple(aerial_key)
                         result = single_result.pose_result
 

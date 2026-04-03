@@ -40,12 +40,15 @@ class LangevinMatcher:
         self,
         map1: List[GeneralSegment],
         map2: List[GeneralSegment],
+        **kwargs,
     ) -> List[Tuple[np.ndarray, float, int]]:
         """Run Langevin dynamics to find multiple association hypotheses.
 
         Args:
             map1: Source segments.
             map2: Target segments.
+            **kwargs: Direction constraints passed to get_MCA_with_maps
+                (global_x_dir1, global_y_dir1, global_x_dir2, global_y_dir2).
 
         Returns:
             List of (association_ids, objective_score, particle_count) tuples
@@ -56,7 +59,7 @@ class LangevinMatcher:
         """
         # Get affinity matrix, constraint matrix, putative associations, and ordered maps
         M, C, A, map1_ordered, map2_ordered = self.segment_matcher.get_MCA_with_maps(
-            map1, map2
+            map1, map2, **kwargs
         )
 
         if M.shape[0] == 0:

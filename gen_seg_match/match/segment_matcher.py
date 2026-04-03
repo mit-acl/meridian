@@ -124,15 +124,41 @@ class SegmentMatcher:
         M, C, A_init, _, _ = self.get_MCA_with_maps(map1, map2)
         return M, C, A_init
 
-    def get_MCA_with_maps(self, map1: List[GeneralSegment], map2: List[GeneralSegment]):
+    def get_MCA_with_maps(
+        self,
+        map1: List[GeneralSegment],
+        map2: List[GeneralSegment],
+        global_x_dir1: np.ndarray = None,
+        global_y_dir1: np.ndarray = None,
+        global_x_dir2: np.ndarray = None,
+        global_y_dir2: np.ndarray = None,
+    ):
         """Return affinity matrix, constraint matrix, putative associations, and ordered maps.
 
         The returned map1/map2 SegmentLists are in type-ordered form (points + lines + planes)
         matching the index space of M, C, and A_init. These are needed for
         assoc_idx_to_ids() to convert association indices back to segment IDs.
         """
-        map1 = SegmentList(map1)
-        map2 = SegmentList(map2)
+        map1 = SegmentList(deepcopy(map1))
+        map2 = SegmentList(deepcopy(map2))
+        map1 = map1.get_points() + map1.get_lines() + map1.get_planes()
+        map2 = map2.get_points() + map2.get_lines() + map2.get_planes()
+
+        # Apply direction-aligned frame transform (same as match())
+        if self.params.xy_dir_constrained_2d:
+            for map_i, (x_dir_i, y_dir_i) in zip(
+                [map1, map2],
+                [
+                    (global_x_dir1, global_y_dir1),
+                    (global_x_dir2, global_y_dir2),
+                ],
+            ):
+                assert x_dir_i is not None and y_dir_i is not None, (
+                    "Must supply x and y directions if using xy_dir_constrained_2d"
+                )
+                T_world_aligned = self._construct_xy_aligned_frame_2d(x_dir_i, y_dir_i)
+                map_i.transform(np.linalg.inv(T_world_aligned))
+
         clipper = self._setup_solver()
         clipper, A_init = self._setup_problem(clipper, map1, map2)
         M = clipper.get_affinity_matrix()

@@ -165,6 +165,14 @@ class CrossViewLocalization:
         if main_output_dir is not None:
             ground_dense_dir = pathlib.Path(main_output_dir) / "ground" / "segments"
 
+        # Optionally switch to CLIPPER for pass 2
+        use_clipper_pass2 = (
+            pipeline.algorithm.pipeline_params.langevin_clipper_pass2
+            and pipeline.algorithm.langevin_matcher is not None
+        )
+        if use_clipper_pass2:
+            pipeline.algorithm.set_use_langevin(False)
+
         # Re-run matching with full viz output via pipeline
         # reference_trajectory provides the rotation constraint from PGO,
         # gt_trajectory provides actual ground truth for T_i_j visualization/errors
@@ -203,10 +211,11 @@ class CrossViewLocalization:
         rerun_output_dir = output_dir / "rerun"
         rerun_output_dir.mkdir(parents=True, exist_ok=True)
 
-        if rerun_result.M is not None:
-            self._visualize_affinity_matrix(
-                rerun_result.M, rerun_result.C, candidates, rerun_output_dir
-            )
+        # TODO - can crash on large matrices (OOM in Tk/matplotlib)
+        # if rerun_result.M is not None:
+        #     self._visualize_affinity_matrix(
+        #         rerun_result.M, rerun_result.C, candidates, rerun_output_dir
+        #     )
 
         if not rerun_result.success:
             logger.warning("Rerun RPGO failed — keeping initial result.")

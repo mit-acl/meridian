@@ -33,8 +33,8 @@ class SegmenterParamsBase(ParamsBase):
     frame_descriptor: str = "anyloc"
 
     # AnyLoc params (used when frame_descriptor == "anyloc")
-    anyloc_path: str = "~/code/AnyLoc"
-    anyloc_vocab_dir: str = "~/code/AnyLoc/demo/cache"
+    anyloc_path: str = "/home/yixuany/Workspace/ROMAN/gen_seg_match/third_party/AnyLoc"
+    anyloc_vocab_dir: str = "/home/yixuany/Workspace/ROMAN/gen_seg_match/third_party/AnyLoc/demo/cache"
     anyloc_domain: str = "urban"
     anyloc_num_clusters: int = 32
     anyloc_dino_model: str = "dinov2_vitg14"

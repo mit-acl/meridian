@@ -490,6 +490,16 @@ class CrossViewMatching:
                 patience=self.pipeline_params.langevin_patience,
             )
             self.langevin_matcher = LangevinMatcher(self.matcher, langevin_params)
+        self._langevin_matcher_backup = None
+
+    def set_use_langevin(self, enabled: bool):
+        """Temporarily enable/disable Langevin matching (falls back to CLIPPER)."""
+        if not enabled and self.langevin_matcher is not None:
+            self._langevin_matcher_backup = self.langevin_matcher
+            self.langevin_matcher = None
+        elif enabled and self._langevin_matcher_backup is not None:
+            self.langevin_matcher = self._langevin_matcher_backup
+            self._langevin_matcher_backup = None
 
     # ------------------------------------------------------------------
     # Single-patch methods (unchanged from original)
@@ -1162,6 +1172,9 @@ class CrossViewMatching:
                 T_aerial_ground = T_aerial_ground.copy()
                 T_aerial_ground[0, 3] = col * pixel_len_m
                 T_aerial_ground[1, 3] = row * pixel_len_m
+            # Zero out Z — matching is 2D SE(2), and T_hat also has Z=0
+            T_aerial_ground = T_aerial_ground.copy()
+            T_aerial_ground[2, 3] = 0.0
         else:
             T_aerial_ground = np.zeros((4, 4)) * np.nan
 
@@ -1215,6 +1228,7 @@ class CrossViewMatching:
             results = self._match_single_pair_langevin(
                 aerial_segs_j, ground_segs_i, T_aerial_ground,
                 T_ground_odom_ground_robot, T_camera_flu,
+                match_kwargs,
             )
         else:
             results = self._match_single_pair_clipper(
@@ -1286,6 +1300,89 @@ class CrossViewMatching:
             )
         ]
 
+    def _register_single_hypothesis(
+        self,
+        matches: np.ndarray,
+        aerial_segs_3d: SegmentList,
+        ground_segs_3d: SegmentList,
+        T_ground_odom_ground_robot: np.ndarray,
+        T_camera_flu: Optional[np.ndarray],
+    ) -> Optional[np.ndarray]:
+        """Register a single hypothesis, returning T_aerial_ground_hat or None."""
+        try:
+            T_aerial_ground_odom_hat = self.registerer.register(
+                aerial_segs_3d,
+                ground_segs_3d,
+                correspondences=matches,
+            ).transformation
+            T_aerial_ground_hat = (
+                T_aerial_ground_odom_hat @ T_ground_odom_ground_robot
+            )
+            if T_camera_flu is not None:
+                T_aerial_ground_hat = T_aerial_ground_hat @ T_camera_flu
+        except InsufficientAssociationsException:
+            return None
+
+        if np.any(np.isnan(T_aerial_ground_hat)):
+            return None
+
+        # Aerial-to-ground registration flips Z, so the 2D rotation
+        # block must have negative determinant.  Reject flipped hypotheses.
+        if np.linalg.det(T_aerial_ground_hat[:2, :2]) > 0:
+            return None
+
+        T_aerial_ground_hat[2, 3] = 0.0
+        return T_aerial_ground_hat
+
+    @staticmethod
+    def _cluster_by_jaccard(
+        hypotheses: List[Tuple[np.ndarray, float, int]],
+        jaccard_thresh: float = 0.5,
+    ) -> List[Tuple[np.ndarray, float, int]]:
+        """Pre-cluster hypotheses by Jaccard similarity of association sets.
+
+        Greedy clustering: iterate hypotheses (already sorted by objective
+        descending), assign each to the first cluster within the Jaccard
+        threshold, or start a new cluster. The representative is the
+        highest-objective member; particle counts are summed.
+
+        Args:
+            hypotheses: List of (association_ids (n,2), objective, count).
+            jaccard_thresh: Minimum Jaccard similarity to merge into a cluster.
+
+        Returns:
+            Deduplicated list of (association_ids, objective, total_count).
+        """
+        if not hypotheses:
+            return []
+
+        # Convert each association array to a frozenset of tuples for fast set ops
+        assoc_sets = []
+        for matches, score, count in hypotheses:
+            assoc_sets.append(frozenset(map(tuple, matches.tolist())))
+
+        # clusters: list of (representative_idx, set, total_count)
+        clusters = []
+        for i, (matches, score, count) in enumerate(hypotheses):
+            s = assoc_sets[i]
+            assigned = False
+            for cluster in clusters:
+                rep_set = cluster[1]
+                intersection = len(s & rep_set)
+                union = len(s | rep_set)
+                if union > 0 and intersection / union >= jaccard_thresh:
+                    cluster[2] += count
+                    assigned = True
+                    break
+            if not assigned:
+                clusters.append([i, s, count])
+
+        # Return representatives with accumulated counts
+        return [
+            (hypotheses[idx][0], hypotheses[idx][1], total_count)
+            for idx, _, total_count in clusters
+        ]
+
     def _match_single_pair_langevin(
         self,
         aerial_segs_j: SegmentList,
@@ -1293,31 +1390,37 @@ class CrossViewMatching:
         T_aerial_ground: np.ndarray,
         T_ground_odom_ground_robot: np.ndarray,
         T_camera_flu: Optional[np.ndarray],
+        match_kwargs: dict = None,
     ) -> List[SingleMatchResult]:
         """Langevin matching: returns multiple hypotheses, clustered by transformation."""
-        hypotheses = self.langevin_matcher.match(aerial_segs_j, ground_segs_i)
+        hypotheses = self.langevin_matcher.match(
+            aerial_segs_j, ground_segs_i, **(match_kwargs or {})
+        )
 
-        # First pass: compute transformations for all hypotheses
+        # Optionally pre-cluster by Jaccard similarity to reduce registration calls
+        if self.pipeline_params.langevin_jaccard_pruning:
+            n_before = len(hypotheses)
+            hypotheses = self._cluster_by_jaccard(
+                hypotheses,
+                jaccard_thresh=self.pipeline_params.langevin_jaccard_thresh,
+            )
+            logger.debug(
+                f"Langevin Jaccard pruning: {n_before} -> {len(hypotheses)} hypotheses"
+            )
+
+        # Precompute 3D segments once
+        aerial_segs_3d = aerial_segs_j.to_dim(3)
+        ground_segs_3d = ground_segs_i.to_dim(3)
+
+        # Register all hypotheses
         raw_results = []  # (SingleMatchResult, particle_count)
         for matches, score, count in hypotheses:
-            try:
-                T_aerial_ground_odom_hat = self.registerer.register(
-                    aerial_segs_j.to_dim(3),
-                    ground_segs_i.to_dim(3),
-                    correspondences=matches,
-                ).transformation
-                T_aerial_ground_hat = (
-                    T_aerial_ground_odom_hat @ T_ground_odom_ground_robot
-                )
-                if T_camera_flu is not None:
-                    T_aerial_ground_hat = T_aerial_ground_hat @ T_camera_flu
-            except InsufficientAssociationsException:
+            T_aerial_ground_hat = self._register_single_hypothesis(
+                matches, aerial_segs_3d, ground_segs_3d,
+                T_ground_odom_ground_robot, T_camera_flu,
+            )
+            if T_aerial_ground_hat is None:
                 continue
-
-            if np.any(np.isnan(T_aerial_ground_hat)):
-                continue
-
-            T_aerial_ground_hat[2, 3] = 0.0
 
             pose_result = PoseEstimationResult(
                 T_i_j_hat=T_aerial_ground_hat,
