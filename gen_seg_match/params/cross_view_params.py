@@ -86,8 +86,13 @@ class CrossViewMatchingParams(ParamsBase):
     langevin_patience: int = 3
 
     # Post-processing: cluster hypotheses by transformation similarity
-    langevin_cluster_trans_thresh_m: float = 2.0
+    langevin_cluster_trans_thresh_m: float = 3.0
     langevin_cluster_rot_thresh_deg: float = 5.0
+
+    # Maximum number of clustered hypotheses to keep per aerial-ground pair.
+    # 0 = no limit (keep all). Limits candidates sent to RPGO to avoid
+    # huge affinity matrices that can cause segfaults.
+    langevin_max_hypotheses: int = 0
 
     # Pre-clustering: merge hypotheses with similar association sets (Jaccard)
     langevin_jaccard_pruning: bool = False
