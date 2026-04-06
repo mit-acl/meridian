@@ -1508,6 +1508,11 @@ class CrossViewMatching:
         # Sort clusters by total particle count descending
         clusters.sort(key=lambda c: c[1], reverse=True)
 
+        # Optionally keep only the top-N clusters
+        max_hyp = self.pipeline_params.langevin_max_hypotheses
+        if max_hyp > 0:
+            clusters = clusters[:max_hyp]
+
         logger.info(
             f"Langevin clustering: {len(raw_results)} hypotheses -> "
             f"{len(clusters)} clusters, top counts: "
