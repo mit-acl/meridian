@@ -1226,14 +1226,20 @@ class CrossViewMatching:
 
         if self.langevin_matcher is not None:
             results = self._match_single_pair_langevin(
-                aerial_segs_j, ground_segs_i, T_aerial_ground,
-                T_ground_odom_ground_robot, T_camera_flu,
+                aerial_segs_j,
+                ground_segs_i,
+                T_aerial_ground,
+                T_ground_odom_ground_robot,
+                T_camera_flu,
                 match_kwargs,
             )
         else:
             results = self._match_single_pair_clipper(
-                aerial_segs_j, ground_segs_i, T_aerial_ground,
-                T_ground_odom_ground_robot, T_camera_flu,
+                aerial_segs_j,
+                ground_segs_i,
+                T_aerial_ground,
+                T_ground_odom_ground_robot,
+                T_camera_flu,
                 match_kwargs,
             )
 
@@ -1315,9 +1321,7 @@ class CrossViewMatching:
                 ground_segs_3d,
                 correspondences=matches,
             ).transformation
-            T_aerial_ground_hat = (
-                T_aerial_ground_odom_hat @ T_ground_odom_ground_robot
-            )
+            T_aerial_ground_hat = T_aerial_ground_odom_hat @ T_ground_odom_ground_robot
             if T_camera_flu is not None:
                 T_aerial_ground_hat = T_aerial_ground_hat @ T_camera_flu
         except InsufficientAssociationsException:
@@ -1416,8 +1420,11 @@ class CrossViewMatching:
         raw_results = []  # (SingleMatchResult, particle_count)
         for matches, score, count in hypotheses:
             T_aerial_ground_hat = self._register_single_hypothesis(
-                matches, aerial_segs_3d, ground_segs_3d,
-                T_ground_odom_ground_robot, T_camera_flu,
+                matches,
+                aerial_segs_3d,
+                ground_segs_3d,
+                T_ground_odom_ground_robot,
+                T_camera_flu,
             )
             if T_aerial_ground_hat is None:
                 continue
@@ -1486,9 +1493,7 @@ class CrossViewMatching:
             return []
 
         trans_thresh = self.pipeline_params.langevin_cluster_trans_thresh_m
-        rot_thresh = np.deg2rad(
-            self.pipeline_params.langevin_cluster_rot_thresh_deg
-        )
+        rot_thresh = np.deg2rad(self.pipeline_params.langevin_cluster_rot_thresh_deg)
 
         # Each cluster: (representative_result, total_count, [member results])
         clusters = []

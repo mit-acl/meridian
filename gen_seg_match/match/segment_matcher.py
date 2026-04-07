@@ -144,6 +144,11 @@ class SegmentMatcher:
         map1 = map1.get_points() + map1.get_lines() + map1.get_planes()
         map2 = map2.get_points() + map2.get_lines() + map2.get_planes()
 
+        # Return empty matrices if either map is empty
+        if len(map1) == 0 or len(map2) == 0:
+            empty = np.zeros((0, 0))
+            return empty, empty, np.zeros((0, 2), dtype=np.int32), map1, map2
+
         # Apply direction-aligned frame transform (same as match())
         if self.params.xy_dir_constrained_2d:
             for map_i, (x_dir_i, y_dir_i) in zip(

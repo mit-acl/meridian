@@ -26,18 +26,35 @@ class LangevinDynamics:
         """
         return 2.0 * (X @ self.Md)
 
-    def updateParticles(self, u, stepsize, n_iter, adagrad=False, alpha=0.9, debug=False, **kwargs):
+    def updateParticles(
+        self, u, stepsize, n_iter, adagrad=False, alpha=0.9, debug=False, **kwargs
+    ):
         u = self.update(
-            theta=u, n_iter=n_iter, stepsize=stepsize,
-            adagrad=adagrad, alpha=alpha, debug=debug, **kwargs,
+            theta=u,
+            n_iter=n_iter,
+            stepsize=stepsize,
+            adagrad=adagrad,
+            alpha=alpha,
+            debug=debug,
+            **kwargs,
         )
         return u
 
     @torch.no_grad()
     def update(
-        self, theta, n_iter=1000, stepsize=1e-3, alpha=0.9, adagrad=False,
-        debug=False, no_noise=False, anneal_noise=False, early_stop=True,
-        check_interval=50, obj_tol=5e-3, patience=3,
+        self,
+        theta,
+        n_iter=1000,
+        stepsize=1e-3,
+        alpha=0.9,
+        adagrad=False,
+        debug=False,
+        no_noise=False,
+        anneal_noise=False,
+        early_stop=True,
+        check_interval=50,
+        obj_tol=5e-3,
+        patience=3,
     ):
         """
         Run Langevin dynamics with optional early stopping.
@@ -72,10 +89,14 @@ class LangevinDynamics:
 
             if adagrad:
                 if iter == 0:
-                    historical_grad = historical_grad + direct ** 2
+                    historical_grad = historical_grad + direct**2
                 else:
-                    historical_grad = alpha * historical_grad + (1 - alpha) * (direct ** 2)
-                adj_grad = torch.divide(direct, fudge_factor + torch.sqrt(historical_grad))
+                    historical_grad = alpha * historical_grad + (1 - alpha) * (
+                        direct**2
+                    )
+                adj_grad = torch.divide(
+                    direct, fudge_factor + torch.sqrt(historical_grad)
+                )
                 theta = theta + stepsize * adj_grad
             else:
                 theta = theta + stepsize * direct
@@ -97,17 +118,19 @@ class LangevinDynamics:
                     obj_ema = ema_beta * obj_ema + (1 - ema_beta) * obj
                     rel_change = abs(obj_ema - prev_ema) / (abs(prev_ema) + 1e-12)
                     if debug:
-                        print(f"  iter {iter+1}: obj={obj:.4f}, ema={obj_ema:.4f}, rel_change={rel_change:.2e}")
+                        print(
+                            f"  iter {iter + 1}: obj={obj:.4f}, ema={obj_ema:.4f}, rel_change={rel_change:.2e}"
+                        )
                     if rel_change < obj_tol:
                         converge_count += 1
                         if converge_count >= patience:
                             if debug:
-                                print(f"  Converged at iter {iter+1}")
+                                print(f"  Converged at iter {iter + 1}")
                             break
                     else:
                         converge_count = 0
                 if debug and obj_ema == obj:
-                    print(f"  iter {iter+1}: obj={obj:.4f} (initial)")
+                    print(f"  iter {iter + 1}: obj={obj:.4f} (initial)")
 
         return theta
 
@@ -132,8 +155,8 @@ class LangevinDynamics:
         sorted_idx_cpu = sorted_idx.cpu().numpy()
 
         # Estimate clique size per particle: k = round(x^T Md x)
-        Md_u = u @ self.Md                                # (n_particles, n)
-        omega_hat = torch.round((Md_u * u).sum(dim=1))    # (n_particles,)
+        Md_u = u @ self.Md  # (n_particles, n)
+        omega_hat = torch.round((Md_u * u).sum(dim=1))  # (n_particles,)
         omega_hat = omega_hat.clamp(min=0, max=u.size(1)).to(torch.long)
 
         associations = []

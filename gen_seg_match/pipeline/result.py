@@ -187,7 +187,9 @@ class PoseEstimationResultMatrix(np.ndarray):
     def has_similarity(self):
         """Check if any result has similarity matrix."""
         return np.any(
-            np.vectorize(lambda r: not np.isnan(_primary(r).descriptor_similarity))(self)
+            np.vectorize(lambda r: not np.isnan(_primary(r).descriptor_similarity))(
+                self
+            )
         )
 
     @property
