@@ -648,44 +648,65 @@ class CrossViewMatchingPipeline:
                         with open(fname, "wb") as f:
                             f.write(viz_bytes)
 
-        self._write_results_summary(match_result.results, output_dir)
+        params = self.algorithm.pipeline_params
+        self._write_results_summary(
+            match_result.results,
+            output_dir,
+            dist_thresh=params.match_trans_err_m,
+            angle_thresh_deg=params.match_rot_err_deg,
+        )
 
     @staticmethod
-    def _write_results_summary(all_results, output_dir):
-        # Use same thresholds as before (sensible defaults)
-        dist_thresh = 5.0
-        angle_thresh_deg = 10.0
-
+    def _write_results_summary(
+        all_results, output_dir, dist_thresh=5.0, angle_thresh_deg=10.0
+    ):
         n_total = len(all_results)
-        n_any_success = 0
+        n_best_success = 0
         n_max_assoc_success = 0
-        successful_ground_keys = []
+        n_any_hyp_success = 0
+        best_ground_keys = []
+        any_hyp_ground_keys = []
 
         for ground_key, results_matrix in all_results.items():
             trans_errors = results_matrix.translation_error_m
             rot_errors = np.rad2deg(results_matrix.rotation_error_rad)
             num_assoc = results_matrix.num_associations
 
-            # Metric 1: any crop below both thresholds
+            # Metric 1: best hypothesis in any crop below both thresholds
             success_mask = (trans_errors < dist_thresh) & (
                 rot_errors < angle_thresh_deg
             )
             if np.any(success_mask):
-                n_any_success += 1
-                successful_ground_keys.append(ground_key)
+                n_best_success += 1
+                best_ground_keys.append(ground_key)
 
             # Metric 2: crop(s) with max associations — majority correct
             valid_mask = num_assoc > 0
-            if not np.any(valid_mask):
-                continue
-            max_assoc = np.nanmax(num_assoc[valid_mask])
-            if max_assoc == 0:
-                continue
-            tied_mask = num_assoc == max_assoc
-            tied_successes = np.sum(success_mask[tied_mask])
-            tied_total = np.sum(tied_mask)
-            if tied_successes > tied_total / 2:  # strict majority
-                n_max_assoc_success += 1
+            if np.any(valid_mask):
+                max_assoc = np.nanmax(num_assoc[valid_mask])
+                if max_assoc > 0:
+                    tied_mask = num_assoc == max_assoc
+                    tied_successes = np.sum(success_mask[tied_mask])
+                    tied_total = np.sum(tied_mask)
+                    if tied_successes > tied_total / 2:  # strict majority
+                        n_max_assoc_success += 1
+
+            # Metric 3: any hypothesis in any cell below both thresholds
+            any_hyp_correct = False
+            for idx in np.ndindex(results_matrix.shape):
+                for h in results_matrix.all_hypotheses(idx):
+                    t_err = h.translation_error_m
+                    r_err = h.rotation_error_rad
+                    if np.isnan(t_err) or np.isnan(r_err):
+                        continue
+                    if t_err < dist_thresh and np.rad2deg(r_err) < angle_thresh_deg:
+                        any_hyp_correct = True
+                        break
+                if any_hyp_correct:
+                    break
+            if any_hyp_correct:
+                n_any_hyp_success += 1
+                any_hyp_ground_keys.append(ground_key)
 
         # Compute mean time per registration across all pairs
         all_runtimes = []
@@ -696,13 +717,20 @@ class CrossViewMatchingPipeline:
 
         results_path = pathlib.Path(output_dir) / "results.txt"
         results_str = (
-            f"Successful ground submap pose found: {n_any_success} / {n_total}\n"
-            + "Successful ground submap pose using max number of "
-            + f"associations: {n_max_assoc_success} / {n_total}\n"
-            + f"Mean time per registration: {mean_runtime:.3f} s\n"
-            + "\nGround keys with successful registration "
-            + f"({len(successful_ground_keys)} / {n_total}): "
-            + " ".join(successful_ground_keys)
+            f"Successful ground submap pose (best hypothesis): "
+            f"{n_best_success} / {n_total}\n"
+            f"Successful ground submap pose (max associations): "
+            f"{n_max_assoc_success} / {n_total}\n"
+            f"Successful ground submap pose (any hypothesis): "
+            f"{n_any_hyp_success} / {n_total}\n"
+            f"Mean time per registration: {mean_runtime:.3f} s\n"
+            f"\nGround keys with successful registration "
+            f"(best, {len(best_ground_keys)} / {n_total}): "
+            + " ".join(best_ground_keys)
+            + "\n"
+            f"Ground keys with successful registration "
+            f"(any, {len(any_hyp_ground_keys)} / {n_total}): "
+            + " ".join(any_hyp_ground_keys)
             + "\n"
         )
         print(results_str)
