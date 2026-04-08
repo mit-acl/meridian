@@ -1,3 +1,4 @@
+import logging
 import numpy as np
 from typing import List, Tuple
 import matplotlib.pyplot as plt
@@ -13,6 +14,9 @@ from gen_seg_match.segment.segment_types import (
     SegmentPlane,
 )
 from gen_seg_match.params.segment_match_params import SegmentMatchParams
+from gen_seg_match.match.match_result import MatchResult
+
+logger = logging.getLogger(__name__)
 
 
 class InsufficientAssociationsException(Exception):
@@ -27,6 +31,19 @@ class InsufficientAssociationsException(Exception):
 class SegmentMatcher:
     def __init__(self, params: SegmentMatchParams):
         self.params = params
+        self._langevin_matcher = None
+
+    @property
+    def langevin_matcher(self):
+        if self._langevin_matcher is None and self.params.langevin_params is not None:
+            from gen_seg_match.match.langevin_matcher import LangevinMatcher
+
+            self._langevin_matcher = LangevinMatcher(self.params.langevin_params)
+        return self._langevin_matcher
+
+    def set_solver(self, solver: str):
+        """Switch solver at runtime (e.g., 'clipper' for pass 2)."""
+        self.params.solver = solver
 
     def match(
         self,
@@ -40,15 +57,56 @@ class SegmentMatcher:
         global_z_dir2: np.ndarray = None,
         bidirectional: bool = True,
         putative_match_matrix: np.ndarray = None,
-    ):
+    ) -> MatchResult:
+        # Langevin multi-hypothesis path
+        if self.params.solver == "langevin" and self.langevin_matcher is not None:
+            return self._match_langevin(
+                map1,
+                map2,
+                global_x_dir1=global_x_dir1,
+                global_y_dir1=global_y_dir1,
+                global_x_dir2=global_x_dir2,
+                global_y_dir2=global_y_dir2,
+            )
+
+        # CLIPPER single-hypothesis path
+        return self._match_clipper(
+            map1,
+            map2,
+            global_x_dir1=global_x_dir1,
+            global_y_dir1=global_y_dir1,
+            global_z_dir1=global_z_dir1,
+            global_x_dir2=global_x_dir2,
+            global_y_dir2=global_y_dir2,
+            global_z_dir2=global_z_dir2,
+            bidirectional=bidirectional,
+            putative_match_matrix=putative_match_matrix,
+        )
+
+    def _match_clipper(
+        self,
+        map1: List[GeneralSegment],
+        map2: List[GeneralSegment],
+        global_x_dir1: np.ndarray = None,
+        global_y_dir1: np.ndarray = None,
+        global_z_dir1: np.ndarray = None,
+        global_x_dir2: np.ndarray = None,
+        global_y_dir2: np.ndarray = None,
+        global_z_dir2: np.ndarray = None,
+        bidirectional: bool = True,
+        putative_match_matrix: np.ndarray = None,
+    ) -> MatchResult:
+        """CLIPPER single-hypothesis matching."""
         map1 = SegmentList(deepcopy(map1))
         map2 = SegmentList(deepcopy(map2))
         map1 = map1.get_points() + map1.get_lines() + map1.get_planes()
         map2 = map2.get_points() + map2.get_lines() + map2.get_planes()
 
+        empty_result = MatchResult([np.array([])], [0.0], [1])
+
         # return empty associations if map is empty
         if len(map1) == 0 or len(map2) == 0:
-            return np.array([])
+            return empty_result
 
         # transform into direction-aligned frame
         if self.params.z_dir_constrained:
@@ -92,7 +150,7 @@ class SegmentMatcher:
         if putative_match_matrix is None:
             clipper, A_init = self._setup_problem(clipper, map1, map2)
             if len(A_init) == 0:
-                return np.array([])
+                return empty_result
         else:
             map1_lists = [self._get_seg_array(obj) for obj in map1]
             map2_lists = [self._get_seg_array(obj) for obj in map2]
@@ -118,16 +176,158 @@ class SegmentMatcher:
                 "Corresponded segments must be of the same type. "
                 + f"Got match between {type(map1.get_segment_from_id(Ain_pair[0]))} and {type(map2.get_segment_from_id(Ain_pair[1]))}."
             )
-        return Ain_by_ids
+
+        # Compute CLIPPER objective score
+        u_sol = clipper.get_solution().u
+        M = clipper.get_affinity_matrix()
+        solution_nodes = clipper.get_solution().nodes
+        if len(solution_nodes) == 0:
+            score = 0.0
+        else:
+            score = float(u_sol.T @ M @ u_sol / (u_sol.T @ u_sol))
+
+        return MatchResult([Ain_by_ids], [score], [1])
+
+    def _match_langevin(
+        self,
+        map1: List[GeneralSegment],
+        map2: List[GeneralSegment],
+        global_x_dir1: np.ndarray = None,
+        global_y_dir1: np.ndarray = None,
+        global_x_dir2: np.ndarray = None,
+        global_y_dir2: np.ndarray = None,
+    ) -> MatchResult:
+        """Langevin multi-hypothesis matching."""
+        dir_kwargs = {}
+        if global_x_dir1 is not None:
+            dir_kwargs["global_x_dir1"] = global_x_dir1
+        if global_y_dir1 is not None:
+            dir_kwargs["global_y_dir1"] = global_y_dir1
+        if global_x_dir2 is not None:
+            dir_kwargs["global_x_dir2"] = global_x_dir2
+        if global_y_dir2 is not None:
+            dir_kwargs["global_y_dir2"] = global_y_dir2
+
+        M, C, A, map1_ordered, map2_ordered = self.get_MCA_with_maps(
+            map1, map2, **dir_kwargs
+        )
+
+        empty_result = MatchResult([np.array([])], [0.0], [1])
+        if M.shape[0] == 0:
+            return empty_result
+
+        raw_results = self.langevin_matcher.match(M, C, A)
+        if not raw_results:
+            return empty_result
+
+        # Convert index pairs to segment IDs
+        results = []
+        for assoc_idx, score, count in raw_results:
+            ids = self.assoc_idx_to_ids(assoc_idx, map1_ordered, map2_ordered)
+            results.append((ids, score, count))
+
+        # Optional Jaccard pruning
+        if self.params.langevin_params.jaccard_pruning:
+            n_before = len(results)
+            results = self._cluster_by_jaccard(
+                results, self.params.langevin_params.jaccard_thresh
+            )
+            logger.debug(f"Jaccard pruning: {n_before} -> {len(results)} hypotheses")
+
+        return MatchResult(
+            association_arrays=[r[0] for r in results],
+            scores=[r[1] for r in results],
+            counts=[r[2] for r in results],
+        )
+
+    @staticmethod
+    def _cluster_by_jaccard(
+        hypotheses: List[Tuple[np.ndarray, float, int]],
+        jaccard_thresh: float = 0.5,
+    ) -> List[Tuple[np.ndarray, float, int]]:
+        """Pre-cluster hypotheses by Jaccard similarity of association sets.
+
+        Greedy clustering: iterate hypotheses (already sorted by objective
+        descending), assign each to the first cluster within the Jaccard
+        threshold, or start a new cluster. The representative is the
+        highest-objective member; particle counts are summed.
+        """
+        if not hypotheses:
+            return []
+
+        assoc_sets = []
+        for matches, score, count in hypotheses:
+            assoc_sets.append(frozenset(map(tuple, matches.tolist())))
+
+        clusters = []
+        for i, (matches, score, count) in enumerate(hypotheses):
+            s = assoc_sets[i]
+            assigned = False
+            for cluster in clusters:
+                rep_set = cluster[1]
+                intersection = len(s & rep_set)
+                union = len(s | rep_set)
+                if union > 0 and intersection / union >= jaccard_thresh:
+                    cluster[2] += count
+                    assigned = True
+                    break
+            if not assigned:
+                clusters.append([i, s, count])
+
+        return [
+            (hypotheses[idx][0], hypotheses[idx][1], total_count)
+            for idx, _, total_count in clusters
+        ]
 
     def get_MCA(self, map1: List[GeneralSegment], map2: List[GeneralSegment]):
-        map1 = SegmentList(map1)
-        map2 = SegmentList(map2)
+        M, C, A_init, _, _ = self.get_MCA_with_maps(map1, map2)
+        return M, C, A_init
+
+    def get_MCA_with_maps(
+        self,
+        map1: List[GeneralSegment],
+        map2: List[GeneralSegment],
+        global_x_dir1: np.ndarray = None,
+        global_y_dir1: np.ndarray = None,
+        global_x_dir2: np.ndarray = None,
+        global_y_dir2: np.ndarray = None,
+    ):
+        """Return affinity matrix, constraint matrix, putative associations, and ordered maps.
+
+        The returned map1/map2 SegmentLists are in type-ordered form (points + lines + planes)
+        matching the index space of M, C, and A_init. These are needed for
+        assoc_idx_to_ids() to convert association indices back to segment IDs.
+        """
+        map1 = SegmentList(deepcopy(map1))
+        map2 = SegmentList(deepcopy(map2))
+        map1 = map1.get_points() + map1.get_lines() + map1.get_planes()
+        map2 = map2.get_points() + map2.get_lines() + map2.get_planes()
+
+        # Return empty matrices if either map is empty
+        if len(map1) == 0 or len(map2) == 0:
+            empty = np.zeros((0, 0))
+            return empty, empty, np.zeros((0, 2), dtype=np.int32), map1, map2
+
+        # Apply direction-aligned frame transform (same as match())
+        if self.params.xy_dir_constrained_2d:
+            for map_i, (x_dir_i, y_dir_i) in zip(
+                [map1, map2],
+                [
+                    (global_x_dir1, global_y_dir1),
+                    (global_x_dir2, global_y_dir2),
+                ],
+            ):
+                assert x_dir_i is not None and y_dir_i is not None, (
+                    "Must supply x and y directions if using xy_dir_constrained_2d"
+                )
+                T_world_aligned = self._construct_xy_aligned_frame_2d(x_dir_i, y_dir_i)
+                map_i.transform(np.linalg.inv(T_world_aligned))
+
         clipper = self._setup_solver()
         clipper, A_init = self._setup_problem(clipper, map1, map2)
         M = clipper.get_affinity_matrix()
         C = clipper.get_constraint_matrix()
-        return M, C, A_init
+        return M, C, A_init, map1, map2
 
     def match_multiple(
         self, map1: List[GeneralSegment], map2: List[GeneralSegment], num_solutions=2
@@ -206,7 +406,7 @@ class SegmentMatcher:
                 global_x_dir2=global_x_dir2,
                 global_y_dir2=global_y_dir2,
                 global_z_dir2=global_z_dir2,
-            )
+            ).association_array
         if len(correspondences) == 0:
             raise InsufficientAssociationsException(len(map1), len(map2))
 
@@ -439,17 +639,30 @@ class SegmentMatcher:
         ]
         return np.array(map1_lists), np.array(map2_lists)
 
-    def _assoc_idx_to_ids(
+    def assoc_idx_to_ids(
         self,
         association_matrix: np.ndarray,
         map1: SegmentList,
         map2: SegmentList,
     ) -> np.ndarray:
+        """Convert association index pairs to segment ID pairs.
+
+        Args:
+            association_matrix: (n, 2) array of type-ordered indices.
+            map1: Source SegmentList (as returned by get_MCA_with_maps).
+            map2: Target SegmentList (as returned by get_MCA_with_maps).
+
+        Returns:
+            (n, 2) array of segment IDs.
+        """
         Ain_by_ids = np.zeros_like(association_matrix)
         for i in range(association_matrix.shape[0]):
             Ain_by_ids[i, 0] = map1.get_type_ordered_idx(association_matrix[i, 0]).id
             Ain_by_ids[i, 1] = map2.get_type_ordered_idx(association_matrix[i, 1]).id
         return Ain_by_ids
+
+    # Keep backward-compatible alias
+    _assoc_idx_to_ids = assoc_idx_to_ids
 
     def _get_seg_array(self, seg: GeneralSegment) -> np.ndarray:
         return seg.to_array(

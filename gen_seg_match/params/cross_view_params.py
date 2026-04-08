@@ -57,13 +57,12 @@ class CrossViewMatchingParams(ParamsBase):
     line_frac_near_points: float = 0.3
     line_pt_dist_check_m: float = 0.5
 
-    aerial_viz_downsample: int = 5
-    aerial_viz_line_width_m: float = 0.2
     ground_dist_from_aerial_patch_center_m: float = 75.0
 
-    aerial_viz_target_size_kb: int = 200
-    match_viz_target_size_kb: int = 200
     dense_points_max_n: int = 5000
+
+    # Use CLIPPER instead of Langevin for pass 2 (rerun with known rotation)
+    clipper_pass2: bool = False
 
     translation_only: bool = False
     rot_bias_deg: float = 0.0
@@ -72,8 +71,8 @@ class CrossViewMatchingParams(ParamsBase):
     points_only: bool = False
     lines_only: bool = False
 
-    match_viz_dist_thresh_m: float = 5.0
-    match_viz_angle_thresh_deg: float = 10.0
+    match_trans_err_m: float = 5.0
+    match_rot_err_deg: float = 10.0
 
     sparse_conversion_max_threads: int = 16
 
@@ -84,6 +83,20 @@ class CrossViewMatchingParams(ParamsBase):
     @property
     def circle_point_max_rad(self):
         return np.sqrt(self.circle_point_max_area / np.pi)
+
+
+@dataclass
+class CrossViewVisualizationParams(ParamsBase):
+    params_key: ClassVar[str] = "cross_view_visualization"
+
+    aerial_viz_pixel_size_m: float = 0.05
+    aerial_viz_line_width_m: float = 0.2
+    aerial_viz_target_size_kb: int = 200
+    match_viz_target_size_kb: int = 200
+
+    # Trajectory plot colors
+    estimated_trajectory_color: str = "#fa5ff7"  # light magenta
+    gt_trajectory_color: str = "#89fe05"  # lime green
 
 
 @dataclass

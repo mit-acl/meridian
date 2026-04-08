@@ -6,6 +6,29 @@ from gen_seg_match.params.params_base import ParamsBase
 
 
 @dataclass
+class LangevinMatcherParams(ParamsBase):
+    """Parameters for the Langevin dynamics multi-hypothesis solver."""
+
+    params_key: ClassVar[str] = "langevin"
+
+    n_particles: int = 1000
+    n_iter: int = 1000
+    step_size: float = 1.0
+    adagrad: bool = True
+    alpha: float = 0.9
+    device: str = "cuda"
+    min_associations: int = 3
+    anneal_noise: bool = True
+    no_noise: bool = False
+    early_stop: bool = True
+    check_interval: int = 10
+    obj_tol: float = 1e-5
+    patience: int = 3
+    jaccard_pruning: bool = False
+    jaccard_thresh: float = 0.3
+
+
+@dataclass
 class SegmentMatchParams(ParamsBase):
     """
     SegmentMatchParams: dataclass for segment matching parameters.
@@ -64,6 +87,15 @@ class SegmentMatchParams(ParamsBase):
     rot_unc_ang_rad: float = np.deg2rad(20.0)
     point_noise_from_angle: bool = True
     k_nearest_neighbors: int = 5  # None = all-to-all
+
+    solver: str = "langevin"  # "clipper" or "langevin"
+    langevin_params: LangevinMatcherParams = None
+
+    def __post_init__(self):
+        if isinstance(self.langevin_params, dict):
+            self.langevin_params = LangevinMatcherParams(**self.langevin_params)
+        elif self.langevin_params is None and self.solver == "langevin":
+            self.langevin_params = LangevinMatcherParams()
 
     def to_clipper(
         self,

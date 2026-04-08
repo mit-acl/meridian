@@ -73,8 +73,24 @@ class PoseEstimationResult:
         )
 
 
+def _primary(cell):
+    """Get the primary (best) hypothesis from a cell.
+
+    Supports both list cells (new format) and single PoseEstimationResult
+    cells (legacy format) for backward compatibility.
+    """
+    if isinstance(cell, list):
+        return cell[0]
+    return cell
+
+
 class PoseEstimationResultMatrix(np.ndarray):
-    """A numpy ndarray subclass holding PoseEstimationResult objects."""
+    """A numpy ndarray subclass holding PoseEstimationResult objects.
+
+    Each cell holds a List[PoseEstimationResult] representing match hypotheses.
+    For single-hypothesis matchers (e.g. CLIPPER), this is a length-1 list.
+    Vectorized properties operate on the primary (first) hypothesis per cell.
+    """
 
     def __new__(cls, shape, fill_value: PoseEstimationResult = None):
         assert len(shape) >= 2, "Shape dimension must be at least 2."
@@ -83,10 +99,10 @@ class PoseEstimationResultMatrix(np.ndarray):
         if fill_value is None:
             # Important: create a *new* instance per entry
             for idx in np.ndindex(shape):
-                obj[idx] = PoseEstimationResult()
+                obj[idx] = [PoseEstimationResult()]
         else:
             for idx in np.ndindex(shape):
-                obj[idx] = fill_value
+                obj[idx] = [fill_value]
 
         return obj
 
@@ -94,6 +110,20 @@ class PoseEstimationResultMatrix(np.ndarray):
         # Called on new views/slices
         if obj is None:
             return
+
+    def all_hypotheses(self, idx):
+        """Get the full list of hypotheses for a cell.
+
+        Args:
+            idx: Tuple index into the matrix.
+
+        Returns:
+            List[PoseEstimationResult] for that cell.
+        """
+        cell = self[idx]
+        if isinstance(cell, list):
+            return cell
+        return [cell]
 
     @classmethod
     def load(cls, filepath: str):
@@ -109,8 +139,8 @@ class PoseEstimationResultMatrix(np.ndarray):
 
     @property
     def translation_error_m(self):
-        """Return a matrix of translation errors."""
-        return np.vectorize(lambda r: r.translation_error_m)(self)
+        """Return a matrix of translation errors (primary hypothesis)."""
+        return np.vectorize(lambda r: _primary(r).translation_error_m)(self)
 
     @property
     def angle_error_rad(self):
@@ -120,50 +150,52 @@ class PoseEstimationResultMatrix(np.ndarray):
 
     @property
     def rotation_error_rad(self):
-        """Return a matrix of rotation errors."""
-        return np.vectorize(lambda r: r.rotation_error_rad)(self)
+        """Return a matrix of rotation errors (primary hypothesis)."""
+        return np.vectorize(lambda r: _primary(r).rotation_error_rad)(self)
 
     @property
     def num_associations(self):
-        """Return a matrix of number of associations."""
-        return np.vectorize(lambda r: r.num_associations)(self)
+        """Return a matrix of number of associations (primary hypothesis)."""
+        return np.vectorize(lambda r: _primary(r).num_associations)(self)
 
     @property
     def num_point_associations(self):
-        """Return a matrix of number of point associations."""
-        return np.vectorize(lambda r: r.num_point_associations)(self)
+        """Return a matrix of number of point associations (primary hypothesis)."""
+        return np.vectorize(lambda r: _primary(r).num_point_associations)(self)
 
     @property
     def num_line_associations(self):
-        """Return a matrix of number of line associations."""
-        return np.vectorize(lambda r: r.num_line_associations)(self)
+        """Return a matrix of number of line associations (primary hypothesis)."""
+        return np.vectorize(lambda r: _primary(r).num_line_associations)(self)
 
     @property
     def gt_distance_m(self):
-        """Return a matrix of ground truth distances."""
-        return np.vectorize(lambda r: r.gt_distance_m)(self)
+        """Return a matrix of ground truth distances (primary hypothesis)."""
+        return np.vectorize(lambda r: _primary(r).gt_distance_m)(self)
 
     @property
     def gt_rotation_diff_rad(self):
-        """Return a matrix of submap yaw differences."""
-        return np.vectorize(lambda r: r.gt_rotation_diff_rad)(self)
+        """Return a matrix of submap yaw differences (primary hypothesis)."""
+        return np.vectorize(lambda r: _primary(r).gt_rotation_diff_rad)(self)
 
     @property
     def descriptor_similarity(self):
-        """Return a matrix of descriptor similarities."""
-        return np.vectorize(lambda r: r.descriptor_similarity)(self)
+        """Return a matrix of descriptor similarities (primary hypothesis)."""
+        return np.vectorize(lambda r: _primary(r).descriptor_similarity)(self)
 
     @property
     def has_similarity(self):
         """Check if any result has similarity matrix."""
         return np.any(
-            np.vectorize(lambda r: not np.isnan(r.descriptor_similarity))(self)
+            np.vectorize(lambda r: not np.isnan(_primary(r).descriptor_similarity))(
+                self
+            )
         )
 
     @property
     def runtime_s(self):
-        """Return a matrix of runtimes."""
-        return np.vectorize(lambda r: r.runtime_s)(self)
+        """Return a matrix of runtimes (primary hypothesis)."""
+        return np.vectorize(lambda r: _primary(r).runtime_s)(self)
 
     def save(self, filepath: str):
         """Save the PoseEstimationResultMatrix to a .npz file."""

@@ -1,7 +1,7 @@
 import io
 import numpy as np
 from concurrent.futures import ProcessPoolExecutor, as_completed
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import List, Tuple, Dict, Union
 import cv2 as cv
 import os
@@ -14,6 +14,7 @@ import pickle
 from gen_seg_match.params import (
     SegmentMatchParams,
     CrossViewMatchingParams,
+    CrossViewVisualizationParams,
     CrossViewLocalizationDataParams,
     CrossViewPlaceRecognitionParams,
     AerialSegmenterParams,
@@ -232,6 +233,9 @@ def _match_viz_worker(
 @dataclass
 class CrossViewMatchingPipeline:
     algorithm: CrossViewMatching
+    _viz_params: CrossViewVisualizationParams = field(
+        default_factory=CrossViewVisualizationParams
+    )
 
     # ------------------------------------------------------------------
     # Delegated convenience accessors
@@ -310,9 +314,11 @@ class CrossViewMatchingPipeline:
                     params.alpha_shape_grid_downsample,
                     params.alpha_shape_max_n_pts,
                     params.alpha_shape_ref_size_m,
-                    params.aerial_viz_downsample,
-                    params.aerial_viz_line_width_m,
-                    params.aerial_viz_target_size_kb,
+                    max(
+                        1, round(self._viz_params.aerial_viz_pixel_size_m / pixel_len_m)
+                    ),
+                    self._viz_params.aerial_viz_line_width_m,
+                    self._viz_params.aerial_viz_target_size_kb,
                     px_per_m,
                     i,
                     j,
@@ -501,7 +507,13 @@ class CrossViewMatchingPipeline:
             details = match_result.match_details.get(ground_key, {})
 
             # Save matched segments
-            for aerial_key, single_result in details.items():
+            for aerial_key, single_results_list in details.items():
+                # match_details now holds List[SingleMatchResult] per pair;
+                # save only the primary (best) hypothesis.
+                if isinstance(single_results_list, list):
+                    single_result = single_results_list[0]
+                else:
+                    single_result = single_results_list
                 fname_matches = (
                     segments_output_dir / f"ground_{ground_key}_aerial_{aerial_key}.pkl"
                 )
@@ -519,7 +531,9 @@ class CrossViewMatchingPipeline:
             # Compute GT patch indices from T_i_j
             gt_patches = None
             for idx in np.ndindex(results_matrix.shape):
-                t = results_matrix[idx].T_i_j
+                cell = results_matrix[idx]
+                primary = cell[0] if isinstance(cell, list) else cell
+                t = primary.T_i_j
                 if not np.any(np.isnan(t)):
                     ground_pos = t[:2, 3]
                     gt_patches = []
@@ -537,8 +551,8 @@ class CrossViewMatchingPipeline:
                     break
 
             results_matrix.plot(
-                dist_thresh=params.match_viz_dist_thresh_m,
-                angle_thresh_deg=params.match_viz_angle_thresh_deg,
+                dist_thresh=params.match_trans_err_m,
+                angle_thresh_deg=params.match_rot_err_deg,
                 gt_patches=gt_patches,
             )
             fname_heatmap = viz_output_dir / f"ground_{ground_key}_all.png"
@@ -548,14 +562,20 @@ class CrossViewMatchingPipeline:
         # Phase 2: parallel match + pose visualization across ALL ground keys
         if save_viz:
             max_workers = self.algorithm.pipeline_params.sparse_conversion_max_threads
-            line_width_px = max(1, round(params.aerial_viz_line_width_m * px_per_m))
+            line_width_px = max(
+                1, round(self._viz_params.aerial_viz_line_width_m * px_per_m)
+            )
             viz_futures = {}
             with ProcessPoolExecutor(max_workers=max_workers) as executor:
                 for ground_key in match_result.results:
                     details = match_result.match_details.get(ground_key, {})
                     dense_points_by_id = dense_points_all[ground_key]
 
-                    for aerial_key, single_result in details.items():
+                    for aerial_key, single_results_list in details.items():
+                        if isinstance(single_results_list, list):
+                            single_result = single_results_list[0]
+                        else:
+                            single_result = single_results_list
                         i_a, j_a = aerial_key_to_tuple(aerial_key)
                         result = single_result.pose_result
 
@@ -606,13 +626,13 @@ class CrossViewMatchingPipeline:
                             dense_points_by_id,
                             px_per_m,
                             aerial_origin_m,
-                            params.match_viz_target_size_kb,
+                            self._viz_params.match_viz_target_size_kb,
                             aerial_img_crop,
                             crop_origin_px,
                             T_i_j_val,
                             T_i_j_hat_val,
                             patch_size_px,
-                            params.aerial_viz_target_size_kb,
+                            self._viz_params.aerial_viz_target_size_kb,
                             line_width_px,
                         )
                         viz_futures[future] = (ground_key, aerial_key)
@@ -628,44 +648,65 @@ class CrossViewMatchingPipeline:
                         with open(fname, "wb") as f:
                             f.write(viz_bytes)
 
-        self._write_results_summary(match_result.results, output_dir)
+        params = self.algorithm.pipeline_params
+        self._write_results_summary(
+            match_result.results,
+            output_dir,
+            dist_thresh=params.match_trans_err_m,
+            angle_thresh_deg=params.match_rot_err_deg,
+        )
 
     @staticmethod
-    def _write_results_summary(all_results, output_dir):
-        # Use same thresholds as before (sensible defaults)
-        dist_thresh = 5.0
-        angle_thresh_deg = 10.0
-
+    def _write_results_summary(
+        all_results, output_dir, dist_thresh=5.0, angle_thresh_deg=10.0
+    ):
         n_total = len(all_results)
-        n_any_success = 0
+        n_best_success = 0
         n_max_assoc_success = 0
-        successful_ground_keys = []
+        n_any_hyp_success = 0
+        best_ground_keys = []
+        any_hyp_ground_keys = []
 
         for ground_key, results_matrix in all_results.items():
             trans_errors = results_matrix.translation_error_m
             rot_errors = np.rad2deg(results_matrix.rotation_error_rad)
             num_assoc = results_matrix.num_associations
 
-            # Metric 1: any crop below both thresholds
+            # Metric 1: best hypothesis in any crop below both thresholds
             success_mask = (trans_errors < dist_thresh) & (
                 rot_errors < angle_thresh_deg
             )
             if np.any(success_mask):
-                n_any_success += 1
-                successful_ground_keys.append(ground_key)
+                n_best_success += 1
+                best_ground_keys.append(ground_key)
 
             # Metric 2: crop(s) with max associations — majority correct
             valid_mask = num_assoc > 0
-            if not np.any(valid_mask):
-                continue
-            max_assoc = np.nanmax(num_assoc[valid_mask])
-            if max_assoc == 0:
-                continue
-            tied_mask = num_assoc == max_assoc
-            tied_successes = np.sum(success_mask[tied_mask])
-            tied_total = np.sum(tied_mask)
-            if tied_successes > tied_total / 2:  # strict majority
-                n_max_assoc_success += 1
+            if np.any(valid_mask):
+                max_assoc = np.nanmax(num_assoc[valid_mask])
+                if max_assoc > 0:
+                    tied_mask = num_assoc == max_assoc
+                    tied_successes = np.sum(success_mask[tied_mask])
+                    tied_total = np.sum(tied_mask)
+                    if tied_successes > tied_total / 2:  # strict majority
+                        n_max_assoc_success += 1
+
+            # Metric 3: any hypothesis in any cell below both thresholds
+            any_hyp_correct = False
+            for idx in np.ndindex(results_matrix.shape):
+                for h in results_matrix.all_hypotheses(idx):
+                    t_err = h.translation_error_m
+                    r_err = h.rotation_error_rad
+                    if np.isnan(t_err) or np.isnan(r_err):
+                        continue
+                    if t_err < dist_thresh and np.rad2deg(r_err) < angle_thresh_deg:
+                        any_hyp_correct = True
+                        break
+                if any_hyp_correct:
+                    break
+            if any_hyp_correct:
+                n_any_hyp_success += 1
+                any_hyp_ground_keys.append(ground_key)
 
         # Compute mean time per registration across all pairs
         all_runtimes = []
@@ -676,13 +717,20 @@ class CrossViewMatchingPipeline:
 
         results_path = pathlib.Path(output_dir) / "results.txt"
         results_str = (
-            f"Successful ground submap pose found: {n_any_success} / {n_total}\n"
-            + "Successful ground submap pose using max number of "
-            + f"associations: {n_max_assoc_success} / {n_total}\n"
-            + f"Mean time per registration: {mean_runtime:.3f} s\n"
-            + "\nGround keys with successful registration "
-            + f"({len(successful_ground_keys)} / {n_total}): "
-            + " ".join(successful_ground_keys)
+            f"Successful ground submap pose (best hypothesis): "
+            f"{n_best_success} / {n_total}\n"
+            f"Successful ground submap pose (max associations): "
+            f"{n_max_assoc_success} / {n_total}\n"
+            f"Successful ground submap pose (any hypothesis): "
+            f"{n_any_hyp_success} / {n_total}\n"
+            f"Mean time per registration: {mean_runtime:.3f} s\n"
+            f"\nGround keys with successful registration "
+            f"(best, {len(best_ground_keys)} / {n_total}): "
+            + " ".join(best_ground_keys)
+            + "\n"
+            f"Ground keys with successful registration "
+            f"(any, {len(any_hyp_ground_keys)} / {n_total}): "
+            + " ".join(any_hyp_ground_keys)
             + "\n"
         )
         print(results_str)
@@ -725,7 +773,8 @@ def cross_view_matching(
         aerial_segmenter=AerialSegmenter(AerialSegmenterParams.load(params)),
         place_recognition=place_recognition,
     )
-    pipeline = CrossViewMatchingPipeline(algorithm=algorithm)
+    viz_params = CrossViewVisualizationParams.load(params)
+    pipeline = CrossViewMatchingPipeline(algorithm=algorithm, _viz_params=viz_params)
 
     initial_aerial_segments = None
     initial_ground_segments = None

@@ -83,7 +83,7 @@ def register_submaps(
             submap_2.segments,
             global_z_dir1=GRAVITY_DIR_NEG_Z,
             global_z_dir2=GRAVITY_DIR_NEG_Z,
-        )
+        ).association_array
         association_types = []
         # track association types
         for assoc in associations:
@@ -152,9 +152,9 @@ def submap_align(
             T_w_smj = gt_pose_2.pose(sm_j.time)
 
             T_smi_smj = np.linalg.inv(T_w_smi) @ T_w_smj
-            results_matrix[i, j] = register_submaps(
-                sm_i, sm_j, matcher, registerer, T_smi_smj, params
-            )
+            results_matrix[i, j] = [
+                register_submaps(sm_i, sm_j, matcher, registerer, T_smi_smj, params)
+            ]
 
     return results_matrix
 

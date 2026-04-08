@@ -117,7 +117,7 @@ class RGBDPoseEstimation:
             input2.segments,
             global_z_dir1=input1.gravity_direction,
             global_z_dir2=input2.gravity_direction,
-        )
+        ).association_array
         try:
             transformation = self.registerer.register(
                 input1.segments,
@@ -323,7 +323,7 @@ class RGBDPoseEstimation:
                             output_file=f"{output_file_prefix}_reg.png",
                         )
 
-                results_matrix[i, j] = result
+                results_matrix[i, j] = [result]
 
         results_matrix.save(f"{self.match_directory}/results.npz")
         results_matrix.plot()

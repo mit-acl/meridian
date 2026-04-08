@@ -3,7 +3,7 @@ import logging
 import os
 import pathlib
 import pickle
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Dict, List, Optional
 
 import cv2 as cv
@@ -20,7 +20,7 @@ from gen_seg_match.cross_view.rpgo import (
     yaw_from_se2,
 )
 from gen_seg_match.map3d.submap import Submap
-from gen_seg_match.params import CrossViewRPGOParams
+from gen_seg_match.params import CrossViewRPGOParams, CrossViewVisualizationParams
 from gen_seg_match.pipeline.cross_view_matching import (
     CrossViewMatching,
     CrossViewMatchingPipeline,
@@ -42,6 +42,9 @@ logger = logging.getLogger(__name__)
 @dataclass
 class CrossViewLocalization:
     rpgo_params: CrossViewRPGOParams
+    viz_params: CrossViewVisualizationParams = field(
+        default_factory=CrossViewVisualizationParams
+    )
 
     def localize(
         self,
@@ -95,7 +98,7 @@ class CrossViewLocalization:
             return None
 
         self._save_results(result, output_dir)
-        self._visualize_and_report(result, data, output_dir)
+        self._visualize_and_report(result, data, output_dir, self.viz_params)
 
         # --- Rerun with known rotation ---
         if (
@@ -165,6 +168,14 @@ class CrossViewLocalization:
         if main_output_dir is not None:
             ground_dense_dir = pathlib.Path(main_output_dir) / "ground" / "segments"
 
+        # Optionally switch to CLIPPER for pass 2
+        use_clipper_pass2 = (
+            pipeline.algorithm.pipeline_params.clipper_pass2
+            and pipeline.algorithm.matcher.params.solver == "langevin"
+        )
+        if use_clipper_pass2:
+            pipeline.algorithm.matcher.set_solver("clipper")
+
         # Re-run matching with full viz output via pipeline
         # reference_trajectory provides the rotation constraint from PGO,
         # gt_trajectory provides actual ground truth for T_i_j visualization/errors
@@ -203,17 +214,20 @@ class CrossViewLocalization:
         rerun_output_dir = output_dir / "rerun"
         rerun_output_dir.mkdir(parents=True, exist_ok=True)
 
-        if rerun_result.M is not None:
-            self._visualize_affinity_matrix(
-                rerun_result.M, rerun_result.C, candidates, rerun_output_dir
-            )
+        # TODO - can crash on large matrices (OOM in Tk/matplotlib)
+        # if rerun_result.M is not None:
+        #     self._visualize_affinity_matrix(
+        #         rerun_result.M, rerun_result.C, candidates, rerun_output_dir
+        #     )
 
         if not rerun_result.success:
             logger.warning("Rerun RPGO failed — keeping initial result.")
             return None
 
         self._save_results(rerun_result, rerun_output_dir)
-        self._visualize_and_report(rerun_result, data, rerun_output_dir)
+        self._visualize_and_report(
+            rerun_result, data, rerun_output_dir, self.viz_params
+        )
 
         logger.info(
             f"Rerun complete: {len(rerun_result.inlier_indices)} inliers "
@@ -280,88 +294,90 @@ class CrossViewLocalization:
             results_matrix = PoseEstimationResultMatrix.load(str(result_file))
 
             for idx in np.ndindex(results_matrix.shape):
-                result = results_matrix[idx]
-                if result.num_associations < min_assoc:
-                    continue
-                T_i_j_hat = result.T_i_j_hat
-                if np.any(np.isnan(T_i_j_hat)):
-                    continue
+                cell = results_matrix[idx]
+                hypotheses = cell if isinstance(cell, list) else [cell]
+                for result in hypotheses:
+                    if result.num_associations < min_assoc:
+                        continue
+                    T_i_j_hat = result.T_i_j_hat
+                    if np.any(np.isnan(T_i_j_hat)):
+                        continue
 
-                # Compute T_odom_ground
-                if data.T_camera_flu is not None:
-                    T_odom_ground = ground_camera_pose @ data.T_camera_flu
-                else:
-                    T_odom_ground = ground_camera_pose
+                    # Compute T_odom_ground
+                    if data.T_camera_flu is not None:
+                        T_odom_ground = ground_camera_pose @ data.T_camera_flu
+                    else:
+                        T_odom_ground = ground_camera_pose
 
-                # Compute T_utm_body with proper CRS conversion.
-                # pose_flu's linear mapping is inaccurate for non-UTM GeoTIFFs
-                # (e.g. EPSG:3857), so convert via pixel → native CRS → UTM.
-                T_full = pose_flu @ T_i_j_hat
+                    # Compute T_utm_body with proper CRS conversion.
+                    # pose_flu's linear mapping is inaccurate for non-UTM GeoTIFFs
+                    # (e.g. EPSG:3857), so convert via pixel → native CRS → UTM.
+                    T_full = pose_flu @ T_i_j_hat
 
-                # Reject improper rotations (reflections) from registration.
-                if np.linalg.det(T_full[:2, :2]) < 0:
-                    logger.debug(
-                        "Rejecting candidate with reflected rotation "
-                        f"(det(R_2x2)={np.linalg.det(T_full[:2, :2]):.4f})"
+                    # Reject improper rotations (reflections) from registration.
+                    if np.linalg.det(T_full[:2, :2]) < 0:
+                        logger.debug(
+                            "Rejecting candidate with reflected rotation "
+                            f"(det(R_2x2)={np.linalg.det(T_full[:2, :2]):.4f})"
+                        )
+                        continue
+
+                    # Yaw from pose_flu @ T_i_j_hat (rotation approx correct)
+                    yaw = np.arctan2(T_full[1, 0], T_full[0, 0])
+
+                    # Translation via proper CRS pipeline
+                    pixel_len_m = data.aerial_img_scale
+                    body_col = T_i_j_hat[0, 3] / pixel_len_m
+                    body_row = T_i_j_hat[1, 3] / pixel_len_m
+                    if (
+                        data.geotiff_transform is not None
+                        and data.native_crs is not None
+                        and data.utm_crs is not None
+                        and data.native_crs != data.utm_crs
+                    ):
+                        utm_x, utm_y = data.aerial_pixel_to_utm(body_col, body_row)
+                    else:
+                        utm_x = T_full[0, 3]
+                        utm_y = T_full[1, 3]
+
+                    T_utm_body_se2 = se2_from_xytheta(utm_x, utm_y, yaw)
+
+                    # Derive T_utm_odom from corrected T_utm_body
+                    T_utm_odom_4x4 = se2_to_se3(T_utm_body_se2) @ np.linalg.inv(
+                        T_odom_ground
                     )
-                    continue
+                    T_utm_odom_se2 = se3_to_se2(T_utm_odom_4x4)
 
-                # Yaw from pose_flu @ T_i_j_hat (rotation approx correct)
-                yaw = np.arctan2(T_full[1, 0], T_full[0, 0])
+                    # Compute GT T_utm_odom for gt_inlier selection
+                    T_utm_odom_gt_se2 = None
+                    if data.gt_pose_data is not None:
+                        try:
+                            gt_pose = data.gt_pose_data.pose(ground_submap.time)
+                            if data.T_camera_flu is not None:
+                                gt_body = gt_pose @ data.T_camera_flu
+                            else:
+                                gt_body = gt_pose
+                            T_utm_odom_gt = gt_body @ np.linalg.inv(T_odom_ground)
+                            T_utm_odom_gt_se2 = se3_to_se2(T_utm_odom_gt)
+                        except Exception:
+                            pass
 
-                # Translation via proper CRS pipeline
-                pixel_len_m = data.aerial_img_scale
-                body_col = T_i_j_hat[0, 3] / pixel_len_m
-                body_row = T_i_j_hat[1, 3] / pixel_len_m
-                if (
-                    data.geotiff_transform is not None
-                    and data.native_crs is not None
-                    and data.utm_crs is not None
-                    and data.native_crs != data.utm_crs
-                ):
-                    utm_x, utm_y = data.aerial_pixel_to_utm(body_col, body_row)
-                else:
-                    utm_x = T_full[0, 3]
-                    utm_y = T_full[1, 3]
-
-                T_utm_body_se2 = se2_from_xytheta(utm_x, utm_y, yaw)
-
-                # Derive T_utm_odom from corrected T_utm_body
-                T_utm_odom_4x4 = se2_to_se3(T_utm_body_se2) @ np.linalg.inv(
-                    T_odom_ground
-                )
-                T_utm_odom_se2 = se3_to_se2(T_utm_odom_4x4)
-
-                # Compute GT T_utm_odom for gt_inlier selection
-                T_utm_odom_gt_se2 = None
-                if data.gt_pose_data is not None:
-                    try:
-                        gt_pose = data.gt_pose_data.pose(ground_submap.time)
-                        if data.T_camera_flu is not None:
-                            gt_body = gt_pose @ data.T_camera_flu
-                        else:
-                            gt_body = gt_pose
-                        T_utm_odom_gt = gt_body @ np.linalg.inv(T_odom_ground)
-                        T_utm_odom_gt_se2 = se3_to_se2(T_utm_odom_gt)
-                    except Exception:
-                        pass
-
-                candidates.append(
-                    {
-                        "T_utm_odom_se2": T_utm_odom_se2,
-                        "T_utm_body_se2": T_utm_body_se2,
-                        "T_i_j_hat": T_i_j_hat,
-                        "T_i_j": result.T_i_j,
-                        "aerial_pose": pose_flu,
-                        "ground_camera_pose": ground_camera_pose,
-                        "T_odom_ground": T_odom_ground,
-                        "ground_key": ground_key,
-                        "aerial_key": f"{idx[0]}_{idx[1]}",
-                        "num_associations": result.num_associations,
-                        "ground_submap_time": ground_submap.time,
-                        "T_utm_odom_gt_se2": T_utm_odom_gt_se2,
-                    }
-                )
+                    candidates.append(
+                        {
+                            "T_utm_odom_se2": T_utm_odom_se2,
+                            "T_utm_body_se2": T_utm_body_se2,
+                            "T_i_j_hat": T_i_j_hat,
+                            "T_i_j": result.T_i_j,
+                            "aerial_pose": pose_flu,
+                            "ground_camera_pose": ground_camera_pose,
+                            "T_odom_ground": T_odom_ground,
+                            "ground_key": ground_key,
+                            "aerial_key": f"{idx[0]}_{idx[1]}",
+                            "num_associations": result.num_associations,
+                            "ground_submap_time": ground_submap.time,
+                            "T_utm_odom_gt_se2": T_utm_odom_gt_se2,
+                        }
+                    )
 
         logger.info(f"Loaded {len(candidates)} candidates.")
         return candidates
@@ -392,82 +408,84 @@ class CrossViewLocalization:
             ground_camera_pose = ground_submap.metadata["camera_pose"]
 
             for idx in np.ndindex(results_matrix.shape):
-                result = results_matrix[idx]
-                if result.num_associations < min_assoc:
-                    continue
-                T_i_j_hat = result.T_i_j_hat
-                if np.any(np.isnan(T_i_j_hat)):
-                    continue
+                cell = results_matrix[idx]
+                hypotheses = cell if isinstance(cell, list) else [cell]
+                for result in hypotheses:
+                    if result.num_associations < min_assoc:
+                        continue
+                    T_i_j_hat = result.T_i_j_hat
+                    if np.any(np.isnan(T_i_j_hat)):
+                        continue
 
-                if data.T_camera_flu is not None:
-                    T_odom_ground = ground_camera_pose @ data.T_camera_flu
-                else:
-                    T_odom_ground = ground_camera_pose
+                    if data.T_camera_flu is not None:
+                        T_odom_ground = ground_camera_pose @ data.T_camera_flu
+                    else:
+                        T_odom_ground = ground_camera_pose
 
-                # Compute T_utm_body with proper CRS conversion
-                T_full = pose_flu @ T_i_j_hat
+                    # Compute T_utm_body with proper CRS conversion
+                    T_full = pose_flu @ T_i_j_hat
 
-                # Reject improper rotations (reflections) from registration.
-                if np.linalg.det(T_full[:2, :2]) < 0:
-                    logger.debug(
-                        "Rejecting candidate with reflected rotation "
-                        f"(det(R_2x2)={np.linalg.det(T_full[:2, :2]):.4f})"
+                    # Reject improper rotations (reflections) from registration.
+                    if np.linalg.det(T_full[:2, :2]) < 0:
+                        logger.debug(
+                            "Rejecting candidate with reflected rotation "
+                            f"(det(R_2x2)={np.linalg.det(T_full[:2, :2]):.4f})"
+                        )
+                        continue
+
+                    yaw = np.arctan2(T_full[1, 0], T_full[0, 0])
+
+                    pixel_len_m = data.aerial_img_scale
+                    body_col = T_i_j_hat[0, 3] / pixel_len_m
+                    body_row = T_i_j_hat[1, 3] / pixel_len_m
+                    if (
+                        data.geotiff_transform is not None
+                        and data.native_crs is not None
+                        and data.utm_crs is not None
+                        and data.native_crs != data.utm_crs
+                    ):
+                        utm_x, utm_y = data.aerial_pixel_to_utm(body_col, body_row)
+                    else:
+                        utm_x = T_full[0, 3]
+                        utm_y = T_full[1, 3]
+
+                    T_utm_body_se2 = se2_from_xytheta(utm_x, utm_y, yaw)
+
+                    T_utm_odom_4x4 = se2_to_se3(T_utm_body_se2) @ np.linalg.inv(
+                        T_odom_ground
                     )
-                    continue
+                    T_utm_odom_se2 = se3_to_se2(T_utm_odom_4x4)
 
-                yaw = np.arctan2(T_full[1, 0], T_full[0, 0])
+                    # Compute GT T_utm_odom for gt_inlier selection
+                    T_utm_odom_gt_se2 = None
+                    if data.gt_pose_data is not None:
+                        try:
+                            gt_pose = data.gt_pose_data.pose(ground_submap.time)
+                            if data.T_camera_flu is not None:
+                                gt_body = gt_pose @ data.T_camera_flu
+                            else:
+                                gt_body = gt_pose
+                            T_utm_odom_gt = gt_body @ np.linalg.inv(T_odom_ground)
+                            T_utm_odom_gt_se2 = se3_to_se2(T_utm_odom_gt)
+                        except Exception:
+                            pass
 
-                pixel_len_m = data.aerial_img_scale
-                body_col = T_i_j_hat[0, 3] / pixel_len_m
-                body_row = T_i_j_hat[1, 3] / pixel_len_m
-                if (
-                    data.geotiff_transform is not None
-                    and data.native_crs is not None
-                    and data.utm_crs is not None
-                    and data.native_crs != data.utm_crs
-                ):
-                    utm_x, utm_y = data.aerial_pixel_to_utm(body_col, body_row)
-                else:
-                    utm_x = T_full[0, 3]
-                    utm_y = T_full[1, 3]
-
-                T_utm_body_se2 = se2_from_xytheta(utm_x, utm_y, yaw)
-
-                T_utm_odom_4x4 = se2_to_se3(T_utm_body_se2) @ np.linalg.inv(
-                    T_odom_ground
-                )
-                T_utm_odom_se2 = se3_to_se2(T_utm_odom_4x4)
-
-                # Compute GT T_utm_odom for gt_inlier selection
-                T_utm_odom_gt_se2 = None
-                if data.gt_pose_data is not None:
-                    try:
-                        gt_pose = data.gt_pose_data.pose(ground_submap.time)
-                        if data.T_camera_flu is not None:
-                            gt_body = gt_pose @ data.T_camera_flu
-                        else:
-                            gt_body = gt_pose
-                        T_utm_odom_gt = gt_body @ np.linalg.inv(T_odom_ground)
-                        T_utm_odom_gt_se2 = se3_to_se2(T_utm_odom_gt)
-                    except Exception:
-                        pass
-
-                candidates.append(
-                    {
-                        "T_utm_odom_se2": T_utm_odom_se2,
-                        "T_utm_body_se2": T_utm_body_se2,
-                        "T_i_j_hat": T_i_j_hat,
-                        "T_i_j": result.T_i_j,
-                        "aerial_pose": pose_flu,
-                        "ground_camera_pose": ground_camera_pose,
-                        "T_odom_ground": T_odom_ground,
-                        "ground_key": ground_key,
-                        "aerial_key": f"{idx[0]}_{idx[1]}",
-                        "num_associations": result.num_associations,
-                        "ground_submap_time": ground_submap.time,
-                        "T_utm_odom_gt_se2": T_utm_odom_gt_se2,
-                    }
-                )
+                    candidates.append(
+                        {
+                            "T_utm_odom_se2": T_utm_odom_se2,
+                            "T_utm_body_se2": T_utm_body_se2,
+                            "T_i_j_hat": T_i_j_hat,
+                            "T_i_j": result.T_i_j,
+                            "aerial_pose": pose_flu,
+                            "ground_camera_pose": ground_camera_pose,
+                            "T_odom_ground": T_odom_ground,
+                            "ground_key": ground_key,
+                            "aerial_key": f"{idx[0]}_{idx[1]}",
+                            "num_associations": result.num_associations,
+                            "ground_submap_time": ground_submap.time,
+                            "T_utm_odom_gt_se2": T_utm_odom_gt_se2,
+                        }
+                    )
 
         logger.info(f"Loaded {len(candidates)} rerun candidates from in-memory result.")
         return candidates
@@ -568,8 +586,11 @@ class CrossViewLocalization:
         result: CrossViewRPGOResult,
         data: CrossViewLocalizationData,
         output_dir: pathlib.Path,
+        viz_params: CrossViewVisualizationParams = None,
     ):
         """Plot full trajectory on aerial image and compute error metrics."""
+        if viz_params is None:
+            viz_params = CrossViewVisualizationParams()
         ground_map = data.ground_map
         traj_times = np.array(ground_map.times)
         optimized_traj = result.optimized_trajectory
@@ -630,7 +651,8 @@ class CrossViewLocalization:
         ax.plot(
             est_px[:, 0],
             est_px[:, 1],
-            "b-",
+            color=viz_params.estimated_trajectory_color,
+            linestyle="-",
             linewidth=1.5,
             label="Estimated",
         )
@@ -640,7 +662,8 @@ class CrossViewLocalization:
             ax.plot(
                 gt_px[valid, 0],
                 gt_px[valid, 1],
-                "g-",
+                color=viz_params.gt_trajectory_color,
+                linestyle="-",
                 linewidth=1.5,
                 label="Ground Truth",
             )
@@ -684,12 +707,13 @@ class CrossViewLocalization:
                 alpha=0.7,
             )
         # Draw stars at optimized positions (on top of lines)
+        n_unique_submaps = len(set(raw_ground_keys))
         ax.plot(
             inlier_px[:, 0],
             inlier_px[:, 1],
             "m*",
             markersize=8,
-            label=f"Inliers ({len(inlier_indices)})",
+            label=f"Inliers ({n_unique_submaps})",
         )
         # Draw raw measurement axes (x=red, y=green) and ground key labels
         for i in range(len(inlier_indices)):
@@ -855,7 +879,8 @@ def cross_view_localization(
         aerial_submaps = pipeline.load_submaps_from_dir(aerial_seg_dir)
         ground_submaps = pipeline.load_submaps_from_dir(ground_seg_dir)
 
-    runner = CrossViewLocalization(rpgo_params=rpgo_params)
+    viz_params = CrossViewVisualizationParams.load(params)
+    runner = CrossViewLocalization(rpgo_params=rpgo_params, viz_params=viz_params)
     loc_output_dir = os.path.join(output_dir, "localization")
     result = runner.localize(
         match_output_dir,
@@ -989,7 +1014,8 @@ if __name__ == "__main__":
         aerial_submaps = pipeline.load_submaps_from_dir(aerial_seg_dir)
         ground_submaps = pipeline.load_submaps_from_dir(ground_seg_dir)
 
-    runner = CrossViewLocalization(rpgo_params=rpgo_params)
+    viz_params = CrossViewVisualizationParams.load(args.params)
+    runner = CrossViewLocalization(rpgo_params=rpgo_params, viz_params=viz_params)
     loc_output_dir = os.path.join(args.output, "localization")
     runner.localize(
         match_output_dir,

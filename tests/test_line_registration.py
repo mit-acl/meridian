@@ -72,6 +72,7 @@ def default_matcher_params():
         cosine_max=1.0,
         z_dir_constrained=False,
         rot_unc_ang_rad=0.0,
+        solver="clipper",
     )
 
 
@@ -125,7 +126,7 @@ def test_line_registration_2(
     linesa, linesb = three_line_segments
     matcher = SegmentMatcher(default_matcher_params)
     registerer = Registerer(default_register_params)
-    correspondences = matcher.match(linesa, linesb)
+    correspondences = matcher.match(linesa, linesb).association_array
     T_linesa_linesb_est = registerer.register(
         linesa, linesb, correspondences=correspondences
     ).transformation

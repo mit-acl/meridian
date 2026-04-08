@@ -33,8 +33,8 @@ class SegmenterParamsBase(ParamsBase):
     frame_descriptor: str = "anyloc"
 
     # AnyLoc params (used when frame_descriptor == "anyloc")
-    anyloc_path: str = "~/code/AnyLoc"
-    anyloc_vocab_dir: str = "~/code/AnyLoc/demo/cache"
+    anyloc_path: str = "${ANYLOC_PATH}"
+    anyloc_vocab_dir: str = "${ANYLOC_VOCAB_DIR}"
     anyloc_domain: str = "urban"
     anyloc_num_clusters: int = 32
     anyloc_dino_model: str = "dinov2_vitg14"
@@ -53,8 +53,8 @@ class SegmenterParamsBase(ParamsBase):
         ):
             self.frame_descriptor = None
         self.weights_path = expandvars_recursive(self.weights_path)
-        self.dinov3_path = os.path.expanduser(self.dinov3_path)
+        self.dinov3_path = expandvars_recursive(self.dinov3_path)
         if self.dinov3_weights is not None:
-            self.dinov3_weights = os.path.expanduser(self.dinov3_weights)
-        self.anyloc_path = os.path.expanduser(self.anyloc_path)
-        self.anyloc_vocab_dir = os.path.expanduser(self.anyloc_vocab_dir)
+            self.dinov3_weights = expandvars_recursive(self.dinov3_weights)
+        self.anyloc_path = expandvars_recursive(self.anyloc_path)
+        self.anyloc_vocab_dir = expandvars_recursive(self.anyloc_vocab_dir)

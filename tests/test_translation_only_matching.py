@@ -95,6 +95,7 @@ class TestTranslationOnly2D:
             xy_dir_constrained_2d=True,
             sigma_dist=1.0,
             epsilon_dist=1.0,
+            solver="clipper",
         )
 
     @pytest.fixture
@@ -116,7 +117,9 @@ class TestTranslationOnly2D:
         map1 = make_point_list(positions)
         map2 = make_point_list([np.array(p) + t for p in positions])
 
-        matches = SegmentMatcher(params).match(map1, map2, **axis_dirs)
+        matches = (
+            SegmentMatcher(params).match(map1, map2, **axis_dirs).association_array
+        )
 
         assert len(matches) == 5
         for m in matches:
@@ -131,13 +134,17 @@ class TestTranslationOnly2D:
         map1 = make_point_list(positions)
         map2 = make_point_list([R @ np.array(p) + t for p in positions])
 
-        matches = SegmentMatcher(params).match(
-            map1,
-            map2,
-            global_x_dir1=np.array([1.0, 0.0]),
-            global_y_dir1=np.array([0.0, 1.0]),
-            global_x_dir2=R[:, 0],
-            global_y_dir2=R[:, 1],
+        matches = (
+            SegmentMatcher(params)
+            .match(
+                map1,
+                map2,
+                global_x_dir1=np.array([1.0, 0.0]),
+                global_y_dir1=np.array([0.0, 1.0]),
+                global_x_dir2=R[:, 0],
+                global_y_dir2=R[:, 1],
+            )
+            .association_array
         )
 
         assert len(matches) == 5
@@ -155,7 +162,9 @@ class TestTranslationOnly2D:
         map1 = make_point_list(rng.uniform(-20, 20, (15, 2)))
         map2 = make_point_list(rng.uniform(-20, 20, (15, 2)))
 
-        matches = SegmentMatcher(params).match(map1, map2, **axis_dirs)
+        matches = (
+            SegmentMatcher(params).match(map1, map2, **axis_dirs).association_array
+        )
 
         check_pairwise_consistency(map1, map2, matches, params.epsilon_dist, dim=2)
 
@@ -173,13 +182,17 @@ class TestTranslationOnly2D:
         map1 = make_point_list(map1_pos)
         map2 = make_point_list(map2_pos)
 
-        matches = SegmentMatcher(params).match(
-            map1,
-            map2,
-            global_x_dir1=np.array([1.0, 0.0]),
-            global_y_dir1=np.array([0.0, 1.0]),
-            global_x_dir2=R[:, 0],
-            global_y_dir2=R[:, 1],
+        matches = (
+            SegmentMatcher(params)
+            .match(
+                map1,
+                map2,
+                global_x_dir1=np.array([1.0, 0.0]),
+                global_y_dir1=np.array([0.0, 1.0]),
+                global_x_dir2=R[:, 0],
+                global_y_dir2=R[:, 1],
+            )
+            .association_array
         )
 
         # Aligned frame: map1 unchanged, map2 → R^T @ map2_pos = unrotated
@@ -204,7 +217,9 @@ class TestTranslationOnly2D:
         map1 = make_point_list([[0.0, 0.0], [0.5, 0.0]])
         map2 = make_point_list([[0.0, 0.0], [20.0, 0.0]])
 
-        matches = SegmentMatcher(params).match(map1, map2, **axis_dirs)
+        matches = (
+            SegmentMatcher(params).match(map1, map2, **axis_dirs).association_array
+        )
 
         # At most 1 match; if 2 are returned the invariant check will fail.
         if len(matches) >= 2:
@@ -230,6 +245,7 @@ class TestTranslationOnly3D:
             xyz_dir_constrained=True,
             sigma_dist=1.0,
             epsilon_dist=1.0,
+            solver="clipper",
         )
 
     @pytest.fixture
@@ -253,7 +269,9 @@ class TestTranslationOnly3D:
         map1 = make_point_list(positions)
         map2 = make_point_list([np.array(p) + t for p in positions])
 
-        matches = SegmentMatcher(params).match(map1, map2, **axis_dirs)
+        matches = (
+            SegmentMatcher(params).match(map1, map2, **axis_dirs).association_array
+        )
 
         assert len(matches) == 5
         for m in matches:
@@ -268,15 +286,19 @@ class TestTranslationOnly3D:
         map1 = make_point_list(positions)
         map2 = make_point_list([R @ np.array(p) + t for p in positions])
 
-        matches = SegmentMatcher(params).match(
-            map1,
-            map2,
-            global_x_dir1=np.array([1.0, 0.0, 0.0]),
-            global_y_dir1=np.array([0.0, 1.0, 0.0]),
-            global_z_dir1=np.array([0.0, 0.0, 1.0]),
-            global_x_dir2=R[:, 0],
-            global_y_dir2=R[:, 1],
-            global_z_dir2=R[:, 2],
+        matches = (
+            SegmentMatcher(params)
+            .match(
+                map1,
+                map2,
+                global_x_dir1=np.array([1.0, 0.0, 0.0]),
+                global_y_dir1=np.array([0.0, 1.0, 0.0]),
+                global_z_dir1=np.array([0.0, 0.0, 1.0]),
+                global_x_dir2=R[:, 0],
+                global_y_dir2=R[:, 1],
+                global_z_dir2=R[:, 2],
+            )
+            .association_array
         )
 
         assert len(matches) == 5
@@ -294,7 +316,9 @@ class TestTranslationOnly3D:
         map1 = make_point_list(rng.uniform(-20, 20, (15, 3)))
         map2 = make_point_list(rng.uniform(-20, 20, (15, 3)))
 
-        matches = SegmentMatcher(params).match(map1, map2, **axis_dirs)
+        matches = (
+            SegmentMatcher(params).match(map1, map2, **axis_dirs).association_array
+        )
 
         check_pairwise_consistency(map1, map2, matches, params.epsilon_dist, dim=3)
 
@@ -312,15 +336,19 @@ class TestTranslationOnly3D:
         map1 = make_point_list(map1_pos)
         map2 = make_point_list(map2_pos)
 
-        matches = SegmentMatcher(params).match(
-            map1,
-            map2,
-            global_x_dir1=np.array([1.0, 0.0, 0.0]),
-            global_y_dir1=np.array([0.0, 1.0, 0.0]),
-            global_z_dir1=np.array([0.0, 0.0, 1.0]),
-            global_x_dir2=R[:, 0],
-            global_y_dir2=R[:, 1],
-            global_z_dir2=R[:, 2],
+        matches = (
+            SegmentMatcher(params)
+            .match(
+                map1,
+                map2,
+                global_x_dir1=np.array([1.0, 0.0, 0.0]),
+                global_y_dir1=np.array([0.0, 1.0, 0.0]),
+                global_z_dir1=np.array([0.0, 0.0, 1.0]),
+                global_x_dir2=R[:, 0],
+                global_y_dir2=R[:, 1],
+                global_z_dir2=R[:, 2],
+            )
+            .association_array
         )
 
         # Aligned frame: map1 unchanged, map2 → R^T @ map2_pos = unrotated
@@ -344,7 +372,9 @@ class TestTranslationOnly3D:
         map1 = make_point_list([[0, 0, 0], [0.5, 0, 0]])
         map2 = make_point_list([[0, 0, 0], [20, 0, 0]])
 
-        matches = SegmentMatcher(params).match(map1, map2, **axis_dirs)
+        matches = (
+            SegmentMatcher(params).match(map1, map2, **axis_dirs).association_array
+        )
 
         if len(matches) >= 2:
             check_pairwise_consistency(
