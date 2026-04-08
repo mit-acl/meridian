@@ -30,4 +30,10 @@ class ParamsBase:
         if run is not None:
             os.environ["RUN"] = run
 
-        return cls(**params)
+        try:
+            return cls(**params)
+        except Exception:
+            import warnings
+
+            warnings.warn(f"Loading {cls.params_key} params failed, using defaults")
+            return cls()

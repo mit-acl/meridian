@@ -1,7 +1,7 @@
 import io
 import numpy as np
 from concurrent.futures import ProcessPoolExecutor, as_completed
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import List, Tuple, Dict, Union
 import cv2 as cv
 import os
@@ -14,6 +14,7 @@ import pickle
 from gen_seg_match.params import (
     SegmentMatchParams,
     CrossViewMatchingParams,
+    CrossViewVisualizationParams,
     CrossViewLocalizationDataParams,
     CrossViewPlaceRecognitionParams,
     AerialSegmenterParams,
@@ -232,6 +233,9 @@ def _match_viz_worker(
 @dataclass
 class CrossViewMatchingPipeline:
     algorithm: CrossViewMatching
+    _viz_params: CrossViewVisualizationParams = field(
+        default_factory=CrossViewVisualizationParams
+    )
 
     # ------------------------------------------------------------------
     # Delegated convenience accessors
@@ -310,9 +314,11 @@ class CrossViewMatchingPipeline:
                     params.alpha_shape_grid_downsample,
                     params.alpha_shape_max_n_pts,
                     params.alpha_shape_ref_size_m,
-                    params.aerial_viz_downsample,
-                    params.aerial_viz_line_width_m,
-                    params.aerial_viz_target_size_kb,
+                    max(
+                        1, round(self._viz_params.aerial_viz_pixel_size_m / pixel_len_m)
+                    ),
+                    self._viz_params.aerial_viz_line_width_m,
+                    self._viz_params.aerial_viz_target_size_kb,
                     px_per_m,
                     i,
                     j,
@@ -545,8 +551,8 @@ class CrossViewMatchingPipeline:
                     break
 
             results_matrix.plot(
-                dist_thresh=params.match_viz_dist_thresh_m,
-                angle_thresh_deg=params.match_viz_angle_thresh_deg,
+                dist_thresh=params.match_trans_err_m,
+                angle_thresh_deg=params.match_rot_err_deg,
                 gt_patches=gt_patches,
             )
             fname_heatmap = viz_output_dir / f"ground_{ground_key}_all.png"
@@ -556,7 +562,9 @@ class CrossViewMatchingPipeline:
         # Phase 2: parallel match + pose visualization across ALL ground keys
         if save_viz:
             max_workers = self.algorithm.pipeline_params.sparse_conversion_max_threads
-            line_width_px = max(1, round(params.aerial_viz_line_width_m * px_per_m))
+            line_width_px = max(
+                1, round(self._viz_params.aerial_viz_line_width_m * px_per_m)
+            )
             viz_futures = {}
             with ProcessPoolExecutor(max_workers=max_workers) as executor:
                 for ground_key in match_result.results:
@@ -618,13 +626,13 @@ class CrossViewMatchingPipeline:
                             dense_points_by_id,
                             px_per_m,
                             aerial_origin_m,
-                            params.match_viz_target_size_kb,
+                            self._viz_params.match_viz_target_size_kb,
                             aerial_img_crop,
                             crop_origin_px,
                             T_i_j_val,
                             T_i_j_hat_val,
                             patch_size_px,
-                            params.aerial_viz_target_size_kb,
+                            self._viz_params.aerial_viz_target_size_kb,
                             line_width_px,
                         )
                         viz_futures[future] = (ground_key, aerial_key)
@@ -737,7 +745,8 @@ def cross_view_matching(
         aerial_segmenter=AerialSegmenter(AerialSegmenterParams.load(params)),
         place_recognition=place_recognition,
     )
-    pipeline = CrossViewMatchingPipeline(algorithm=algorithm)
+    viz_params = CrossViewVisualizationParams.load(params)
+    pipeline = CrossViewMatchingPipeline(algorithm=algorithm, _viz_params=viz_params)
 
     initial_aerial_segments = None
     initial_ground_segments = None

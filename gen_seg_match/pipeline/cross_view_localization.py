@@ -3,7 +3,7 @@ import logging
 import os
 import pathlib
 import pickle
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Dict, List, Optional
 
 import cv2 as cv
@@ -20,7 +20,7 @@ from gen_seg_match.cross_view.rpgo import (
     yaw_from_se2,
 )
 from gen_seg_match.map3d.submap import Submap
-from gen_seg_match.params import CrossViewRPGOParams
+from gen_seg_match.params import CrossViewRPGOParams, CrossViewVisualizationParams
 from gen_seg_match.pipeline.cross_view_matching import (
     CrossViewMatching,
     CrossViewMatchingPipeline,
@@ -42,6 +42,9 @@ logger = logging.getLogger(__name__)
 @dataclass
 class CrossViewLocalization:
     rpgo_params: CrossViewRPGOParams
+    viz_params: CrossViewVisualizationParams = field(
+        default_factory=CrossViewVisualizationParams
+    )
 
     def localize(
         self,
@@ -95,7 +98,7 @@ class CrossViewLocalization:
             return None
 
         self._save_results(result, output_dir)
-        self._visualize_and_report(result, data, output_dir)
+        self._visualize_and_report(result, data, output_dir, self.viz_params)
 
         # --- Rerun with known rotation ---
         if (
@@ -222,7 +225,9 @@ class CrossViewLocalization:
             return None
 
         self._save_results(rerun_result, rerun_output_dir)
-        self._visualize_and_report(rerun_result, data, rerun_output_dir)
+        self._visualize_and_report(
+            rerun_result, data, rerun_output_dir, self.viz_params
+        )
 
         logger.info(
             f"Rerun complete: {len(rerun_result.inlier_indices)} inliers "
@@ -581,8 +586,11 @@ class CrossViewLocalization:
         result: CrossViewRPGOResult,
         data: CrossViewLocalizationData,
         output_dir: pathlib.Path,
+        viz_params: CrossViewVisualizationParams = None,
     ):
         """Plot full trajectory on aerial image and compute error metrics."""
+        if viz_params is None:
+            viz_params = CrossViewVisualizationParams()
         ground_map = data.ground_map
         traj_times = np.array(ground_map.times)
         optimized_traj = result.optimized_trajectory
@@ -643,7 +651,8 @@ class CrossViewLocalization:
         ax.plot(
             est_px[:, 0],
             est_px[:, 1],
-            "b-",
+            color=viz_params.estimated_trajectory_color,
+            linestyle="-",
             linewidth=1.5,
             label="Estimated",
         )
@@ -653,7 +662,8 @@ class CrossViewLocalization:
             ax.plot(
                 gt_px[valid, 0],
                 gt_px[valid, 1],
-                "g-",
+                color=viz_params.gt_trajectory_color,
+                linestyle="-",
                 linewidth=1.5,
                 label="Ground Truth",
             )
@@ -697,12 +707,13 @@ class CrossViewLocalization:
                 alpha=0.7,
             )
         # Draw stars at optimized positions (on top of lines)
+        n_unique_submaps = len(set(raw_ground_keys))
         ax.plot(
             inlier_px[:, 0],
             inlier_px[:, 1],
             "m*",
             markersize=8,
-            label=f"Inliers ({len(inlier_indices)})",
+            label=f"Inliers ({n_unique_submaps})",
         )
         # Draw raw measurement axes (x=red, y=green) and ground key labels
         for i in range(len(inlier_indices)):
@@ -868,7 +879,8 @@ def cross_view_localization(
         aerial_submaps = pipeline.load_submaps_from_dir(aerial_seg_dir)
         ground_submaps = pipeline.load_submaps_from_dir(ground_seg_dir)
 
-    runner = CrossViewLocalization(rpgo_params=rpgo_params)
+    viz_params = CrossViewVisualizationParams.load(params)
+    runner = CrossViewLocalization(rpgo_params=rpgo_params, viz_params=viz_params)
     loc_output_dir = os.path.join(output_dir, "localization")
     result = runner.localize(
         match_output_dir,
@@ -1002,7 +1014,8 @@ if __name__ == "__main__":
         aerial_submaps = pipeline.load_submaps_from_dir(aerial_seg_dir)
         ground_submaps = pipeline.load_submaps_from_dir(ground_seg_dir)
 
-    runner = CrossViewLocalization(rpgo_params=rpgo_params)
+    viz_params = CrossViewVisualizationParams.load(args.params)
+    runner = CrossViewLocalization(rpgo_params=rpgo_params, viz_params=viz_params)
     loc_output_dir = os.path.join(args.output, "localization")
     runner.localize(
         match_output_dir,

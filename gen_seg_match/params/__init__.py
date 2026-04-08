@@ -16,6 +16,7 @@ from gen_seg_match.params.cross_view_params import CrossViewMatchingParams
 from gen_seg_match.params.pipeline_params import SemanticMatchEvaluationParams
 from gen_seg_match.params.pipeline_params import LandmarkPoseEstimationParams
 from gen_seg_match.params.cross_view_params import CrossViewPlaceRecognitionParams
+from gen_seg_match.params.cross_view_params import CrossViewVisualizationParams
 from gen_seg_match.params.cross_view_params import CrossViewRPGOParams
 from gen_seg_match.params.pipeline_params import GroundToBEVParams
 from gen_seg_match.params.data_params import RGBDPoseEstimationDataParams
