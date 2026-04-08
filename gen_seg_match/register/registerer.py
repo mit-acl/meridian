@@ -1,5 +1,6 @@
+import logging
 import numpy as np
-from typing import List, Optional, Tuple
+from typing import Any, List, Optional, Tuple
 from dataclasses import dataclass
 from itertools import combinations, product
 
@@ -19,6 +20,8 @@ from gen_seg_match.register.geometry import (
 )
 from gen_seg_match.utils import vstack_opt
 # from gen_seg_match.register.optimization import PointLineLoss, PointLineLoss_numpy
+
+logger = logging.getLogger(__name__)
 
 
 class InsufficientAssociationsException(Exception):
@@ -503,3 +506,65 @@ class Registerer:
 
         t, *_ = np.linalg.lstsq(A, b, rcond=None)
         return t
+
+    @staticmethod
+    def _se2_distance(T1: np.ndarray, T2: np.ndarray):
+        """Compute SE(2) translation and rotation distance between two 4x4 transforms."""
+        trans_dist = np.linalg.norm(T1[:2, 3] - T2[:2, 3])
+        yaw1 = np.arctan2(T1[1, 0], T1[0, 0])
+        yaw2 = np.arctan2(T2[1, 0], T2[0, 0])
+        rot_dist = abs(yaw1 - yaw2)
+        rot_dist = min(rot_dist, 2 * np.pi - rot_dist)
+        return trans_dist, rot_dist
+
+    def cluster_hypotheses(
+        self,
+        items: List[Tuple[Any, np.ndarray, int]],
+    ) -> List[Any]:
+        """Cluster hypotheses by transformation similarity, rank by particle count.
+
+        Greedy clustering: iterate items (assumed sorted by objective), assign each
+        to the first existing cluster within thresholds, or start a new cluster.
+        The representative of each cluster is the first (highest-objective) member.
+        Clusters are ranked by total particle count.
+
+        Args:
+            items: List of (payload, T_hat_4x4, count) tuples.
+
+        Returns:
+            List of payload objects from the representative of each cluster.
+        """
+        if not items:
+            return []
+
+        trans_thresh = self.params.cluster_trans_thresh_m
+        rot_thresh = np.deg2rad(self.params.cluster_rot_thresh_deg)
+
+        # Each cluster: [representative_payload, T_rep, total_count]
+        clusters = []
+        for payload, T, count in items:
+            assigned = False
+            for cluster in clusters:
+                t_dist, r_dist = self._se2_distance(T, cluster[1])
+                if t_dist <= trans_thresh and r_dist <= rot_thresh:
+                    cluster[2] += count
+                    assigned = True
+                    break
+            if not assigned:
+                clusters.append([payload, T, count])
+
+        # Sort clusters by total particle count descending
+        clusters.sort(key=lambda c: c[2], reverse=True)
+
+        # Optionally keep only the top-N clusters
+        max_hyp = self.params.max_hypotheses
+        if max_hyp > 0:
+            clusters = clusters[:max_hyp]
+
+        logger.info(
+            f"Hypothesis clustering: {len(items)} hypotheses -> "
+            f"{len(clusters)} clusters, top counts: "
+            f"{[c[2] for c in clusters[:5]]}"
+        )
+
+        return [c[0] for c in clusters]

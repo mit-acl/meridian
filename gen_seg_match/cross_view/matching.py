@@ -467,40 +467,6 @@ class CrossViewMatching:
         if self.ground_segmenter is None:
             self.ground_segmenter = GroundSegmenter(GroundSegmenterParams())
 
-        self.langevin_matcher = None
-        if self.pipeline_params.matching_method == "langevin":
-            from gen_seg_match.match.langevin_matcher import (
-                LangevinMatcher,
-                LangevinMatcherParams,
-            )
-
-            langevin_params = LangevinMatcherParams(
-                n_particles=self.pipeline_params.langevin_n_particles,
-                n_iter=self.pipeline_params.langevin_n_iter,
-                step_size=self.pipeline_params.langevin_step_size,
-                adagrad=self.pipeline_params.langevin_adagrad,
-                alpha=self.pipeline_params.langevin_alpha,
-                device=self.pipeline_params.langevin_device,
-                min_associations=self.pipeline_params.langevin_min_associations,
-                anneal_noise=self.pipeline_params.langevin_anneal_noise,
-                no_noise=self.pipeline_params.langevin_no_noise,
-                early_stop=self.pipeline_params.langevin_early_stop,
-                check_interval=self.pipeline_params.langevin_check_interval,
-                obj_tol=self.pipeline_params.langevin_obj_tol,
-                patience=self.pipeline_params.langevin_patience,
-            )
-            self.langevin_matcher = LangevinMatcher(self.matcher, langevin_params)
-        self._langevin_matcher_backup = None
-
-    def set_use_langevin(self, enabled: bool):
-        """Temporarily enable/disable Langevin matching (falls back to CLIPPER)."""
-        if not enabled and self.langevin_matcher is not None:
-            self._langevin_matcher_backup = self.langevin_matcher
-            self.langevin_matcher = None
-        elif enabled and self._langevin_matcher_backup is not None:
-            self.langevin_matcher = self._langevin_matcher_backup
-            self._langevin_matcher_backup = None
-
     # ------------------------------------------------------------------
     # Single-patch methods (unchanged from original)
     # ------------------------------------------------------------------
@@ -1224,87 +1190,88 @@ class CrossViewMatching:
             # Ensure the matcher uses the direction constraints
             self.matcher.params.xy_dir_constrained_2d = True
 
-        if self.langevin_matcher is not None:
-            results = self._match_single_pair_langevin(
-                aerial_segs_j,
-                ground_segs_i,
-                T_aerial_ground,
-                T_ground_odom_ground_robot,
-                T_camera_flu,
-                match_kwargs,
-            )
-        else:
-            results = self._match_single_pair_clipper(
-                aerial_segs_j,
-                ground_segs_i,
-                T_aerial_ground,
-                T_ground_odom_ground_robot,
-                T_camera_flu,
-                match_kwargs,
-            )
-
-        # Restore default so non-translation-only calls are unaffected
-        if translation_only and R_aerial_ground_2d is not None:
-            self.matcher.params.xy_dir_constrained_2d = False
-
-        return results
-
-    def _match_single_pair_clipper(
-        self,
-        aerial_segs_j: SegmentList,
-        ground_segs_i: SegmentList,
-        T_aerial_ground: np.ndarray,
-        T_ground_odom_ground_robot: np.ndarray,
-        T_camera_flu: Optional[np.ndarray],
-        match_kwargs: dict,
-    ) -> List[SingleMatchResult]:
-        """CLIPPER matching: returns a length-1 list."""
         t0 = time.time()
-        matches = self.matcher.match(
+        match_result = self.matcher.match(
             aerial_segs_j,
             ground_segs_i,
             **match_kwargs,
         )
 
-        try:
-            T_aerial_ground_odom_hat = self.registerer.register(
-                aerial_segs_j.to_dim(3),
-                ground_segs_i.to_dim(3),
-                correspondences=matches,
-            ).transformation
-            T_aerial_ground_hat = T_aerial_ground_odom_hat @ T_ground_odom_ground_robot
-            if T_camera_flu is not None:
-                T_aerial_ground_hat = T_aerial_ground_hat @ T_camera_flu
-        except InsufficientAssociationsException:
-            T_aerial_ground_hat = np.zeros((4, 4)) * np.nan
-        runtime_s = time.time() - t0
+        # Restore default so non-translation-only calls are unaffected
+        if translation_only and R_aerial_ground_2d is not None:
+            self.matcher.params.xy_dir_constrained_2d = False
 
-        if not np.any(np.isnan(T_aerial_ground_hat)):
-            T_aerial_ground_hat[2, 3] = 0.0
+        # Precompute 3D segments once
+        aerial_segs_3d = aerial_segs_j.to_dim(3)
+        ground_segs_3d = ground_segs_i.to_dim(3)
 
-        pose_result = PoseEstimationResult(
-            T_i_j_hat=T_aerial_ground_hat,
-            T_i_j=T_aerial_ground,
-            associations=matches,
-            runtime_s=runtime_s,
-        )
+        # Register each hypothesis
+        raw_results = []
+        for matches, score, count in zip(
+            match_result.association_arrays,
+            match_result.scores,
+            match_result.counts,
+        ):
+            T_aerial_ground_hat = self._register_single_hypothesis(
+                matches,
+                aerial_segs_3d,
+                ground_segs_3d,
+                T_ground_odom_ground_robot,
+                T_camera_flu,
+            )
+            if T_aerial_ground_hat is None:
+                continue
 
-        matched_ground = SegmentList(
-            [ground_segs_i.get_segment_from_id(g_id) for g_id, _ in matches]
-        )
-        matched_aerial = SegmentList(
-            [aerial_segs_j.get_segment_from_id(a_id) for _, a_id in matches]
-        )
+            pose_result = PoseEstimationResult(
+                T_i_j_hat=T_aerial_ground_hat,
+                T_i_j=T_aerial_ground,
+                associations=matches,
+            )
 
-        return [
-            SingleMatchResult(
+            matched_ground = SegmentList(
+                [ground_segs_i.get_segment_from_id(g_id) for g_id, _ in matches]
+            )
+            matched_aerial = SegmentList(
+                [aerial_segs_j.get_segment_from_id(a_id) for _, a_id in matches]
+            )
+
+            result = SingleMatchResult(
                 pose_result=pose_result,
                 aerial_segs_processed=aerial_segs_j,
                 ground_segs_processed=ground_segs_i,
                 matched_ground=matched_ground,
                 matched_aerial=matched_aerial,
             )
-        ]
+            raw_results.append((result, T_aerial_ground_hat, count))
+
+        runtime_s = time.time() - t0
+
+        # Cluster by transformation similarity if multiple hypotheses
+        if len(raw_results) > 1:
+            results = self.registerer.cluster_hypotheses(raw_results)
+        elif len(raw_results) == 1:
+            results = [raw_results[0][0]]
+        else:
+            results = []
+
+        # Set runtime on first result
+        if results:
+            results[0].pose_result.runtime_s = runtime_s
+
+        # Return at least one empty result if no valid hypotheses
+        if not results:
+            results = [
+                SingleMatchResult(
+                    pose_result=PoseEstimationResult(
+                        T_i_j=T_aerial_ground,
+                        runtime_s=runtime_s,
+                    ),
+                    aerial_segs_processed=aerial_segs_j,
+                    ground_segs_processed=ground_segs_i,
+                )
+            ]
+
+        return results
 
     def _register_single_hypothesis(
         self,
@@ -1337,194 +1304,6 @@ class CrossViewMatching:
 
         T_aerial_ground_hat[2, 3] = 0.0
         return T_aerial_ground_hat
-
-    @staticmethod
-    def _cluster_by_jaccard(
-        hypotheses: List[Tuple[np.ndarray, float, int]],
-        jaccard_thresh: float = 0.5,
-    ) -> List[Tuple[np.ndarray, float, int]]:
-        """Pre-cluster hypotheses by Jaccard similarity of association sets.
-
-        Greedy clustering: iterate hypotheses (already sorted by objective
-        descending), assign each to the first cluster within the Jaccard
-        threshold, or start a new cluster. The representative is the
-        highest-objective member; particle counts are summed.
-
-        Args:
-            hypotheses: List of (association_ids (n,2), objective, count).
-            jaccard_thresh: Minimum Jaccard similarity to merge into a cluster.
-
-        Returns:
-            Deduplicated list of (association_ids, objective, total_count).
-        """
-        if not hypotheses:
-            return []
-
-        # Convert each association array to a frozenset of tuples for fast set ops
-        assoc_sets = []
-        for matches, score, count in hypotheses:
-            assoc_sets.append(frozenset(map(tuple, matches.tolist())))
-
-        # clusters: list of (representative_idx, set, total_count)
-        clusters = []
-        for i, (matches, score, count) in enumerate(hypotheses):
-            s = assoc_sets[i]
-            assigned = False
-            for cluster in clusters:
-                rep_set = cluster[1]
-                intersection = len(s & rep_set)
-                union = len(s | rep_set)
-                if union > 0 and intersection / union >= jaccard_thresh:
-                    cluster[2] += count
-                    assigned = True
-                    break
-            if not assigned:
-                clusters.append([i, s, count])
-
-        # Return representatives with accumulated counts
-        return [
-            (hypotheses[idx][0], hypotheses[idx][1], total_count)
-            for idx, _, total_count in clusters
-        ]
-
-    def _match_single_pair_langevin(
-        self,
-        aerial_segs_j: SegmentList,
-        ground_segs_i: SegmentList,
-        T_aerial_ground: np.ndarray,
-        T_ground_odom_ground_robot: np.ndarray,
-        T_camera_flu: Optional[np.ndarray],
-        match_kwargs: dict = None,
-    ) -> List[SingleMatchResult]:
-        """Langevin matching: returns multiple hypotheses, clustered by transformation."""
-        hypotheses = self.langevin_matcher.match(
-            aerial_segs_j, ground_segs_i, **(match_kwargs or {})
-        )
-
-        # Optionally pre-cluster by Jaccard similarity to reduce registration calls
-        if self.pipeline_params.langevin_jaccard_pruning:
-            n_before = len(hypotheses)
-            hypotheses = self._cluster_by_jaccard(
-                hypotheses,
-                jaccard_thresh=self.pipeline_params.langevin_jaccard_thresh,
-            )
-            logger.debug(
-                f"Langevin Jaccard pruning: {n_before} -> {len(hypotheses)} hypotheses"
-            )
-
-        # Precompute 3D segments once
-        aerial_segs_3d = aerial_segs_j.to_dim(3)
-        ground_segs_3d = ground_segs_i.to_dim(3)
-
-        # Register all hypotheses
-        raw_results = []  # (SingleMatchResult, particle_count)
-        for matches, score, count in hypotheses:
-            T_aerial_ground_hat = self._register_single_hypothesis(
-                matches,
-                aerial_segs_3d,
-                ground_segs_3d,
-                T_ground_odom_ground_robot,
-                T_camera_flu,
-            )
-            if T_aerial_ground_hat is None:
-                continue
-
-            pose_result = PoseEstimationResult(
-                T_i_j_hat=T_aerial_ground_hat,
-                T_i_j=T_aerial_ground,
-                associations=matches,
-            )
-
-            matched_ground = SegmentList(
-                [ground_segs_i.get_segment_from_id(g_id) for g_id, _ in matches]
-            )
-            matched_aerial = SegmentList(
-                [aerial_segs_j.get_segment_from_id(a_id) for _, a_id in matches]
-            )
-
-            result = SingleMatchResult(
-                pose_result=pose_result,
-                aerial_segs_processed=aerial_segs_j,
-                ground_segs_processed=ground_segs_i,
-                matched_ground=matched_ground,
-                matched_aerial=matched_aerial,
-            )
-            raw_results.append((result, count))
-
-        # Cluster by transformation similarity and rank by total particle count
-        results = self._cluster_langevin_results(raw_results)
-
-        # Return at least one empty result if no valid hypotheses
-        if not results:
-            results = [
-                SingleMatchResult(
-                    pose_result=PoseEstimationResult(
-                        T_i_j=T_aerial_ground,
-                    ),
-                    aerial_segs_processed=aerial_segs_j,
-                    ground_segs_processed=ground_segs_i,
-                )
-            ]
-
-        return results
-
-    @staticmethod
-    def _se2_distance(T1: np.ndarray, T2: np.ndarray):
-        """Compute SE(2) translation and rotation distance between two 4x4 transforms."""
-        trans_dist = np.linalg.norm(T1[:2, 3] - T2[:2, 3])
-        yaw1 = np.arctan2(T1[1, 0], T1[0, 0])
-        yaw2 = np.arctan2(T2[1, 0], T2[0, 0])
-        rot_dist = abs(yaw1 - yaw2)
-        rot_dist = min(rot_dist, 2 * np.pi - rot_dist)
-        return trans_dist, rot_dist
-
-    def _cluster_langevin_results(
-        self,
-        raw_results: List,
-    ) -> List["SingleMatchResult"]:
-        """Cluster hypotheses by transformation similarity, rank by particle count.
-
-        Greedy clustering: iterate results (sorted by objective), assign each to
-        the first existing cluster within thresholds, or start a new cluster.
-        The representative of each cluster is the member with the highest
-        objective score. Clusters are ranked by total particle count.
-        """
-        if not raw_results:
-            return []
-
-        trans_thresh = self.pipeline_params.langevin_cluster_trans_thresh_m
-        rot_thresh = np.deg2rad(self.pipeline_params.langevin_cluster_rot_thresh_deg)
-
-        # Each cluster: (representative_result, total_count, [member results])
-        clusters = []
-        for result, count in raw_results:
-            T = result.pose_result.T_i_j_hat
-            assigned = False
-            for cluster in clusters:
-                T_rep = cluster[0].pose_result.T_i_j_hat
-                t_dist, r_dist = self._se2_distance(T, T_rep)
-                if t_dist <= trans_thresh and r_dist <= rot_thresh:
-                    cluster[1] += count
-                    assigned = True
-                    break
-            if not assigned:
-                clusters.append([result, count])
-
-        # Sort clusters by total particle count descending
-        clusters.sort(key=lambda c: c[1], reverse=True)
-
-        # Optionally keep only the top-N clusters
-        max_hyp = self.pipeline_params.langevin_max_hypotheses
-        if max_hyp > 0:
-            clusters = clusters[:max_hyp]
-
-        logger.info(
-            f"Langevin clustering: {len(raw_results)} hypotheses -> "
-            f"{len(clusters)} clusters, top counts: "
-            f"{[c[1] for c in clusters[:5]]}"
-        )
-
-        return [c[0] for c in clusters]
 
     def _find_max_intersection_patches(
         self,

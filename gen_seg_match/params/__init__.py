@@ -2,7 +2,11 @@ from gen_seg_match.params.aerial_segmenter_params import AerialSegmenterParams
 from gen_seg_match.params.logging_params import LoggingParams
 from gen_seg_match.params.dense_to_sparse_params import DenseToSparseParams
 from gen_seg_match.params.submap_params import SubmapParams
-from gen_seg_match.params.segment_match_params import SegmentMatchParams
+from gen_seg_match.params.segment_match_params import (
+    SegmentMatchParams,
+    LangevinMatcherParams,
+)
+from gen_seg_match.match.match_result import MatchResult
 from gen_seg_match.params.submap_params import SubmapParams
 from gen_seg_match.params.ground_segmenter_params import GroundSegmenterParams
 from gen_seg_match.params.register_params import RegisterParams

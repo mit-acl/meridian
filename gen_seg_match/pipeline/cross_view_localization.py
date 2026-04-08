@@ -167,11 +167,11 @@ class CrossViewLocalization:
 
         # Optionally switch to CLIPPER for pass 2
         use_clipper_pass2 = (
-            pipeline.algorithm.pipeline_params.langevin_clipper_pass2
-            and pipeline.algorithm.langevin_matcher is not None
+            pipeline.algorithm.pipeline_params.clipper_pass2
+            and pipeline.algorithm.matcher.params.solver == "langevin"
         )
         if use_clipper_pass2:
-            pipeline.algorithm.set_use_langevin(False)
+            pipeline.algorithm.matcher.set_solver("clipper")
 
         # Re-run matching with full viz output via pipeline
         # reference_trajectory provides the rotation constraint from PGO,
