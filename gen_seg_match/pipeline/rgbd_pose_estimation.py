@@ -117,7 +117,7 @@ class RGBDPoseEstimation:
             input2.segments,
             global_z_dir1=input1.gravity_direction,
             global_z_dir2=input2.gravity_direction,
-        )
+        ).association_array
         try:
             transformation = self.registerer.register(
                 input1.segments,

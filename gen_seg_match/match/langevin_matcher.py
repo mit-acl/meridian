@@ -1,67 +1,41 @@
 import logging
-from dataclasses import dataclass
 from typing import List, Tuple
 
 import numpy as np
 import torch
 
 from gen_seg_match.match.langevin_dynamics import LangevinDynamics
-from gen_seg_match.match.segment_matcher import SegmentMatcher
-from gen_seg_match.segment.segment_types import GeneralSegment
+from gen_seg_match.params.segment_match_params import LangevinMatcherParams
 
 logger = logging.getLogger(__name__)
-
-
-@dataclass
-class LangevinMatcherParams:
-    n_particles: int = 5000
-    n_iter: int = 1000
-    step_size: float = 1.0
-    adagrad: bool = True
-    alpha: float = 0.9
-    device: str = "cuda"
-    min_associations: int = 3
-    anneal_noise: bool = False
-    no_noise: bool = False
-    early_stop: bool = True
-    check_interval: int = 10
-    obj_tol: float = 1e-3
-    patience: int = 3
 
 
 class LangevinMatcher:
     """Multi-hypothesis matcher using Langevin dynamics on CLIPPER affinity matrices."""
 
-    def __init__(self, segment_matcher: SegmentMatcher, params: LangevinMatcherParams):
-        self.segment_matcher = segment_matcher
+    def __init__(self, params: LangevinMatcherParams):
         self.params = params
 
     def match(
         self,
-        map1: List[GeneralSegment],
-        map2: List[GeneralSegment],
-        **kwargs,
+        M: np.ndarray,
+        C: np.ndarray,
+        A: np.ndarray,
     ) -> List[Tuple[np.ndarray, float, int]]:
         """Run Langevin dynamics to find multiple association hypotheses.
 
         Args:
-            map1: Source segments.
-            map2: Target segments.
-            **kwargs: Direction constraints passed to get_MCA_with_maps
-                (global_x_dir1, global_y_dir1, global_x_dir2, global_y_dir2).
+            M: Affinity matrix from CLIPPER.
+            C: Constraint matrix from CLIPPER.
+            A: Putative associations array (N, 2) of index pairs.
 
         Returns:
-            List of (association_ids, objective_score, particle_count) tuples
-            sorted descending by objective. Each association_ids is an (n, 2)
-            array of segment IDs. particle_count is the number of particles
-            that converged to this association set. Returns empty list if no
-            valid hypotheses are found.
+            List of (association_indices, objective_score, particle_count) tuples
+            sorted descending by objective. Each association_indices is an (n, 2)
+            array of index pairs (in the same index space as A). particle_count
+            is the number of particles that converged to this association set.
+            Returns empty list if no valid hypotheses are found.
         """
-        # Get affinity matrix, constraint matrix, putative associations, and ordered maps
-        M, C, A, map1_ordered, map2_ordered = self.segment_matcher.get_MCA_with_maps(
-            map1, map2, **kwargs
-        )
-
         if M.shape[0] == 0:
             return []
 
@@ -96,7 +70,7 @@ class LangevinMatcher:
         A_np = np.asarray(A)
         A_lookup = {(int(r[0]), int(r[1])): i for i, r in enumerate(A_np)}
 
-        # Convert to segment IDs, filter, and compute objectives
+        # Filter and compute objectives
         results = []
         for assoc_set, count in sorted_values:
             if len(assoc_set) < self.params.min_associations:
@@ -116,12 +90,9 @@ class LangevinMatcher:
             x[indices] = 1.0
             obj = (x @ M @ x) / np.dot(x, x)
 
-            # Convert to segment IDs
+            # Return raw index pairs (caller converts to segment IDs)
             assoc_matrix = np.array(list(assoc_set), dtype=np.int64)
-            ids = self.segment_matcher.assoc_idx_to_ids(
-                assoc_matrix, map1_ordered, map2_ordered
-            )
-            results.append((ids, obj, count))
+            results.append((assoc_matrix, obj, count))
 
         # Sort by objective descending (best first)
         results.sort(key=lambda x: x[1], reverse=True)

@@ -83,7 +83,7 @@ def register_submaps(
             submap_2.segments,
             global_z_dir1=GRAVITY_DIR_NEG_Z,
             global_z_dir2=GRAVITY_DIR_NEG_Z,
-        )
+        ).association_array
         association_types = []
         # track association types
         for assoc in associations:
