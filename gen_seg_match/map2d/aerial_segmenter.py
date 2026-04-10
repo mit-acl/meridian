@@ -43,6 +43,8 @@ class AerialSegmenter(SegmenterBase):
 
         if self.frame_descriptor_type == "anyloc":
             return self._compute_anyloc_descriptor(img_bgr)
+        elif self.frame_descriptor_type == "salad":
+            return self._compute_salad_descriptor(img_bgr)
 
         self._ensure_semantics_model()
         if self.semantics_model is None:

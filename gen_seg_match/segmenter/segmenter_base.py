@@ -8,7 +8,7 @@ from fastsam import FastSAMPrompt, FastSAM
 from segment_anything import sam_model_registry, SamAutomaticMaskGenerator
 from transformers import AutoImageProcessor, AutoModel
 
-from gen_seg_match.params.segmenter_params_base import SegmenterParamsBase
+from gen_seg_match.params.segmenter_params import SegmenterParamsBase
 
 
 class SegmenterBase:
@@ -26,6 +26,7 @@ class SegmenterBase:
         self._segmentation_model_loaded = False
         self._semantics_model_loaded = False
         self._anyloc_loaded = False
+        self._salad_loaded = False
 
         self.model = None
         self.semantics_model = None
@@ -35,12 +36,15 @@ class SegmenterBase:
         self._anyloc_extractor = None
         self._anyloc_vlad = None
         self._anyloc_transform = None
+        self._salad_model = None
+        self._salad_transform = None
         if params.frame_descriptor is not None:
-            assert (
-                params.semantics in ("dino", "dinov3", "dinov3-hf")
-                or params.frame_descriptor == "anyloc"
-            ), (
-                "Frame descriptor only supported with DINO, DINOv3, DINOv3-HF semantics, or 'anyloc'."
+            assert params.semantics in (
+                "dino",
+                "dinov3",
+                "dinov3-hf",
+            ) or params.frame_descriptor in ("anyloc", "salad"), (
+                "Frame descriptor only supported with DINO, DINOv3, DINOv3-HF semantics, or 'anyloc'/'salad'."
             )
 
     def _ensure_segmentation_model(self):
@@ -57,6 +61,11 @@ class SegmenterBase:
         if not self._anyloc_loaded:
             self._init_anyloc()
             self._anyloc_loaded = True
+
+    def _ensure_salad(self):
+        if not self._salad_loaded:
+            self._init_salad()
+            self._salad_loaded = True
 
     def _init_segmentation_model(self):
         if self.params.get_model_type() == "fastsam":
@@ -380,11 +389,11 @@ class SegmenterBase:
     ) -> np.ndarray:
         """Compute a frame-level descriptor from patch features.
 
-        Supports 'dino-gap', 'dino-gmp', 'dino-gem', and 'anyloc'.
+        Supports 'dino-gap', 'dino-gmp', 'dino-gem', 'anyloc', and 'salad'.
 
         Args:
             dino_features: Patch features tensor.
-            img_bgr: BGR image (only needed for 'anyloc').
+            img_bgr: BGR image (only needed for 'anyloc' or 'salad').
 
         Returns:
             Normalized 1-D numpy descriptor, or None if no frame_descriptor configured.
@@ -394,6 +403,8 @@ class SegmenterBase:
 
         if self.frame_descriptor_type == "anyloc":
             return self._compute_anyloc_descriptor(img_bgr)
+        elif self.frame_descriptor_type == "salad":
+            return self._compute_salad_descriptor(img_bgr)
 
         with torch.no_grad():
             dino_features_flat = dino_features.view(-1, dino_features.shape[-1])
@@ -408,7 +419,7 @@ class SegmenterBase:
                 )
             else:
                 raise ValueError(
-                    "frame descriptor must be one of 'dino-gap', 'dino-gmp', 'dino-gem', or 'anyloc'."
+                    "frame descriptor must be one of 'dino-gap', 'dino-gmp', 'dino-gem', 'anyloc', or 'salad'."
                 )
 
             frame_descriptor /= torch.norm(frame_descriptor)
@@ -486,3 +497,51 @@ class SegmenterBase:
             gd = self._anyloc_vlad.generate(ret.cpu().squeeze())
 
         return gd.numpy()
+
+    def _init_salad(self):
+        """Initialize SALAD (DINOv2 + optimal transport aggregation) model."""
+        import sys
+        import torchvision.transforms as tvf
+
+        sys.path.insert(0, self.params.salad_path)
+        from hubconf import dinov2_salad
+
+        self._salad_model = dinov2_salad(backbone="dinov2_vitb14", pretrained=True)
+        self._salad_model.eval().to(self.params.device)
+        self._salad_transform = tvf.Compose(
+            [
+                tvf.ToTensor(),
+                tvf.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+            ]
+        )
+
+    def _compute_salad_descriptor(self, img_bgr):
+        """Compute SALAD (DINOv2 + optimal transport) descriptor from a BGR image.
+
+        Args:
+            img_bgr: BGR image as numpy array.
+
+        Returns:
+            Normalized 1-D numpy descriptor array.
+        """
+        self._ensure_salad()
+        import torchvision.transforms as tvf
+        from PIL import Image as PILImage
+
+        img_rgb = cv.cvtColor(img_bgr, cv.COLOR_BGR2RGB)
+        pil_img = PILImage.fromarray(img_rgb)
+        img_pt = self._salad_transform(pil_img).to(self.params.device)
+
+        c, h, w = img_pt.shape
+        h_new = (h // 14) * 14
+        w_new = (w // 14) * 14
+        img_pt = tvf.CenterCrop((h_new, w_new))(img_pt)[None, ...]
+
+        with torch.no_grad():
+            descriptor = self._salad_model(img_pt)
+
+        descriptor = descriptor.cpu().squeeze().numpy()
+        norm = np.linalg.norm(descriptor)
+        if norm > 0:
+            descriptor = descriptor / norm
+        return descriptor

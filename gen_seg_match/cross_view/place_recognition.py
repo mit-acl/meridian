@@ -10,9 +10,10 @@ logger = logging.getLogger(__name__)
 class CrossViewPlaceRecognition:
     """Descriptor computation and similarity for cross-view place recognition.
 
-    Supports three methods:
+    Supports four methods:
     - "semantic-gem": DINO-GeM image-level descriptors
     - "anyloc": AnyLoc (DINOv2 + VLAD) image-level descriptors
+    - "salad": SALAD (DINOv2 + optimal transport) image-level descriptors
     - "semantic-point-line": segment-level cosine features (mean point + mean line)
     """
 
@@ -56,7 +57,7 @@ class CrossViewPlaceRecognition:
         Returns:
             np.ndarray descriptor, or None
         """
-        if self.method in ("semantic-gem", "anyloc"):
+        if self.method in ("semantic-gem", "anyloc", "salad"):
             return aerial_segmenter.get_crop_descriptor(img_bgr, crop=crop)
         elif self.method == "semantic-point-line":
             return self._segment_cos_descriptor(aerial_submap.segments)
@@ -75,7 +76,7 @@ class CrossViewPlaceRecognition:
         Returns:
             np.ndarray descriptor, or None
         """
-        if self.method in ("semantic-gem", "anyloc"):
+        if self.method in ("semantic-gem", "anyloc", "salad"):
             return self._ground_descriptor_gem(submap_segments)
         elif self.method == "semantic-point-line":
             segments = (
@@ -203,7 +204,7 @@ class CrossViewPlaceRecognition:
         if ground_desc is None or aerial_desc is None:
             return np.nan
 
-        if self.method in ("semantic-gem", "anyloc"):
+        if self.method in ("semantic-gem", "anyloc", "salad"):
             # ground is (N, D), aerial is (D,)
             g = ground_desc
             if g.ndim == 1:
