@@ -14,7 +14,7 @@ import robotdatapy as rdp
 
 from gen_seg_match.segment.segment_types import SegmentLine, SegmentPoint, SegmentPlane
 from gen_seg_match.params import RegisterParams
-from gen_seg_match.register.registerer import Registerer
+from gen_seg_match.register.r3d.registerer import Registerer
 
 
 def assert_transforms_equal(T_est: np.ndarray, T_gt: np.ndarray, rel_tol=1e-6):

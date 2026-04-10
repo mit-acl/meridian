@@ -277,7 +277,7 @@ def cross_view_place_recognition(
         RegisterParams,
     )
     from gen_seg_match.match.segment_matcher import SegmentMatcher
-    from gen_seg_match.register.registerer import Registerer
+    from gen_seg_match.register.registerer import Registerer2D
     from gen_seg_match.map2d.aerial_segmenter import AerialSegmenter
 
     pipeline_params = CrossViewMatchingParams.load(params)
@@ -289,7 +289,7 @@ def cross_view_place_recognition(
             aerial_patch_params=aerial_patch_params,
             pixel_len_m=aerial_segmenter.params.pixel_len_m,
             matcher=SegmentMatcher(SegmentMatchParams.load(params)),
-            registerer=Registerer(RegisterParams.load(params)),
+            registerer=Registerer2D(RegisterParams.load(params)),
         ),
     )
 

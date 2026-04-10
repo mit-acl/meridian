@@ -33,7 +33,7 @@ from gen_seg_match.map3d.submap import submaps_from_roman_map
 from gen_seg_match.map3d.dense_to_sparse_converter import DenseToSparseConverter
 from gen_seg_match.utils import expandvars_recursive
 from gen_seg_match.segment.segment_types import SegmentList, SegmentLine, SegmentPoint
-from gen_seg_match.register.registerer import (
+from gen_seg_match.register.r3d.registerer import (
     Registerer,
     InsufficientAssociationsException,
 )
