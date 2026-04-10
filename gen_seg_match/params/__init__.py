@@ -1,4 +1,4 @@
-from gen_seg_match.params.aerial_segmenter_params import AerialSegmenterParams
+from gen_seg_match.params.segmenter_params import AerialSegmenterParams
 from gen_seg_match.params.logging_params import LoggingParams
 from gen_seg_match.params.dense_to_sparse_params import DenseToSparseParams
 from gen_seg_match.params.submap_params import SubmapParams
@@ -26,5 +26,5 @@ from gen_seg_match.params.data_params import SegmentMappingDataParams
 from gen_seg_match.params.data_params import SemanticMatchEvaluationDataParams
 from gen_seg_match.params.data_params import LandmarkPoseEstimationDataParams
 from gen_seg_match.params.segment_mapping_params import SegmentMappingParams
-from gen_seg_match.params.segmenter_params_base import SegmenterParamsBase
+from gen_seg_match.params.segmenter_params import SegmenterParamsBase
 from gen_seg_match.params.segmenter_params import SegmenterParams

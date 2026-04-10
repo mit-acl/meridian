@@ -115,10 +115,10 @@ class CrossViewRPGOParams(ParamsBase):
     # CLIPPER consistency
     rot_consistency_sigma_deg: float = 5.0
     rot_consistency_eps_deg: float = 5.0
-    trans_consistency_sigma_m: float = 2.0
-    trans_consistency_eps_m: float = 2.0
-    added_trans_noise_m_per_m: float = 0.01
-    added_rot_noise_deg_per_m: float = 0.01
+    trans_consistency_sigma_m: float = 1.0
+    trans_consistency_eps_m: float = 1.0
+    added_trans_noise_m_per_m: float = 0.02
+    added_rot_noise_deg_per_m: float = 0.02
     min_num_associations: int = 3
     min_num_associations_rerun: Optional[int] = None
 

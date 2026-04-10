@@ -489,7 +489,7 @@ def _load_segments(filepath):
 if __name__ == "__main__":
     from gen_seg_match.params.data_params import CrossViewLocalizationDataParams
     from gen_seg_match.params.cross_view_params import CrossViewMatchingParams
-    from gen_seg_match.params.aerial_segmenter_params import AerialSegmenterParams
+    from gen_seg_match.params.segmenter_params import AerialSegmenterParams
 
     parser = argparse.ArgumentParser(
         description="Interactive semantic similarity visualizer for cross-view segments."
