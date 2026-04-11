@@ -488,7 +488,7 @@ def _load_segments(filepath):
 
 if __name__ == "__main__":
     from gen_seg_match.params.data_params import CrossViewLocalizationDataParams
-    from gen_seg_match.params.cross_view_params import CrossViewMatchingParams
+    from gen_seg_match.params.segment_to_primitive_params import AerialPatchParams
     from gen_seg_match.params.segmenter_params import AerialSegmenterParams
 
     parser = argparse.ArgumentParser(
@@ -531,7 +531,7 @@ if __name__ == "__main__":
 
     if args.params is not None:
         data_params = CrossViewLocalizationDataParams.load(args.params)
-        pipeline_params = CrossViewMatchingParams.load(args.params)
+        aerial_patch_params = AerialPatchParams.load(args.params)
         aerial_seg_params = AerialSegmenterParams.load(args.params)
 
         aerial_img = cv2.imread(data_params.aerial_img_path)
@@ -539,10 +539,10 @@ if __name__ == "__main__":
             pixel_len_m = aerial_seg_params.pixel_len_m
             px_per_m_val = 1.0 / pixel_len_m
             patch_size_px = int(
-                pipeline_params.aerial_img_patch_side_len_m * px_per_m_val
+                aerial_patch_params.aerial_img_patch_side_len_m * px_per_m_val
             )
             stride = int(
-                patch_size_px * (1.0 - pipeline_params.aerial_img_patch_overlap)
+                patch_size_px * (1.0 - aerial_patch_params.aerial_img_patch_overlap)
             )
 
             # Parse aerial key from filename stem (e.g., "1_4" -> i=1, j=4)

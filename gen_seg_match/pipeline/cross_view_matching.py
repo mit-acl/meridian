@@ -19,11 +19,25 @@ from gen_seg_match.params import (
     CrossViewPlaceRecognitionParams,
     AerialSegmenterParams,
     RegisterParams,
+    SegmentToPrimitiveConversionParams,
+    AerialPatchParams,
+    GroundSubmapParams,
+    GroundSegmenterParams,
 )
 from gen_seg_match.cross_view.place_recognition import CrossViewPlaceRecognition
 from gen_seg_match.pipeline.data import CrossViewLocalizationData
 from gen_seg_match.utils import expandvars_recursive
 from gen_seg_match.map2d.aerial_segmenter import AerialSegmenter
+from gen_seg_match.map2d.segment_to_primitive import SegmentToPrimitiveConverter
+from gen_seg_match.map2d.aerial_patch_primitive_mapping import (
+    AerialPatchPrimitiveMapping,
+    AerialSegmentationResult,
+)
+from gen_seg_match.map2d.ground_segmenter import GroundSegmenter
+from gen_seg_match.map2d.ground_submap_primitive_mapping import (
+    GroundSubmapPrimitiveMapping,
+    GroundSegmentationResult,
+)
 from gen_seg_match.match.segment_matcher import SegmentMatcher
 from gen_seg_match.register.registerer import Registerer
 from gen_seg_match.map3d.submap import Submap
@@ -40,8 +54,6 @@ from gen_seg_match.cross_view.matching import (  # noqa: F401
     CrossViewMatching,
     CrossViewMatchResult,
     SingleMatchResult,
-    AerialSegmentationResult,
-    GroundSegmentationResult,
 )
 
 Crop = Tuple[int, int, int, int]
@@ -233,8 +245,13 @@ def _match_viz_worker(
 @dataclass
 class CrossViewMatchingPipeline:
     algorithm: CrossViewMatching
+    aerial_mapping: AerialPatchPrimitiveMapping = None
+    ground_mapping: GroundSubmapPrimitiveMapping = None
     _viz_params: CrossViewVisualizationParams = field(
         default_factory=CrossViewVisualizationParams
+    )
+    _conversion_params: SegmentToPrimitiveConversionParams = field(
+        default_factory=SegmentToPrimitiveConversionParams
     )
 
     # ------------------------------------------------------------------
@@ -263,7 +280,7 @@ class CrossViewMatchingPipeline:
         output_dir: Union[str, pathlib.Path],
         img_origin: np.ndarray = None,
     ) -> Dict[Crop, Submap]:
-        result = self.algorithm.batch_aerial_img_to_segments(
+        result = self.aerial_mapping.run(
             img, img_origin, return_intermediates=True, show_progress=True
         )
         self._save_aerial_results(result, output_dir)
@@ -276,13 +293,14 @@ class CrossViewMatchingPipeline:
         viz_output_dir.mkdir(parents=True, exist_ok=True)
         segment_output_dir.mkdir(parents=True, exist_ok=True)
 
-        params = self.algorithm.pipeline_params
-        pixel_len_m = self.algorithm.aerial_segmenter.params.pixel_len_m
+        conv_params = self._conversion_params
+        patch_params = self.aerial_mapping.patch_params
+        pixel_len_m = self.aerial_mapping.aerial_segmenter.params.pixel_len_m
         px_per_m = 1.0 / pixel_len_m
 
-        max_workers = self.algorithm.pipeline_params.sparse_conversion_max_threads
-        patch_size_px = int(params.aerial_img_patch_side_len_m * px_per_m)
-        stride = int(patch_size_px * (1.0 - params.aerial_img_patch_overlap))
+        max_workers = conv_params.sparse_conversion_max_threads
+        patch_size_px = int(patch_params.aerial_img_patch_side_len_m * px_per_m)
+        stride = int(patch_size_px * (1.0 - patch_params.aerial_img_patch_overlap))
 
         # Save submaps (fast I/O, keep serial)
         crop_ij = {}
@@ -310,10 +328,10 @@ class CrossViewMatchingPipeline:
                     submap.segments,
                     crop,
                     pixel_len_m,
-                    params.alpha_shape_alpha,
-                    params.alpha_shape_grid_downsample,
-                    params.alpha_shape_max_n_pts,
-                    params.alpha_shape_ref_size_m,
+                    conv_params.alpha_shape_alpha,
+                    conv_params.alpha_shape_grid_downsample,
+                    conv_params.alpha_shape_max_n_pts,
+                    conv_params.alpha_shape_ref_size_m,
                     max(
                         1, round(self._viz_params.aerial_viz_pixel_size_m / pixel_len_m)
                     ),
@@ -339,7 +357,7 @@ class CrossViewMatchingPipeline:
         submaps: List[Submap],
         output_dir: Union[str, pathlib.Path],
     ) -> List[Submap]:
-        result = self.algorithm.batch_ground_to_sparse_2d_submaps(
+        result = self.ground_mapping.batch_convert(
             submaps, return_intermediates=True, show_progress=True
         )
         self._save_ground_results(result, output_dir)
@@ -352,9 +370,10 @@ class CrossViewMatchingPipeline:
         viz_output_dir.mkdir(parents=True, exist_ok=True)
         segment_output_dir.mkdir(parents=True, exist_ok=True)
 
-        params = self.algorithm.pipeline_params
+        conv_params = self._conversion_params
+        ground_params = self.ground_mapping.submap_params
 
-        max_workers = self.algorithm.pipeline_params.sparse_conversion_max_threads
+        max_workers = conv_params.sparse_conversion_max_threads
         futures = {}
 
         with ProcessPoolExecutor(max_workers=max_workers) as executor:
@@ -371,7 +390,7 @@ class CrossViewMatchingPipeline:
                     for aerial_seg in intermediates.aerial_segments:
                         dense_path = dense_dir / f"{aerial_seg.id}.pkl"
                         pts = aerial_seg.points
-                        max_n = params.dense_points_max_n
+                        max_n = ground_params.dense_points_max_n
                         if max_n is not None and len(pts) > max_n:
                             idx = np.round(np.linspace(0, len(pts) - 1, max_n)).astype(
                                 int
@@ -387,10 +406,10 @@ class CrossViewMatchingPipeline:
                         intermediates.aerial_segments,
                         intermediates.general_segments,
                         submap_2d.segments,
-                        params.alpha_shape_alpha,
-                        params.alpha_shape_grid_downsample,
-                        params.alpha_shape_max_n_pts,
-                        params.alpha_shape_ref_size_m,
+                        conv_params.alpha_shape_alpha,
+                        conv_params.alpha_shape_grid_downsample,
+                        conv_params.alpha_shape_max_n_pts,
+                        conv_params.alpha_shape_ref_size_m,
                     )
                     futures[future] = k
 
@@ -475,10 +494,11 @@ class CrossViewMatchingPipeline:
         segments_output_dir.mkdir(parents=True, exist_ok=True)
 
         params = self.algorithm.pipeline_params
-        pixel_len_m = self.algorithm.aerial_segmenter.params.pixel_len_m
+        patch_params = self.algorithm.aerial_patch_params
+        pixel_len_m = self.algorithm.pixel_len_m
         px_per_m = 1.0 / pixel_len_m
-        patch_size_px = int(params.aerial_img_patch_side_len_m * px_per_m)
-        stride = int(patch_size_px * (1.0 - params.aerial_img_patch_overlap))
+        patch_size_px = int(patch_params.aerial_img_patch_side_len_m * px_per_m)
+        stride = int(patch_size_px * (1.0 - patch_params.aerial_img_patch_overlap))
 
         def aerial_key_to_tuple(key):
             return tuple(int(x) for x in key.split("_"))
@@ -538,7 +558,7 @@ class CrossViewMatchingPipeline:
                     ground_pos = t[:2, 3]
                     gt_patches = []
                     stride_m = stride * pixel_len_m
-                    patch_size_m = params.aerial_img_patch_side_len_m
+                    patch_size_m = patch_params.aerial_img_patch_side_len_m
                     for i_a in range(results_matrix.shape[0]):
                         for j_a in range(results_matrix.shape[1]):
                             x1 = i_a * stride_m
@@ -561,7 +581,7 @@ class CrossViewMatchingPipeline:
 
         # Phase 2: parallel match + pose visualization across ALL ground keys
         if save_viz:
-            max_workers = self.algorithm.pipeline_params.sparse_conversion_max_threads
+            max_workers = self._conversion_params.sparse_conversion_max_threads
             line_width_px = max(
                 1, round(self._viz_params.aerial_viz_line_width_m * px_per_m)
             )
@@ -758,6 +778,10 @@ def cross_view_matching(
     segment_match_params = SegmentMatchParams.load(params)
     segment_match_params.dim = 2
 
+    conversion_params = SegmentToPrimitiveConversionParams.load(params)
+    aerial_patch_params = AerialPatchParams.load(params)
+    ground_submap_params = GroundSubmapParams.load(params)
+
     try:
         pr_params = CrossViewPlaceRecognitionParams.load(params)
     except Exception:
@@ -766,15 +790,39 @@ def cross_view_matching(
         pr_params = CrossViewPlaceRecognitionParams()
     place_recognition = CrossViewPlaceRecognition(pr_params) if pr_params else None
 
+    aerial_segmenter = AerialSegmenter(AerialSegmenterParams.load(params))
+    converter = SegmentToPrimitiveConverter(conversion_params)
+    ground_segmenter = GroundSegmenter(GroundSegmenterParams.load(params))
+
+    aerial_mapping = AerialPatchPrimitiveMapping(
+        patch_params=aerial_patch_params,
+        converter=converter,
+        aerial_segmenter=aerial_segmenter,
+        place_recognition=place_recognition,
+    )
+    ground_mapping = GroundSubmapPrimitiveMapping(
+        submap_params=ground_submap_params,
+        converter=converter,
+        ground_segmenter=ground_segmenter,
+        place_recognition=place_recognition,
+    )
+
     algorithm = CrossViewMatching(
         pipeline_params=pipeline_params,
+        aerial_patch_params=aerial_patch_params,
+        pixel_len_m=aerial_segmenter.params.pixel_len_m,
         matcher=SegmentMatcher(segment_match_params),
         registerer=Registerer(RegisterParams.load(params)),
-        aerial_segmenter=AerialSegmenter(AerialSegmenterParams.load(params)),
         place_recognition=place_recognition,
     )
     viz_params = CrossViewVisualizationParams.load(params)
-    pipeline = CrossViewMatchingPipeline(algorithm=algorithm, _viz_params=viz_params)
+    pipeline = CrossViewMatchingPipeline(
+        algorithm=algorithm,
+        aerial_mapping=aerial_mapping,
+        ground_mapping=ground_mapping,
+        _viz_params=viz_params,
+        _conversion_params=conversion_params,
+    )
 
     initial_aerial_segments = None
     initial_ground_segments = None
@@ -784,7 +832,8 @@ def cross_view_matching(
     data = CrossViewLocalizationData.from_params(data_params)
 
     # Sync aerial segmenter pixel size with data
-    algorithm.aerial_segmenter.params.pixel_len_m = data.aerial_img_scale
+    aerial_segmenter.params.pixel_len_m = data.aerial_img_scale
+    algorithm.pixel_len_m = data.aerial_img_scale
 
     # Set up output directories
     pathlib.Path(output_dir).mkdir(parents=True, exist_ok=True)
@@ -812,9 +861,12 @@ def cross_view_matching(
     all_params = [
         data_params,
         pipeline_params,
+        conversion_params,
+        aerial_patch_params,
+        ground_submap_params,
         segment_match_params,
         algorithm.registerer.params,
-        algorithm.aerial_segmenter.params,
+        aerial_segmenter.params,
     ]
     if pr_params is not None:
         all_params.append(pr_params)
@@ -828,7 +880,7 @@ def cross_view_matching(
     # Extract ground segments
     if not skip_ground:
         ground_map = data.ground_map
-        ground_submaps = algorithm.ground_map_to_submaps(ground_map)
+        ground_submaps = ground_mapping.create_submaps_from_map(ground_map)
         initial_ground_submaps = pipeline.run_ground(ground_submaps, ground_output_dir)
         initial_ground_segments = {
             str(k): segs for k, segs in enumerate(initial_ground_submaps)

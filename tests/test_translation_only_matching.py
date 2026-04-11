@@ -96,6 +96,10 @@ class TestTranslationOnly2D:
             sigma_dist=1.0,
             epsilon_dist=1.0,
             solver="clipper",
+            cos_feature_dim=0,
+            min_dist=0.0,
+            rot_unc_ang_rad=0.0,
+            point_noise_from_angle=False,
         )
 
     @pytest.fixture
@@ -246,6 +250,10 @@ class TestTranslationOnly3D:
             sigma_dist=1.0,
             epsilon_dist=1.0,
             solver="clipper",
+            cos_feature_dim=0,
+            min_dist=0.0,
+            rot_unc_ang_rad=0.0,
+            point_noise_from_angle=False,
         )
 
     @pytest.fixture

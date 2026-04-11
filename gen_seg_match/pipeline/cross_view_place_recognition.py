@@ -9,6 +9,7 @@ import numpy as np
 
 from gen_seg_match.pipeline.cross_view_matching import (
     CrossViewMatching,
+    CrossViewMatchingPipeline,
     cross_view_matching,
 )
 from gen_seg_match.params import CrossViewPlaceRecognitionParams
@@ -26,16 +27,17 @@ class CrossViewPlaceRecognitionPipeline:
         aerial_submaps,
         ground_keys,
         aerial_keys,
-        pipeline_params,
+        aerial_patch_params,
         gt_pose_data=None,
     ):
         """Determine which aerial patches contain each ground submap's GT position.
 
         Uses gt_pose_data (ground truth poses in the world/UTM frame) to compute
         the ground submap position in the aerial image frame, matching the
-        approach used in CrossViewMatching.batch_cross_view_match().
+        approach used in CrossViewMatching.cross_view_match().
 
         Args:
+            aerial_patch_params: AerialPatchParams with patch size and overlap.
             gt_pose_data: robotdatapy PoseData with GT poses in the same frame
                 as the aerial image. If None, returns empty sets.
 
@@ -51,8 +53,8 @@ class CrossViewPlaceRecognitionPipeline:
         T_aerial_inv = np.linalg.inv(any_aerial.pose)
 
         # Recompute stride in meters from pipeline params
-        patch_size_m = pipeline_params.aerial_img_patch_side_len_m
-        overlap = pipeline_params.aerial_img_patch_overlap
+        patch_size_m = aerial_patch_params.aerial_img_patch_side_len_m
+        overlap = aerial_patch_params.aerial_img_patch_overlap
         stride_m = patch_size_m * (1.0 - overlap)
 
         aerial_tuples = {k: tuple(int(x) for x in k.split("_")) for k in aerial_keys}
@@ -271,6 +273,7 @@ def cross_view_place_recognition(
         CrossViewLocalizationDataParams,
         SegmentMatchParams,
         AerialSegmenterParams,
+        AerialPatchParams,
         RegisterParams,
     )
     from gen_seg_match.match.segment_matcher import SegmentMatcher
@@ -278,11 +281,16 @@ def cross_view_place_recognition(
     from gen_seg_match.map2d.aerial_segmenter import AerialSegmenter
 
     pipeline_params = CrossViewMatchingParams.load(params)
-    runner = CrossViewMatching(
-        pipeline_params=pipeline_params,
-        matcher=SegmentMatcher(SegmentMatchParams.load(params)),
-        registerer=Registerer(RegisterParams.load(params)),
-        aerial_segmenter=AerialSegmenter(AerialSegmenterParams.load(params)),
+    aerial_patch_params = AerialPatchParams.load(params)
+    aerial_segmenter = AerialSegmenter(AerialSegmenterParams.load(params))
+    runner = CrossViewMatchingPipeline(
+        algorithm=CrossViewMatching(
+            pipeline_params=pipeline_params,
+            aerial_patch_params=aerial_patch_params,
+            pixel_len_m=aerial_segmenter.params.pixel_len_m,
+            matcher=SegmentMatcher(SegmentMatchParams.load(params)),
+            registerer=Registerer(RegisterParams.load(params)),
+        ),
     )
 
     aerial_seg_dir = os.path.join(
@@ -328,7 +336,7 @@ def cross_view_place_recognition(
         aerial_submaps,
         ground_keys,
         aerial_keys,
-        pipeline_params,
+        aerial_patch_params,
         gt_pose_data=gt_pose_data,
     )
     top_k_patches = pr_pipeline.compute_top_k_patches(
