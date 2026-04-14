@@ -137,58 +137,43 @@ def point_line_loss_2d(R, t, s_p, t_p, s_norm, t_norm, s_off, t_off,
 
 
 @numba.njit(cache=True)
-def batch_register_core(pts_s, pts_t, norms_s, norms_t, offs_s, offs_t,
-                        n_points, n_lines, ident_eps, W_P, W_D, W_L_M):
-    """Core batched 2D registration.  Returns ((N,3,3) transforms, n_failed)."""
-    N = pts_s.shape[0]
-    T_out = np.full((N, 3, 3), np.nan)
-    n_failed = 0
+def register_single_2x2(p, q, ns, nt, os_, ot, eps, W_P, W_D, W_L_M):
+    """Register a single 2D problem.  Returns 3×3 SE(2) transform (NaN if failed)."""
+    T = np.full((3, 3), np.nan)
+    n_p = p.shape[0]
+    nl = ns.shape[0]
 
-    for i in range(N):
-        np_i = n_points[i]
-        nl_i = n_lines[i]
+    if n_p < 2:
+        return T
 
-        if np_i < 2:
-            n_failed += 1
-            continue
+    # Step 1: initial rotation from points
+    H0 = cross_covariance_2x2(p, q,
+                               np.empty((0, 2)), np.empty((0, 2)), 1.0, 0.0)
+    R0, s0 = svd_rotation_2x2(H0)
+    if s0 < eps:
+        return T
 
-        p = pts_s[i, :np_i]
-        q = pts_t[i, :np_i]
-        ns = norms_s[i, :nl_i]
-        nt = norms_t[i, :nl_i]
-        os_ = offs_s[i, :nl_i]
-        ot = offs_t[i, :nl_i]
+    # Step 2: sign-align normals
+    if nl > 0:
+        nt_a, ot_a = sign_align_normals(R0, ns, nt, ot)
+    else:
+        nt_a = np.empty((0, 2))
+        ot_a = np.empty(0)
 
-        # Step 1: rotation from first 2 points
-        H0 = cross_covariance_2x2(p[:2], q[:2],
-                                   np.empty((0, 2)), np.empty((0, 2)), 1.0, 0.0)
-        R0, s0 = svd_rotation_2x2(H0)
-        if s0 < ident_eps:
-            n_failed += 1
-            continue
+    # Step 3: final rotation with all points + aligned normals
+    H1 = cross_covariance_2x2(p, q, ns, nt_a, W_P, W_D)
+    R1, s1 = svd_rotation_2x2(H1)
+    if s1 < eps:
+        return T
 
-        # Step 2: sign-align normals
-        if nl_i > 0:
-            nt_a, ot_a = sign_align_normals(R0, ns, nt, ot)
-        else:
-            nt_a = np.empty((0, 2))
-            ot_a = np.empty(0)
+    # Step 4: translation
+    t = solve_translation_2x2(R1, p, q, ns, os_, ot_a, W_P, W_L_M)
 
-        # Step 3: final rotation
-        H1 = cross_covariance_2x2(p, q, ns, nt_a, W_P, W_D)
-        R1, s1 = svd_rotation_2x2(H1)
-        if s1 < ident_eps:
-            n_failed += 1
-            continue
+    # Step 5: assemble inv(T)  —  T_inv = [[R^T, -R^T t], [0 0 1]]
+    T[0, 0] = R1[0, 0]; T[0, 1] = R1[1, 0]
+    T[1, 0] = R1[0, 1]; T[1, 1] = R1[1, 1]
+    T[0, 2] = -(R1[0, 0] * t[0] + R1[1, 0] * t[1])
+    T[1, 2] = -(R1[0, 1] * t[0] + R1[1, 1] * t[1])
+    T[2, 0] = 0.0; T[2, 1] = 0.0; T[2, 2] = 1.0
 
-        # Step 4: translation
-        t = solve_translation_2x2(R1, p, q, ns, os_, ot_a, W_P, W_L_M)
-
-        # Step 5: assemble inv(T)  —  T_inv = [[R^T, -R^T t], [0 0 1]]
-        T_out[i, 0, 0] = R1[0, 0]; T_out[i, 0, 1] = R1[1, 0]
-        T_out[i, 1, 0] = R1[0, 1]; T_out[i, 1, 1] = R1[1, 1]
-        T_out[i, 0, 2] = -(R1[0, 0] * t[0] + R1[1, 0] * t[1])
-        T_out[i, 1, 2] = -(R1[0, 1] * t[0] + R1[1, 1] * t[1])
-        T_out[i, 2, 0] = 0.0; T_out[i, 2, 1] = 0.0; T_out[i, 2, 2] = 1.0
-
-    return T_out, n_failed
+    return T

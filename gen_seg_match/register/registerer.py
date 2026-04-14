@@ -1,4 +1,3 @@
-import logging
 import numpy as np
 from typing import Any, List, Optional, Tuple
 from dataclasses import dataclass
@@ -18,14 +17,8 @@ from gen_seg_match.register.geometry import (
     solve_translation_2x2,
     sign_align_normals,
     point_line_loss_2d,
-    batch_register_core,
+    register_single_2x2,
 )
-
-logger = logging.getLogger(__name__)
-
-_EMPTY2 = np.empty((0, 2))
-_EMPTY1 = np.empty(0)
-
 
 class InsufficientAssociationsException(Exception):
     def __init__(self, map1_len, map2_len, n_associations=None, message=None):
@@ -120,7 +113,7 @@ class Registerer2D:
         s_norm, s_off = extract_line_arrays(source)
         t_norm, t_off = extract_line_arrays(target)
 
-        eps = self.params.ident_eps
+        eps = self.params.eps
         W_P = self.params.point_weight
         W_D = self.params.line_direction_weight
         W_L_M = self.params.line_moment_weight
@@ -129,8 +122,9 @@ class Registerer2D:
         # Rotation (1 DOF): need 1 line OR 2 non-identical points
         points_determine_rotation = False
         if num_points >= 2:
-            p_centered = p - p.mean(axis=0)
-            points_determine_rotation = np.max(np.linalg.norm(p_centered, axis=1)) > eps
+            H_pts = cross_covariance_2x2(p, q, np.empty((0, 2)), np.empty((0, 2)), W_P, 0.0)
+            _, s0_pts = svd_rotation_2x2(H_pts)
+            points_determine_rotation = s0_pts > eps
 
         has_rotation = num_lines >= 1 or points_determine_rotation
 
@@ -156,8 +150,6 @@ class Registerer2D:
             )
 
         # --- Determine initial rotation ---
-        lin_eps = self.params.lin_eps
-
         if num_lines > 0 and not points_determine_rotation:
             # Sign disambiguation: try both signs for the first line normal
             best_loss = float("inf")
@@ -168,7 +160,7 @@ class Registerer2D:
                 first_t_norm = sign_val * t_norm[0:1]
                 H = cross_covariance_2x2(p, q, s_norm[0:1], first_t_norm, W_P, W_D)
                 R_cand, s0 = svd_rotation_2x2(H)
-                if s0 < lin_eps:
+                if s0 < eps:
                     continue
 
                 # Align ALL normals, solve translation with everything
@@ -198,16 +190,16 @@ class Registerer2D:
             R = best_R
         else:
             # Points determine rotation
-            H = cross_covariance_2x2(p, q, _EMPTY2, _EMPTY2, W_P, W_D)
+            H = cross_covariance_2x2(p, q, np.empty((0, 2)), np.empty((0, 2)), W_P, W_D)
             R, s0 = svd_rotation_2x2(H)
-            if s0 < lin_eps:
+            if s0 < eps:
                 raise InsufficientAssociationsException(-1, -1)
 
         # --- Final registration: sign-align, re-solve R and t, invert ---
         t_norm_aligned, t_off_aligned = sign_align_normals(R, s_norm, t_norm, t_off)
         H_final = cross_covariance_2x2(p, q, s_norm, t_norm_aligned, W_P, W_D)
         R_final, s0_f = svd_rotation_2x2(H_final)
-        if s0_f < lin_eps:
+        if s0_f < eps:
             raise InsufficientAssociationsException(-1, -1)
 
         t_final = solve_translation_2x2(
@@ -275,12 +267,6 @@ class Registerer2D:
         if max_hyp > 0:
             clusters = clusters[:max_hyp]
 
-        logger.info(
-            f"Hypothesis clustering: {len(items)} hypotheses -> "
-            f"{len(clusters)} clusters, top counts: "
-            f"{[c[2] for c in clusters[:5]]}"
-        )
-
         return [c[0] for c in clusters]
 
 
@@ -320,64 +306,31 @@ class BatchRegisterer2D:
         if N == 0:
             return np.zeros((0, 3, 3), dtype=np.float64)
 
-        # -- Extract and pad --
-        all_pts_s, all_pts_t = [], []
-        all_norms_s, all_norms_t = [], []
-        all_offs_s, all_offs_t = [], []
-        n_points_list, n_lines_list = [], []
+        eps = self.params.eps
+        W_P = self.params.point_weight
+        W_D = self.params.line_direction_weight
+        W_L_M = self.params.line_moment_weight
 
-        for src, tgt in zip(sources, targets):
+        T_out = np.full((N, 3, 3), np.nan)
+        n_failed = 0
+
+        for i, (src, tgt) in enumerate(zip(sources, targets)):
             src_sl = SegmentList(src)
             tgt_sl = SegmentList(tgt)
 
-            pts_s = src_sl.get_points().points
-            pts_t = tgt_sl.get_points().points
-            norms_s, offs_s = extract_line_arrays(src_sl)
-            norms_t, offs_t = extract_line_arrays(tgt_sl)
+            p = src_sl.get_points().points
+            q = tgt_sl.get_points().points
+            ns, os_ = extract_line_arrays(src_sl)
+            nt, ot = extract_line_arrays(tgt_sl)
 
-            all_pts_s.append(pts_s)
-            all_pts_t.append(pts_t)
-            all_norms_s.append(norms_s)
-            all_norms_t.append(norms_t)
-            all_offs_s.append(offs_s)
-            all_offs_t.append(offs_t)
-            n_points_list.append(len(pts_s))
-            n_lines_list.append(len(norms_s))
+            if len(p) != len(q) or len(ns) != len(nt):
+                n_failed += 1
+                continue
 
-        max_pts = max(n_points_list) if n_points_list else 0
-        max_lines = max(n_lines_list) if n_lines_list else 0
-        n_points_arr = np.array(n_points_list, dtype=np.int64)
-        n_lines_arr = np.array(n_lines_list, dtype=np.int64)
+            T_i = register_single_2x2(p, q, ns, nt, os_, ot, eps, W_P, W_D, W_L_M)
+            if np.isnan(T_i[0, 0]):
+                n_failed += 1
+            else:
+                T_out[i] = T_i
 
-        pts_s_pad = np.zeros((N, max(max_pts, 2), 2))
-        pts_t_pad = np.zeros_like(pts_s_pad)
-        norms_s_pad = np.zeros((N, max(max_lines, 1), 2))
-        norms_t_pad = np.zeros_like(norms_s_pad)
-        offs_s_pad = np.zeros((N, max(max_lines, 1)))
-        offs_t_pad = np.zeros_like(offs_s_pad)
-
-        for i in range(N):
-            np_i, nl_i = n_points_list[i], n_lines_list[i]
-            if np_i > 0:
-                pts_s_pad[i, :np_i] = all_pts_s[i]
-                pts_t_pad[i, :np_i] = all_pts_t[i]
-            if nl_i > 0:
-                norms_s_pad[i, :nl_i] = all_norms_s[i]
-                norms_t_pad[i, :nl_i] = all_norms_t[i]
-                offs_s_pad[i, :nl_i] = all_offs_s[i]
-                offs_t_pad[i, :nl_i] = all_offs_t[i]
-
-        # -- Numba core loop --
-        T_out, n_failed = batch_register_core(
-            pts_s_pad, pts_t_pad,
-            norms_s_pad, norms_t_pad,
-            offs_s_pad, offs_t_pad,
-            n_points_arr, n_lines_arr,
-            self.params.ident_eps,
-            self.params.point_weight,
-            self.params.line_direction_weight,
-            self.params.line_moment_weight,
-        )
-
-        print(f"Batched 2D registration: {n_failed}/{N} failed")
         return T_out

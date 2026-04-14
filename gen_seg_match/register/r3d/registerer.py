@@ -133,7 +133,7 @@ class Registerer:
             W_D=self.params.gravity_weight if use_gravity else 1.0,
         )
 
-        H_init_rank = rank(H, tol=self.params.lin_eps)
+        H_init_rank = rank(H, tol=self.params.eps)
         dirs_needed = (
             max(2 - H_init_rank, 0) if num_points > 0 else (3 - int(use_gravity))
         )
@@ -167,7 +167,7 @@ class Registerer:
                     subset_weights,
                 )
 
-                if rank(H_temp, tol=self.params.lin_eps) >= 2:
+                if rank(H_temp, tol=self.params.eps) >= 2:
                     dir_idxs = idx_comb
                     break
 
@@ -417,7 +417,7 @@ class Registerer:
 
         U, S, Vt = np.linalg.svd(H)
 
-        if np.abs(S[1]) < self.params.lin_eps:
+        if np.abs(S[1]) < self.params.eps:
             # TODO: more specific error
             raise InsufficientAssociationsException(-1, -1)
 

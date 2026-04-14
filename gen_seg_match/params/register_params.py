@@ -21,8 +21,7 @@ class RegisterParams(ParamsBase):
     plane_offset_weight: float = 1.0
     gravity_weight: float = 1.0
 
-    lin_eps: Optional[float] = 1e-4
-    ident_eps: Optional[float] = 0.05
+    eps: Optional[float] = 0.05
     dup_eps: Optional[float] = 0.05
     run_gd: Optional[bool] = False
     device: Optional[torch.device] = "cpu"
