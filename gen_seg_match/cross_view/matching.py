@@ -424,11 +424,11 @@ class CrossViewMatching:
             sources_batch, targets_batch
         )  # (N_hyp, 3, 3)
 
-        # Post-process: compose with external transforms, embed to SE(3), filter
-        T_odom_robot_2d = self._se3_to_se2(T_ground_odom_ground_robot)
-        T_camera_flu_2d = (
-            self._se3_to_se2(T_camera_flu) if T_camera_flu is not None else None
-        )
+        # # Post-process: compose with external transforms, embed to SE(3), filter
+        # T_odom_robot_2d = self._se3_to_se2(T_ground_odom_ground_robot)
+        # T_camera_flu_2d = (
+        #     self._se3_to_se2(T_camera_flu) if T_camera_flu is not None else None
+        # )
 
         raw_results = []
         for idx, (matches, score, count) in enumerate(zip(
@@ -440,16 +440,21 @@ class CrossViewMatching:
             if np.any(np.isnan(T_2d)):
                 continue
 
-            T_hat_2d = T_2d @ T_odom_robot_2d
-            if T_camera_flu_2d is not None:
-                T_hat_2d = T_hat_2d @ T_camera_flu_2d
-
-            T_aerial_ground_hat = self._se2_to_se3(T_hat_2d)
+            # TODO: convert results to SE(2) instead?
+            T_aerial_ground_odom_hat = self._se2_to_se3(T_2d)
+            T_aerial_ground_hat = T_aerial_ground_odom_hat @ T_ground_odom_ground_robot
+            if T_camera_flu is not None:
+                T_aerial_ground_hat = T_aerial_ground_hat @ T_camera_flu
 
             if np.any(np.isnan(T_aerial_ground_hat)):
-                continue
+                return None
+
+            # Aerial-to-ground registration flips Z, so the 2D rotation
+            # block must have negative determinant.  Reject flipped hypotheses.
             if np.linalg.det(T_aerial_ground_hat[:2, :2]) > 0:
-                continue
+                return None
+            
+            T_aerial_ground_hat[2, 3] = 0.0
 
             pose_result = PoseEstimationResult(
                 T_i_j_hat=T_aerial_ground_hat,
@@ -505,10 +510,13 @@ class CrossViewMatching:
     @staticmethod
     def _se3_to_se2(T_4x4: np.ndarray) -> np.ndarray:
         """Extract 3x3 SE(2) from a 4x4 SE(3) matrix (xy-plane projection)."""
-        T_2d = np.eye(3)
-        T_2d[:2, :2] = T_4x4[:2, :2]
-        T_2d[:2, 2] = T_4x4[:2, 3]
-        return T_2d
+        yaw = np.arctan2(T_4x4[1, 0], T_4x4[0, 0])
+        c, s = np.cos(yaw), np.sin(yaw)
+        return np.array([
+            [c, -s, T_4x4[0, 3]],
+            [s,  c, T_4x4[1, 3]],
+            [0,  0,      1     ],
+        ])
 
     @staticmethod
     def _se2_to_se3(T_3x3: np.ndarray) -> np.ndarray:

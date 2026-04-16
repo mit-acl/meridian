@@ -63,9 +63,9 @@ def svd_rotation_2x2(H):
     """Rotation from 2×2 cross-covariance via SVD.  Returns (R, σ_max)."""
     U, S, Vt = np.linalg.svd(H)
     R = Vt.T @ U.T
-    if R[0, 0] * R[1, 1] - R[0, 1] * R[1, 0] < 0:
-        Vt[1, 0] *= -1; Vt[1, 1] *= -1
-        R = Vt.T @ U.T
+    # if R[0, 0] * R[1, 1] - R[0, 1] * R[1, 0] < 0:
+        # Vt[1, 0] *= -1; Vt[1, 1] *= -1
+        # R = Vt.T @ U.T
     return R, S[0]
 
 
