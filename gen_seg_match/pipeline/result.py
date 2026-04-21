@@ -288,6 +288,98 @@ class PoseEstimationResultMatrix(np.ndarray):
             fig.delaxes(ax[2, 1])
         return fig, ax
 
+    def plot_cross_view(
+        self,
+        dpi: int = 250,
+        dist_thresh: float = 5.0,
+        angle_thresh_deg: float = 10.0,
+        gt_patches=None,
+    ):
+        """Cross-view variant of plot().
+
+        The results matrix is indexed [i_a, j_a] where i_a is the aerial patch
+        x-index and j_a is the y-index. Transpose before display so i_a maps
+        to the horizontal axis and j_a to the vertical axis, matching the
+        orientation of the aerial image. Axes are labeled patch idx 1/2.
+        """
+        show_sim = self.has_similarity
+
+        fig, ax = plt.subplots(3, 2, figsize=(8, 12), dpi=dpi)
+        fig.subplots_adjust(wspace=0.3)
+
+        mp = ax[0, 0].imshow(self.gt_distance_m.T, cmap="magma", vmin=0)
+        fig.colorbar(mp, fraction=0.04, pad=0.04)
+        ax[0, 0].set_title("Submaps Center Distance (m)")
+
+        mp = ax[0, 1].imshow(
+            np.rad2deg(self.gt_rotation_diff_rad).T, cmap="magma", vmin=0
+        )
+        fig.colorbar(mp, fraction=0.04, pad=0.04)
+        ax[0, 1].set_title("Submap Rotation Difference (deg)")
+
+        rotation_error_mat = np.rad2deg(self.rotation_error_rad.copy())
+        dist_error_mat = self.translation_error_m.copy()
+        rotation_error_mat[
+            np.bitwise_and(
+                dist_error_mat > dist_thresh,
+                np.bitwise_not(np.isnan(rotation_error_mat)),
+            )
+        ] = angle_thresh_deg
+        dist_error_mat[
+            np.bitwise_and(
+                rotation_error_mat > angle_thresh_deg,
+                np.bitwise_not(np.isnan(dist_error_mat)),
+            )
+        ] = dist_thresh
+
+        mp = ax[1, 0].imshow(
+            dist_error_mat.T, cmap="viridis_r", vmax=dist_thresh, vmin=0.0
+        )
+        fig.colorbar(mp, fraction=0.04, pad=0.04)
+        ax[1, 0].set_title("Registration Translation Error (m)")
+
+        mp = ax[1, 1].imshow(
+            rotation_error_mat.T, cmap="viridis_r", vmax=angle_thresh_deg, vmin=0.0
+        )
+        fig.colorbar(mp, fraction=0.04, pad=0.04)
+        ax[1, 1].set_title("Registration Rotation Error (deg)")
+
+        mp = ax[2, 0].imshow(self.num_associations.T, cmap="viridis", vmin=0)
+        fig.colorbar(mp, fraction=0.04, pad=0.04)
+        ax[2, 0].set_title("Number of Associations")
+
+        if show_sim:
+            mp = ax[2, 1].imshow(
+                self.descriptor_similarity.T, cmap="viridis", vmin=0.0, vmax=1.0
+            )
+            fig.colorbar(mp, fraction=0.04, pad=0.04)
+            ax[2, 1].set_title("Similarity Score")
+
+        for i in range(len(ax)):
+            for j in range(len(ax[i])):
+                ax[i, j].set_xlabel("patch idx 1")
+                ax[i, j].set_ylabel("patch idx 2")
+                ax[i, j].grid(True)
+
+        if gt_patches:
+            for a in ax.flat:
+                if not a.has_data():
+                    continue
+                for i_a, j_a in gt_patches:
+                    rect = Rectangle(
+                        (i_a - 0.5, j_a - 0.5),
+                        1,
+                        1,
+                        linewidth=2,
+                        edgecolor="lime",
+                        facecolor="none",
+                    )
+                    a.add_patch(rect)
+
+        if not show_sim:
+            fig.delaxes(ax[2, 1])
+        return fig, ax
+
     def plot_point_vs_line_associations(self):
         """Plot number of point vs line associations for each result."""
         fig, ax = plt.subplots(1, 2, figsize=(12, 6))

@@ -33,10 +33,11 @@ class SegmentMapping:
     output_dir: str = None
     _video_writer: object = field(default=None, init=False, repr=False)
     _timing: dict = field(
-        default_factory=lambda: {"data": [], "segment": [], "map": []},
+        default_factory=lambda: {"data": [], "segment": [], "map": [], "submap_2d": []},
         init=False,
         repr=False,
     )
+    _last_descriptor_position: object = field(default=None, init=False, repr=False)
 
     def run(self, data: SegmentMappingData):
         if data.use_point_cloud:
@@ -70,17 +71,37 @@ class SegmentMapping:
             except NoDataNearTimeException:
                 continue
 
+            # Determine whether to compute frame descriptor based on distance
+            position = pose[:3, 3]
+            should_compute_descriptor = (
+                self._last_descriptor_position is None
+                or np.linalg.norm(position - self._last_descriptor_position)
+                >= self.mapping_params.frame_descriptor_dist_m
+            )
+
             t_seg_start = time.time()
             observations, frame_descriptor = self.segmenter.segment(
-                img, img_t, pose, depth
+                img,
+                img_t,
+                pose,
+                depth,
+                compute_frame_descriptor=should_compute_descriptor,
             )
+            if frame_descriptor is not None:
+                self._last_descriptor_position = position.copy()
+
             t_map_start = time.time()
             self.mapper.update(img_t, pose, observations, frame_descriptor)
+
+            t_submap_start = time.time()
+            if self.mapping_params.inc_submaps_2d:
+                self.mapper.process_submaps_2d(img_t, pose)
             t_end = time.time()
 
             self._timing["data"].append(t_seg_start - t_data_start)
             self._timing["segment"].append(t_map_start - t_seg_start)
-            self._timing["map"].append(t_end - t_map_start)
+            self._timing["map"].append(t_submap_start - t_map_start)
+            self._timing["submap_2d"].append(t_end - t_submap_start)
 
             if self._video_writer is not None:
                 frame = self._draw(img_t, img, pose)
@@ -191,13 +212,15 @@ class SegmentMapping:
         )
 
     def get_segment_map(self) -> SegmentMap:
+        descriptors = self.mapper.frame_descriptors_history
+        # If no descriptors were ever computed, pass None for backward compat
+        if not any(d is not None for d in descriptors):
+            descriptors = None
         return SegmentMap(
             segments=self.mapper.get_segment_map(),
             trajectory=self.mapper.poses_cam_history,
             times=self.mapper.times_history,
-            descriptors=self.mapper.frame_descriptors_history
-            if self.mapper.frame_descriptors_history
-            else None,
+            descriptors=descriptors,
         )
 
 
@@ -245,7 +268,61 @@ def segment_mapping(
     # Create segmenter and mapper
     print("Setting up segmenter and mapper...")
     segmenter = Segmenter(segmenter_params, depth_cam_params=camera_params)
-    mapper = SegmentMapper(mapping_params, camera_params)
+
+    # Set up incremental 2D ground submap pipeline if enabled
+    ground_submap_mapping = None
+    place_recognition = None
+    if mapping_params.inc_submaps_2d:
+        from gen_seg_match.params import (
+            GroundSubmapParams,
+            SegmentToPrimitiveConversionParams,
+            GroundSegmenterParams,
+        )
+        from gen_seg_match.map2d.ground_segmenter import GroundSegmenter
+        from gen_seg_match.map2d.segment_to_primitive import SegmentToPrimitiveConverter
+        from gen_seg_match.map2d.ground_submap_primitive_mapping import (
+            GroundSubmapPrimitiveMapping,
+        )
+
+        ground_submap_params = GroundSubmapParams.load(params_path, run=run)
+        conversion_params = SegmentToPrimitiveConversionParams.load(
+            params_path, run=run
+        )
+        ground_segmenter_params = GroundSegmenterParams.load(params_path, run=run)
+
+        converter = SegmentToPrimitiveConverter(conversion_params)
+        ground_segmenter = GroundSegmenter(ground_segmenter_params)
+
+        # Place recognition is optional
+        try:
+            from gen_seg_match.params import CrossViewPlaceRecognitionParams
+            from gen_seg_match.cross_view.place_recognition import (
+                CrossViewPlaceRecognition,
+            )
+
+            pr_params = CrossViewPlaceRecognitionParams.load(params_path, run=run)
+            place_recognition = CrossViewPlaceRecognition(pr_params)
+        except Exception:
+            place_recognition = None
+
+        ground_submap_mapping = GroundSubmapPrimitiveMapping(
+            ground_submap_params,
+            converter,
+            ground_segmenter,
+            place_recognition,
+        )
+        print(
+            f"Incremental 2D submaps enabled: "
+            f"{mapping_params.sm2d_num_segments} segs/submap, "
+            f"{mapping_params.sm2d_num_new_segments} new segs trigger"
+        )
+
+    mapper = SegmentMapper(
+        mapping_params,
+        camera_params,
+        ground_submap_mapping=ground_submap_mapping,
+        place_recognition=place_recognition,
+    )
     pipeline = SegmentMapping(
         mapping_params=mapping_params,
         segmenter=segmenter,
@@ -312,7 +389,8 @@ def segment_mapping(
         mean_data = np.mean(timing["data"])
         mean_seg = np.mean(timing["segment"])
         mean_map = np.mean(timing["map"])
-        mean_total = mean_data + mean_seg + mean_map
+        mean_sm2d = np.mean(timing["submap_2d"])
+        mean_total = mean_data + mean_seg + mean_map + mean_sm2d
         timing_path = os.path.join(output_dir, "timing.txt")
         with open(timing_path, "w") as f:
             f.write(f"Frames:           {n_frames}\n")
@@ -327,9 +405,15 @@ def segment_mapping(
             f.write(
                 f"  Mapper update:  {mean_map:.4f}s  ({mean_map / mean_total * 100:.1f}%)\n"
             )
+            if mapping_params.inc_submaps_2d:
+                f.write(
+                    f"  Submap 2D:      {mean_sm2d:.4f}s  ({mean_sm2d / mean_total * 100:.1f}%)\n"
+                )
             f.write(
                 f"  Total:          {mean_total:.4f}s  ({1 / mean_total:.1f} fps)\n"
             )
+            if mapping_params.inc_submaps_2d:
+                f.write(f"\n2D Submaps created: {len(mapper.submaps_2d)}\n")
         print(f"Saved timing breakdown to {timing_path}")
 
     # Release video writer
@@ -348,6 +432,66 @@ def segment_mapping(
     map_path = os.path.join(output_dir, "segment_map.pkl")
     segment_map.save(map_path)
     print(f"Saved segment map to {map_path}")
+
+    # Save incremental 2D ground submaps
+    if mapping_params.inc_submaps_2d and mapper.submaps_2d:
+        import pickle
+
+        ground_dir = os.path.join(output_dir, "ground", "segments")
+        os.makedirs(ground_dir, exist_ok=True)
+        for k, submap_2d in enumerate(mapper.submaps_2d):
+            submap_path = os.path.join(ground_dir, f"{k}.pkl")
+            submap_2d.save(submap_path)
+
+            # Save dense points if intermediates available
+            if k < len(mapper._submap_intermediates):
+                intermediate = mapper._submap_intermediates[k]
+                if intermediate is not None and intermediate.aerial_segments:
+                    dense_dir = os.path.join(ground_dir, f"{k}_dense")
+                    os.makedirs(dense_dir, exist_ok=True)
+                    ground_submap_params = ground_submap_mapping.submap_params
+                    for aerial_seg in intermediate.aerial_segments:
+                        dense_path = os.path.join(dense_dir, f"{aerial_seg.id}.pkl")
+                        pts = aerial_seg.points
+                        max_n = ground_submap_params.dense_points_max_n
+                        if max_n is not None and len(pts) > max_n:
+                            idx = np.round(np.linspace(0, len(pts) - 1, max_n)).astype(
+                                int
+                            )
+                            pts = pts[idx]
+                        with open(dense_path, "wb") as f:
+                            pickle.dump(pts, f)
+
+        print(f"Saved {len(mapper.submaps_2d)} ground submaps to {ground_dir}")
+
+        # Save ground submap visualizations
+        import matplotlib
+
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+        from gen_seg_match.viz.cross_view_viz import viz_ground_segments
+
+        viz_dir = os.path.join(output_dir, "ground", "viz")
+        os.makedirs(viz_dir, exist_ok=True)
+        for k, submap_2d in enumerate(mapper.submaps_2d):
+            if k >= len(mapper._submap_intermediates):
+                continue
+            intermediate = mapper._submap_intermediates[k]
+            if intermediate is None:
+                continue
+            fig, ax = viz_ground_segments(
+                intermediate.flattened_submap,
+                intermediate.aerial_segments,
+                intermediate.general_segments,
+                submap_2d.segments,
+                conversion_params.alpha_shape_alpha,
+                conversion_params.alpha_shape_grid_downsample,
+                conversion_params.alpha_shape_max_n_pts,
+                conversion_params.alpha_shape_ref_size_m,
+            )
+            fig.savefig(os.path.join(viz_dir, f"{k}.png"), dpi=400)
+            plt.close(fig)
+        print(f"Saved ground submap visualizations to {viz_dir}")
 
     # Render 3D visualization
     # try:

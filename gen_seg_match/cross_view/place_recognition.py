@@ -35,9 +35,18 @@ class CrossViewPlaceRecognition:
             ground_map: SegmentMap with .descriptors, .times, .trajectory
         """
         if ground_map.descriptors is not None:
-            self._map_times = np.array(ground_map.times)
-            self._map_descriptors = np.vstack(ground_map.descriptors)
-            self._map_positions = np.array([p[:3, 3] for p in ground_map.trajectory])
+            valid_mask = np.array([d is not None for d in ground_map.descriptors])
+            valid_descriptors = [d for d in ground_map.descriptors if d is not None]
+            if valid_descriptors:
+                self._map_times = np.array(ground_map.times)[valid_mask]
+                self._map_descriptors = np.vstack(valid_descriptors)
+                self._map_positions = np.array(
+                    [p[:3, 3] for p in ground_map.trajectory]
+                )[valid_mask]
+            else:
+                self._map_times = None
+                self._map_descriptors = None
+                self._map_positions = None
         else:
             self._map_times = None
             self._map_descriptors = None

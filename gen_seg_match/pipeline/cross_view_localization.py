@@ -840,15 +840,15 @@ def cross_view_localization(
             SegmentMatchParams,
             CrossViewMatchingParams,
             CrossViewPlaceRecognitionParams,
-            AerialSegmenterParams,
+            AerialPatchParams,
             RegisterParams,
         )
         from gen_seg_match.cross_view.place_recognition import CrossViewPlaceRecognition
-        from gen_seg_match.map2d.aerial_segmenter import AerialSegmenter
         from gen_seg_match.match.segment_matcher import SegmentMatcher
         from gen_seg_match.register.registerer import Registerer
 
         pipeline_params = CrossViewMatchingParams.load(params)
+        aerial_patch_params = AerialPatchParams.load(params)
         segment_match_params = SegmentMatchParams.load(params)
         segment_match_params.dim = 2
 
@@ -862,13 +862,12 @@ def cross_view_localization(
 
         algorithm = CrossViewMatching(
             pipeline_params=pipeline_params,
+            aerial_patch_params=aerial_patch_params,
+            pixel_len_m=data.aerial_img_scale,
             matcher=SegmentMatcher(segment_match_params),
             registerer=Registerer(RegisterParams.load(params)),
-            aerial_segmenter=AerialSegmenter(AerialSegmenterParams.load(params)),
             place_recognition=place_recognition,
         )
-        # Sync aerial segmenter pixel size with data
-        algorithm.aerial_segmenter.params.pixel_len_m = data.aerial_img_scale
         pipeline = CrossViewMatchingPipeline(algorithm=algorithm)
         aerial_seg_dir = os.path.join(
             aerial_dir or os.path.join(output_dir, "aerial"), "segments"
@@ -975,15 +974,15 @@ if __name__ == "__main__":
             SegmentMatchParams,
             CrossViewMatchingParams,
             CrossViewPlaceRecognitionParams,
-            AerialSegmenterParams,
+            AerialPatchParams,
             RegisterParams,
         )
         from gen_seg_match.cross_view.place_recognition import CrossViewPlaceRecognition
-        from gen_seg_match.map2d.aerial_segmenter import AerialSegmenter
         from gen_seg_match.match.segment_matcher import SegmentMatcher
         from gen_seg_match.register.registerer import Registerer
 
         pipeline_params = CrossViewMatchingParams.load(args.params)
+        aerial_patch_params = AerialPatchParams.load(args.params)
         segment_match_params = SegmentMatchParams.load(args.params)
         segment_match_params.dim = 2
 
@@ -997,13 +996,12 @@ if __name__ == "__main__":
 
         algorithm = CrossViewMatching(
             pipeline_params=pipeline_params,
+            aerial_patch_params=aerial_patch_params,
+            pixel_len_m=data.aerial_img_scale,
             matcher=SegmentMatcher(segment_match_params),
             registerer=Registerer(RegisterParams.load(args.params)),
-            aerial_segmenter=AerialSegmenter(AerialSegmenterParams.load(args.params)),
             place_recognition=place_recognition,
         )
-        # Sync aerial segmenter pixel size with data
-        algorithm.aerial_segmenter.params.pixel_len_m = data.aerial_img_scale
         pipeline = CrossViewMatchingPipeline(algorithm=algorithm)
         aerial_seg_dir = os.path.join(
             args.aerial or os.path.join(args.output, "aerial"), "segments"

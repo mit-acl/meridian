@@ -22,7 +22,7 @@ import pathlib
 
 from scipy.spatial.transform import Rotation as Rot
 from gen_seg_match.segment.segment_types import SegmentList, SegmentPoint, SegmentLine
-from gen_seg_match.params import CrossViewMatchingParams
+from gen_seg_match.params import AerialPatchParams
 from gen_seg_match.params.data_params import CrossViewLocalizationDataParams
 from gen_seg_match.pipeline.data import CrossViewLocalizationData
 from gen_seg_match.pipeline.result import PoseEstimationResultMatrix
@@ -223,13 +223,13 @@ def visualize_multi_hypothesis(
     # Load pipeline data
     data_params = CrossViewLocalizationDataParams.load(params_path)
     data = CrossViewLocalizationData.from_params(data_params)
-    pipeline_params = CrossViewMatchingParams.load(params_path)
+    aerial_patch_params = AerialPatchParams.load(params_path)
 
     pixel_len_m = data.aerial_img_scale
     px_per_m = 1.0 / pixel_len_m
-    patch_size_m = pipeline_params.aerial_img_patch_side_len_m
+    patch_size_m = aerial_patch_params.aerial_img_patch_side_len_m
     patch_size_px = int(patch_size_m * px_per_m)
-    patch_overlap = pipeline_params.aerial_img_patch_overlap
+    patch_overlap = aerial_patch_params.aerial_img_patch_overlap
     stride_px = int(patch_size_px * (1.0 - patch_overlap))
 
     print(

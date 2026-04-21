@@ -19,6 +19,10 @@ class SegmentMap:
         assert len(self.trajectory) == len(self.times), (
             "Trajectory and times must have the same length"
         )
+        if self.descriptors is not None:
+            assert len(self.descriptors) == len(self.times), (
+                "Descriptors and times must have the same length"
+            )
         for pose in self.trajectory:
             assert pose.shape == (4, 4), "Trajectory poses must be 4x4 matrices"
 

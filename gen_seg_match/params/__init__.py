@@ -28,3 +28,8 @@ from gen_seg_match.params.data_params import LandmarkPoseEstimationDataParams
 from gen_seg_match.params.segment_mapping_params import SegmentMappingParams
 from gen_seg_match.params.segmenter_params import SegmenterParamsBase
 from gen_seg_match.params.segmenter_params import SegmenterParams
+from gen_seg_match.params.segment_to_primitive_params import (
+    SegmentToPrimitiveConversionParams,
+    AerialPatchParams,
+    GroundSubmapParams,
+)
