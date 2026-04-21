@@ -570,7 +570,7 @@ class CrossViewMatchingPipeline:
                                 gt_patches.append((i_a, j_a))
                     break
 
-            results_matrix.plot(
+            results_matrix.plot_cross_view(
                 dist_thresh=params.match_trans_err_m,
                 angle_thresh_deg=params.match_rot_err_deg,
                 gt_patches=gt_patches,
