@@ -73,18 +73,18 @@ class GroundSubmapPrimitiveMapping:
         """
         dense_segments = []
         for seg in ground_map.segments:
-            dense_segments.append(
-                DenseSegment(
-                    id=seg.id,
-                    dense_points=seg.points,
-                    ratio_feature=DenseToSparseConverter.get_roman_ratio_feature(seg),
-                    cos_feature=seg.semantic_descriptor,
-                    first_seen=seg.first_seen,
-                    last_seen=seg.last_seen,
-                    occluded_points=seg.occluded_points,
-                    history=getattr(seg, "history", []),
-                )
+            ds = DenseSegment(
+                id=seg.id,
+                dense_points=seg.points,
+                ratio_feature=DenseToSparseConverter.get_roman_ratio_feature(seg),
+                cos_feature=seg.semantic_descriptor,
+                first_seen=seg.first_seen,
+                last_seen=seg.last_seen,
+                occluded_points=seg.occluded_points,
+                history=getattr(seg, "history", []),
             )
+            ds.voxel_size = getattr(seg, "voxel_size", None)
+            dense_segments.append(ds)
 
         params = self.submap_params
         dist_m = params.ground_submap_dist_m
@@ -133,6 +133,7 @@ class GroundSubmapPrimitiveMapping:
                 if not np.any(mask):
                     continue
                 seg_copy = seg.copy()
+                seg_copy.voxel_size = getattr(seg, "voxel_size", None)
                 seg_copy.dense_points = seg.dense_points[mask].copy()
                 seg_copy.point = np.mean(seg_copy.dense_points, axis=0)
 

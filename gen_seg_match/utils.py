@@ -182,17 +182,21 @@ def clean_up_points(
         )
 
         # Number of clusters, ignoring noise if present
-        max_label = labels.max()
+        max_label = labels.max() if labels.size > 0 else -1
 
-        # get largest cluster
-        cluster_sizes = np.zeros(max_label + 1)
-        for i in range(max_label + 1):
-            cluster_sizes[i] = np.sum(labels == i)
-        max_cluster = np.argmax(cluster_sizes)
+        if max_label < 0:
+            # No clusters found (all points are noise)
+            points = None
+        else:
+            # get largest cluster
+            cluster_sizes = np.zeros(max_label + 1)
+            for i in range(max_label + 1):
+                cluster_sizes[i] = np.sum(labels == i)
+            max_cluster = np.argmax(cluster_sizes)
 
-        # Filter out any points not belonging to max cluster
-        filtered_indices = np.where(labels == max_cluster)[0]
-        points = points[filtered_indices]
+            # Filter out any points not belonging to max cluster
+            filtered_indices = np.where(labels == max_cluster)[0]
+            points = points[filtered_indices]
 
     return points
 

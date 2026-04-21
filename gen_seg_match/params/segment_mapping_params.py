@@ -42,6 +42,12 @@ class SegmentMappingParams(ParamsBase):
     # Pipeline
     dt: float = 1 / 6  # time step for iterating through data (mapping frequency)
     T_camera_flu: Union[List, None] = None  # transform from camera to FLU frame
+    frame_descriptor_dist_m: float = 5.0
+
+    # 2D ground submap creation params
+    inc_submaps_2d: bool = True
+    sm2d_num_segments: int = 80
+    sm2d_num_new_segments: int = 40
 
     def __post_init__(self):
         if (

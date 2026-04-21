@@ -138,12 +138,15 @@ class Segmenter(SegmenterBase):
             cy=self.depth_cam_params.cy,
         )
 
-    def segment(self, img_bgr, t=None, pose=None, depth_data=None):
+    def segment(
+        self, img_bgr, t=None, pose=None, depth_data=None, compute_frame_descriptor=True
+    ):
         """
         Takes and image and returns filtered segment masks as Observations.
 
         Args:
             img (cv image): camera image
+            compute_frame_descriptor (bool): whether to compute the frame-level descriptor
 
         Returns:
             self.observations (list): list of Observations
@@ -200,7 +203,11 @@ class Segmenter(SegmenterBase):
             dino_features = None
 
         frame_descriptor = None
-        if self.frame_descriptor_type is not None and dino_output_patches is not None:
+        if (
+            compute_frame_descriptor
+            and self.frame_descriptor_type is not None
+            and dino_output_patches is not None
+        ):
             frame_descriptor = self.get_frame_descriptor(dino_output_patches, img_bgr)
 
         if depth_data is not None:

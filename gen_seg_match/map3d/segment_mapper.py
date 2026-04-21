@@ -11,7 +11,8 @@
 ###########################################################
 
 import numpy as np
-from typing import List, Union
+from typing import Dict, List, Set, Union
+
 from functools import cached_property
 
 from robotdatapy.data.img_data import CameraParams
@@ -29,7 +30,13 @@ logger.setLevel(logging.INFO)
 
 
 class SegmentMapper:
-    def __init__(self, params: SegmentMappingParams, camera_params: CameraParams):
+    def __init__(
+        self,
+        params: SegmentMappingParams,
+        camera_params: CameraParams,
+        ground_submap_mapping=None,
+        place_recognition=None,
+    ):
         self.params = params
         self.camera_params = camera_params
 
@@ -43,6 +50,17 @@ class SegmentMapper:
         self.times_history = []
         self.frame_descriptors_history = []
 
+        # Incremental 2D ground submap state
+        self._ground_submap_mapping = ground_submap_mapping
+        self.place_recognition = place_recognition
+        self._seg_ids_not_in_sm: List[int] = []
+        self._seg_last_updated: Dict[int, float] = {}
+        self._known_seg_ids: Set[int] = set()
+        self.submaps_2d = []
+        self._submap_intermediates = []
+        self._submap_counter: int = 0
+        self._last_submap_time: float = -np.inf
+
     def update(
         self,
         t: float,
@@ -52,8 +70,7 @@ class SegmentMapper:
     ):
         self.poses_cam_history.append(pose)
         self.times_history.append(t)
-        if frame_descriptor is not None:
-            self.frame_descriptors_history.append(frame_descriptor)
+        self.frame_descriptors_history.append(frame_descriptor)  # may be None
 
         if len(observations) == 0:  # nothing to update
             return
@@ -399,3 +416,216 @@ class SegmentMapper:
         for seg in segment_map:
             seg.reset_memoized()
         return segment_map
+
+    # ------------------------------------------------------------------
+    # Incremental 2D ground submap creation
+    # ------------------------------------------------------------------
+
+    def process_submaps_2d(self, t: float, pose: np.ndarray):
+        """Check for new/updated segments and create 2D ground submaps when triggered.
+
+        Creates a new submap when the number of segments not yet included in any
+        submap exceeds ``params.sm2d_num_new_segments``.
+        """
+        if self._ground_submap_mapping is None:
+            return
+
+        from gen_seg_match.map3d.dense_to_sparse_converter import DenseToSparseConverter
+        from gen_seg_match.map3d.submap import FrameType, Submap
+        from gen_seg_match.segment.segment_types import DenseSegment, SegmentList
+
+        all_segs = self.segments + self.inactive_segments + self.segment_graveyard
+        current_ids = {seg.id for seg in all_segs}
+
+        # Track new segments and update last-seen times
+        for seg in all_segs:
+            self._seg_last_updated[seg.id] = seg.last_seen
+            if seg.id not in self._known_seg_ids:
+                self._known_seg_ids.add(seg.id)
+                self._seg_ids_not_in_sm.append(seg.id)
+
+        # Remove IDs that no longer exist
+        self._seg_ids_not_in_sm = [
+            sid for sid in self._seg_ids_not_in_sm if sid in current_ids
+        ]
+        self._seg_last_updated = {
+            sid: t_last
+            for sid, t_last in self._seg_last_updated.items()
+            if sid in current_ids
+        }
+
+        # Check trigger
+        if len(self._seg_ids_not_in_sm) < self.params.sm2d_num_new_segments:
+            return
+
+        # Select segments for submap
+        new_ids = set(self._seg_ids_not_in_sm)
+        remaining_slots = self.params.sm2d_num_segments - len(new_ids)
+
+        # Fill overlap slots with most recently updated non-new segments
+        candidates = sorted(
+            [
+                (sid, t_last)
+                for sid, t_last in self._seg_last_updated.items()
+                if sid not in new_ids
+            ],
+            key=lambda x: x[1],
+            reverse=True,
+        )
+        fill_ids = {sid for sid, _ in candidates[: max(0, remaining_slots)]}
+        selected_ids = new_ids | fill_ids
+
+        seg_by_id = {seg.id: seg for seg in all_segs}
+        selected_segs = [seg_by_id[sid] for sid in selected_ids if sid in seg_by_id]
+
+        if not selected_segs:
+            return
+
+        # Compute submap time from segment reference times
+        ref_times = [
+            (seg.first_seen + seg.last_seen) / 2
+            for seg in selected_segs
+            if seg.first_seen is not None and seg.last_seen is not None
+        ]
+        if ref_times:
+            submap_time = float(np.mean(ref_times))
+        else:
+            submap_time = t
+        # Enforce monotonicity
+        if submap_time < self._last_submap_time:
+            submap_time = self._last_submap_time
+
+        # Find nearest pose to submap time
+        times_arr = np.array(self.times_history)
+        nearest_idx = int(np.argmin(np.abs(times_arr - submap_time)))
+        submap_pose = self.poses_cam_history[nearest_idx]
+
+        # Convert MapSegments to DenseSegments
+        dense_segments = []
+        for seg in selected_segs:
+            if seg.points is None or len(seg.points) == 0:
+                continue
+            ds = DenseSegment(
+                id=seg.id,
+                dense_points=seg.points.copy(),
+                ratio_feature=DenseToSparseConverter.get_roman_ratio_feature(seg),
+                cos_feature=seg.semantic_descriptor,
+                first_seen=seg.first_seen,
+                last_seen=seg.last_seen,
+                occluded_points=seg.occluded_points.copy()
+                if seg.occluded_points is not None and len(seg.occluded_points) > 0
+                else None,
+                history=getattr(seg, "history", []),
+            )
+            ds.point = np.mean(ds.dense_points, axis=0)
+            ds.voxel_size = self.params.segment_voxel_size
+            dense_segments.append(ds)
+
+        if not dense_segments:
+            return
+
+        # Attach place recognition descriptor (semantic-gem / anyloc)
+        submap_descriptor = None
+        if self.place_recognition is not None and self.place_recognition.method in (
+            "semantic-gem",
+            "anyloc",
+            "salad",
+        ):
+            submap_descriptor = self._compute_gem_descriptor_from_history(
+                dense_segments
+            )
+
+        # Build 3D submap in CAMERA frame
+        submap_3d = Submap(
+            id=self._submap_counter,
+            time=submap_time,
+            segments=SegmentList(dense_segments),
+            pose=submap_pose,
+            segment_frame=FrameType.CAMERA,
+            descriptor=submap_descriptor,
+        )
+
+        # Transform segments to submap-local (camera) frame
+        T_submap_odom = np.linalg.inv(submap_pose)
+        for seg in submap_3d.segments:
+            seg.transform(T_submap_odom)
+
+        # Convert to sparse 2D
+        submap_2d, intermediate = (
+            self._ground_submap_mapping.convert_submap_to_sparse_2d(
+                submap_3d, return_intermediates=True
+            )
+        )
+
+        # Recompute descriptor for semantic-point-line
+        if (
+            self.place_recognition is not None
+            and self.place_recognition.method == "semantic-point-line"
+        ):
+            submap_2d = Submap(
+                id=submap_2d.id,
+                time=submap_2d.time,
+                segments=submap_2d.segments,
+                pose=submap_2d.pose,
+                segment_frame=submap_2d.segment_frame,
+                descriptor=self.place_recognition.ground_descriptor(
+                    None, submap_segments=submap_2d.segments
+                ),
+                metadata=submap_2d.metadata,
+            )
+
+        self.submaps_2d.append(submap_2d)
+        self._submap_intermediates.append(intermediate)
+        self._last_submap_time = submap_time
+        self._seg_ids_not_in_sm = []
+        self._submap_counter += 1
+
+        logger.info(
+            f"Created 2D submap {self._submap_counter - 1} with "
+            f"{len(submap_2d.segments)} primitives at t={submap_time:.2f}"
+        )
+
+    def _compute_gem_descriptor_from_history(self, submap_segments):
+        """Compute semantic-gem descriptor from frame descriptor history.
+
+        Replicates the logic of CrossViewPlaceRecognition._ground_descriptor_gem()
+        but reads directly from the mapper's live history arrays.
+        """
+        seg_first = [s.first_seen for s in submap_segments if s.first_seen is not None]
+        seg_last = [s.last_seen for s in submap_segments if s.last_seen is not None]
+        if not seg_first or not seg_last:
+            return None
+
+        start_time = min(
+            s.last_seen for s in submap_segments if s.last_seen is not None
+        )
+        end_time = max(
+            s.first_seen for s in submap_segments if s.first_seen is not None
+        )
+        if start_time > end_time:
+            start_time = min(seg_first)
+            end_time = max(seg_last)
+
+        # Filter history to time range, skipping None descriptors
+        stacked = []
+        last_pos = None
+        dist_thresh = (
+            self.place_recognition.params.ground_descriptor_dist_m
+            if self.place_recognition is not None
+            else 5.0
+        )
+        for i, (t_i, desc_i) in enumerate(
+            zip(self.times_history, self.frame_descriptors_history)
+        ):
+            if t_i < start_time or t_i > end_time:
+                continue
+            if desc_i is None:
+                continue
+            pos_i = self.poses_cam_history[i][:3, 3]
+            if last_pos is None or np.linalg.norm(pos_i - last_pos) >= dist_thresh:
+                stacked.append(desc_i)
+                last_pos = pos_i
+
+        if stacked:
+            return np.vstack(stacked)
+        return None

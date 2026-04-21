@@ -30,8 +30,11 @@ class GroundSegmenter:
                 self.cleanup_points(seg)
             except Exception as e:
                 to_rm.append(seg)
-            if len(seg.dense_points) < 2:
+                continue
+            if seg.dense_points is None or len(seg.dense_points) < 2:
                 to_rm.append(seg)
+        for seg in to_rm:
+            map_2d.segments.remove(seg)
         return map_2d
 
     def submap_2d_to_aerial(self, submap_2d: Submap) -> List[GeneralSegment]:

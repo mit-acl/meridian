@@ -385,10 +385,13 @@ class SegmentMappingData:
 
         if time_range is not None:
             img_data_dict["time_range"] = time_range
+            img_data_dict["time_range_relative"] = False
             if depth_data_dict:
                 depth_data_dict["time_range"] = time_range
+                depth_data_dict["time_range_relative"] = False
             if pcl_dict:
                 pcl_dict["time_range"] = time_range
+                pcl_dict["time_range_relative"] = False
 
         img_data = ImgData.from_dict(img_data_dict) if img_data_dict else None
         depth_data = ImgData.from_dict(depth_data_dict) if depth_data_dict else None
