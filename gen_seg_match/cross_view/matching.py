@@ -17,7 +17,6 @@ from gen_seg_match.pipeline.result import (
     PoseEstimationResultMatrix,
 )
 from gen_seg_match.register.registerer import (
-    BatchRegisterer2D,
     Registerer2D,
 )
 from gen_seg_match.segment.segment_types import SegmentList
@@ -405,30 +404,7 @@ class CrossViewMatching:
         if translation_only and R_aerial_ground_2d is not None:
             self.matcher.params.xy_dir_constrained_2d = False
 
-        # Build matched segment lists for batched registration
         all_matches = match_result.association_arrays
-        sources_batch = []
-        targets_batch = []
-        for matches in all_matches:
-            matched_aerial = [
-                aerial_segs_j.get_segment_from_id(a_id) for _, a_id in matches
-            ]
-            matched_ground = [
-                ground_segs_i.get_segment_from_id(g_id) for g_id, _ in matches
-            ]
-            sources_batch.append(matched_aerial)
-            targets_batch.append(matched_ground)
-
-        # Batched 2D registration
-        T_batch_2d = self.batch_registerer.register_batch(
-            sources_batch, targets_batch
-        )  # (N_hyp, 3, 3)
-
-        # # Post-process: compose with external transforms, embed to SE(3), filter
-        # T_odom_robot_2d = self._se3_to_se2(T_ground_odom_ground_robot)
-        # T_camera_flu_2d = (
-        #     self._se3_to_se2(T_camera_flu) if T_camera_flu is not None else None
-        # )
 
         raw_results = []
         for idx, (matches, score, count) in enumerate(zip(
@@ -436,23 +412,34 @@ class CrossViewMatching:
             match_result.scores,
             match_result.counts,
         )):
-            T_2d = T_batch_2d[idx]
-            if np.any(np.isnan(T_2d)):
+            # TODO: originally switched, check that this is correct
+            matched_ground = SegmentList(
+                [ground_segs_i.get_segment_from_id(g_id) for _, g_id in matches]
+            )
+            matched_aerial = SegmentList(
+                [aerial_segs_j.get_segment_from_id(a_id) for a_id, _ in matches]
+            )
+
+            try:
+                T_aerial_ground_odom_2d = self.registerer.register(matched_aerial, matched_ground).transformation
+            except Exception as e:
+                print(f"Registration failed for idx {idx}/{len(all_matches)}: {e}")
                 continue
 
-            # TODO: convert results to SE(2) instead?
-            T_aerial_ground_odom_hat = self._se2_to_se3(T_2d)
+            # TODO: transform everything in SE(2) instead?
+            T_aerial_ground_odom_hat = self._se2_to_se3(T_aerial_ground_odom_2d)
             T_aerial_ground_hat = T_aerial_ground_odom_hat @ T_ground_odom_ground_robot
             if T_camera_flu is not None:
                 T_aerial_ground_hat = T_aerial_ground_hat @ T_camera_flu
 
             if np.any(np.isnan(T_aerial_ground_hat)):
-                return None
+                continue
 
             # Aerial-to-ground registration flips Z, so the 2D rotation
             # block must have negative determinant.  Reject flipped hypotheses.
             if np.linalg.det(T_aerial_ground_hat[:2, :2]) > 0:
-                return None
+                # print("skipping proper rotation")
+                continue
             
             T_aerial_ground_hat[2, 3] = 0.0
 
@@ -460,13 +447,6 @@ class CrossViewMatching:
                 T_i_j_hat=T_aerial_ground_hat,
                 T_i_j=T_aerial_ground,
                 associations=matches,
-            )
-
-            matched_ground = SegmentList(
-                [ground_segs_i.get_segment_from_id(g_id) for g_id, _ in matches]
-            )
-            matched_aerial = SegmentList(
-                [aerial_segs_j.get_segment_from_id(a_id) for _, a_id in matches]
             )
 
             result = SingleMatchResult(
@@ -524,6 +504,8 @@ class CrossViewMatching:
         T_4x4 = np.eye(4)
         T_4x4[:2, :2] = T_3x3[:2, :2]
         T_4x4[:2, 3] = T_3x3[:2, 2]
+        if np.linalg.det(T_4x4[:2, :2]) < 0:
+            T_4x4[2, 2] = -1.0
         return T_4x4
 
     def _find_max_intersection_patches(

@@ -1,23 +1,21 @@
 import numpy as np
-from typing import Any, List, Optional, Tuple
+from typing import Any, List, Tuple
 from dataclasses import dataclass
-from itertools import combinations
 
 from gen_seg_match.segment.segment_types import (
     SegmentPoint,
     GeneralSegment,
     SegmentList,
-    SegmentLine,
 )
 from gen_seg_match.params import RegisterParams
 from gen_seg_match.register.geometry import (
     extract_line_arrays,
-    cross_covariance_2x2,
-    svd_rotation_2x2,
-    solve_translation_2x2,
-    sign_align_normals,
-    point_line_loss_2d,
-    register_single_2x2,
+    register_2d_core,
+    REGISTER_OK,
+    REGISTER_NO_ROTATION,
+    REGISTER_NO_TRANSLATION,
+    REGISTER_DEGENERATE_SIGN,
+    REGISTER_SINGULAR,
 )
 
 class InsufficientAssociationsException(Exception):
@@ -65,153 +63,73 @@ class Registerer2D:
         Returns:
             RegistrationResult with a 3x3 SE(2) transformation matrix.
         """
-        if (
-            len(source) == 0
-            or len(target) == 0
-            or (correspondences is not None and len(correspondences) == 0)
-        ):
-            raise InsufficientAssociationsException(len(source), len(target))
-
         if correspondences is None:
-            assert len(source) == len(target)
-            correspondences = np.array(
-                [[seg1.id, seg2.id] for seg1, seg2 in zip(source, target)]
-            )
-
-        source = SegmentList(source)
-        target = SegmentList(target)
-
-        if self.params.only_use_points:
-            correspondences = np.array(
-                [
-                    correspondence
-                    for correspondence in correspondences
-                    if isinstance(
-                        source.get_segment_from_id(correspondence[0]), SegmentPoint
-                    )
+            if self.params.only_use_points:
+                pairs = [
+                    (s, t) for s, t in zip(source, target)
+                    if isinstance(s, SegmentPoint)
                 ]
-            )
-            if len(correspondences) == 0:
-                raise InsufficientAssociationsException(len(source), len(target))
+                source = [s for s, _ in pairs]
+                target = [t for _, t in pairs]
+            source = SegmentList(source)
+            target = SegmentList(target)
+        else:
+            source = SegmentList(source)
+            target = SegmentList(target)
+            if self.params.only_use_points:
+                correspondences = np.array([
+                    c for c in correspondences
+                    if isinstance(source.get_segment_from_id(c[0]), SegmentPoint)
+                ])
+            source = source.sublist_from_ids(correspondences[:, 0])
+            target = target.sublist_from_ids(correspondences[:, 1])
 
-        source = source.sublist_from_ids(correspondences[:, 0])
-        target = target.sublist_from_ids(correspondences[:, 1])
-
-        for i in range(len(correspondences)):
+        assert len(source) == len(target)
+        if len(source) == 0:
+            raise InsufficientAssociationsException(0, 0, 0, "No segments to register.")
+        for i in range(len(source)):
             assert type(source[i]) == type(target[i]), (
                 "Corresponded segments must be of the same type. "
                 + f"Got match between {type(source[i])} and {type(target[i])}."
             )
 
-        # --- Extract numeric arrays (once) ---
-        num_points = len(source.get_points())
-        num_lines = len(source.get_lines())
-
-        p = source.get_points().points  # (n_p, 2)
-        q = target.get_points().points
-
+        p = np.ascontiguousarray(source.get_points().points, dtype=np.float64)
+        q = np.ascontiguousarray(target.get_points().points, dtype=np.float64)
         s_norm, s_off = extract_line_arrays(source)
         t_norm, t_off = extract_line_arrays(target)
 
-        eps = self.params.eps
-        W_P = self.params.point_weight
-        W_D = self.params.line_direction_weight
-        W_L_M = self.params.line_moment_weight
-
-        # --- Feasibility checks ---
-        # Rotation (1 DOF): need 1 line OR 2 non-identical points
-        points_determine_rotation = False
-        if num_points >= 2:
-            H_pts = cross_covariance_2x2(p, q, np.empty((0, 2)), np.empty((0, 2)), W_P, 0.0)
-            _, s0_pts = svd_rotation_2x2(H_pts)
-            points_determine_rotation = s0_pts > eps
-
-        has_rotation = num_lines >= 1 or points_determine_rotation
-
-        # Translation (2 DOF): need 1 point OR 2 non-parallel lines
-        has_translation = num_points >= 1
-        if not has_translation:
-            if num_lines >= 2:
-                for i, j in combinations(range(num_lines), 2):
-                    cross = s_norm[i, 0] * s_norm[j, 1] - s_norm[i, 1] * s_norm[j, 0]
-                    if abs(cross) > eps:
-                        has_translation = True
-                        break
-
-        if not has_rotation:
-            raise InsufficientAssociationsException(
-                len(source), len(target), num_points + num_lines,
-                "Insufficient for rotation: need at least 1 line or 2 non-identical points.",
-            )
-        if not has_translation:
-            raise InsufficientAssociationsException(
-                len(source), len(target), num_points + num_lines,
-                "Insufficient for translation: need at least 1 point or 2 non-parallel lines.",
-            )
-
-        # --- Determine initial rotation ---
-        if num_lines > 0 and not points_determine_rotation:
-            # Sign disambiguation: try both signs for the first line normal
-            best_loss = float("inf")
-            second_best_loss = float("inf")
-            best_R = None
-
-            for sign_val in (-1.0, 1.0):
-                first_t_norm = sign_val * t_norm[0:1]
-                H = cross_covariance_2x2(p, q, s_norm[0:1], first_t_norm, W_P, W_D)
-                R_cand, s0 = svd_rotation_2x2(H)
-                if s0 < eps:
-                    continue
-
-                # Align ALL normals, solve translation with everything
-                t_norm_a, t_off_a = sign_align_normals(R_cand, s_norm, t_norm, t_off)
-                t_cand = solve_translation_2x2(
-                    R_cand, p, q, s_norm, s_off, t_off_a, W_P, W_L_M
-                )
-
-                loss = point_line_loss_2d(
-                    R_cand, t_cand, p, q,
-                    s_norm, t_norm, s_off, t_off,
-                    W_P, W_D, W_L_M, True,
-                )
-
-                if loss < best_loss:
-                    second_best_loss = best_loss
-                    best_loss = loss
-                    best_R = R_cand
-                elif loss < second_best_loss:
-                    second_best_loss = loss
-
-            if best_R is None or second_best_loss - best_loss < self.params.dup_eps:
-                raise InsufficientAssociationsException(
-                    len(source), len(target), num_lines,
-                    "Degenerate configuration: both sign choices yield similar losses.",
-                )
-            R = best_R
-        else:
-            # Points determine rotation
-            H = cross_covariance_2x2(p, q, np.empty((0, 2)), np.empty((0, 2)), W_P, W_D)
-            R, s0 = svd_rotation_2x2(H)
-            if s0 < eps:
-                raise InsufficientAssociationsException(-1, -1)
-
-        # --- Final registration: sign-align, re-solve R and t, invert ---
-        t_norm_aligned, t_off_aligned = sign_align_normals(R, s_norm, t_norm, t_off)
-        H_final = cross_covariance_2x2(p, q, s_norm, t_norm_aligned, W_P, W_D)
-        R_final, s0_f = svd_rotation_2x2(H_final)
-        if s0_f < eps:
-            raise InsufficientAssociationsException(-1, -1)
-
-        t_final = solve_translation_2x2(
-            R_final, p, q, s_norm, s_off, t_off_aligned, W_P, W_L_M
+        status, T = register_2d_core(
+            p, q, s_norm, s_off, t_norm, t_off,
+            self.params.point_weight,
+            self.params.line_direction_weight,
+            self.params.line_moment_weight,
+            self.params.eps,
+            self.params.dup_eps,
         )
 
-        T = np.eye(3)
-        T[:2, :2] = R_final
-        T[:2, 2] = t_final
-        T = np.linalg.inv(T)
+        if status == REGISTER_OK:
+            return RegistrationResult(transformation=T, losses=[])
 
-        return RegistrationResult(transformation=T, losses=[])
+        n_pts = p.shape[0]
+        n_lines = s_norm.shape[0]
+        if status == REGISTER_NO_ROTATION:
+            raise InsufficientAssociationsException(
+                len(source), len(target), n_pts + n_lines,
+                "Insufficient for rotation: need at least 1 line or 2 non-identical points.",
+            )
+        if status == REGISTER_NO_TRANSLATION:
+            raise InsufficientAssociationsException(
+                len(source), len(target), n_pts + n_lines,
+                "Insufficient for translation: need at least 1 point or 2 non-parallel lines.",
+            )
+        if status == REGISTER_DEGENERATE_SIGN:
+            raise InsufficientAssociationsException(
+                len(source), len(target), n_lines,
+                "Degenerate configuration: multiple sign choices yield similar losses.",
+            )
+        if status == REGISTER_SINGULAR:
+            raise InsufficientAssociationsException(-1, -1)
+        raise InsufficientAssociationsException(-1, -1, message=f"Unknown status {status}")
 
     @staticmethod
     def _se2_distance(T1: np.ndarray, T2: np.ndarray):
@@ -268,69 +186,3 @@ class Registerer2D:
             clusters = clusters[:max_hyp]
 
         return [c[0] for c in clusters]
-
-
-class BatchRegisterer2D:
-    """Batched 2D registration using numba-accelerated NumPy.
-
-    For each problem in the batch:
-      1. Take two points, solve initial rotation via SVD.
-      2. Use that rotation to sign-align all line normals.
-      3. Re-solve rotation with all points + aligned normals.
-      4. Solve translation via normal equations.
-
-    Problems that fail (< 2 points, degenerate, etc.) get NaN transforms.
-    """
-
-    def __init__(self, params: RegisterParams):
-        self.params = params
-
-    def register_batch(
-        self,
-        sources: List[List[GeneralSegment]],
-        targets: List[List[GeneralSegment]],
-    ) -> np.ndarray:
-        """
-        Batched 2D registration of pre-corresponded segment lists.
-
-        Args:
-            sources: N lists of source segments (pre-corresponded 1-to-1).
-            targets: N lists of target segments.
-
-        Returns:
-            (N, 3, 3) numpy array of SE(2) transforms (target -> source).
-            Failed problems are filled with NaN.
-        """
-        N = len(sources)
-        assert N == len(targets)
-        if N == 0:
-            return np.zeros((0, 3, 3), dtype=np.float64)
-
-        eps = self.params.eps
-        W_P = self.params.point_weight
-        W_D = self.params.line_direction_weight
-        W_L_M = self.params.line_moment_weight
-
-        T_out = np.full((N, 3, 3), np.nan)
-        n_failed = 0
-
-        for i, (src, tgt) in enumerate(zip(sources, targets)):
-            src_sl = SegmentList(src)
-            tgt_sl = SegmentList(tgt)
-
-            p = src_sl.get_points().points
-            q = tgt_sl.get_points().points
-            ns, os_ = extract_line_arrays(src_sl)
-            nt, ot = extract_line_arrays(tgt_sl)
-
-            if len(p) != len(q) or len(ns) != len(nt):
-                n_failed += 1
-                continue
-
-            T_i = register_single_2x2(p, q, ns, nt, os_, ot, eps, W_P, W_D, W_L_M)
-            if np.isnan(T_i[0, 0]):
-                n_failed += 1
-            else:
-                T_out[i] = T_i
-
-        return T_out

@@ -136,44 +136,132 @@ def point_line_loss_2d(R, t, s_p, t_p, s_norm, t_norm, s_off, t_off,
     return loss
 
 
+# Status codes returned by register_2d_core
+REGISTER_OK = 0
+REGISTER_NO_ROTATION = 1
+REGISTER_NO_TRANSLATION = 2
+REGISTER_DEGENERATE_SIGN = 3
+REGISTER_SINGULAR = 4
+
+# Shared empty (0, 2) buffer for feasibility calls that pass no points/lines.
+_EMPTY_2 = np.empty((0, 2), dtype=np.float64)
+
+
 @numba.njit(cache=True)
-def register_single_2x2(p, q, ns, nt, os_, ot, eps, W_P, W_D, W_L_M):
-    """Register a single 2D problem.  Returns 3×3 SE(2) transform (NaN if failed)."""
-    T = np.full((3, 3), np.nan)
-    n_p = p.shape[0]
-    nl = ns.shape[0]
+def register_2d_core(p, q, s_norm, s_off, t_norm, t_off,
+                     W_P, W_D, W_L_M, eps, dup_eps):
+    """Numba-optimized core of Registerer2D.register.
 
-    if n_p < 2:
-        return T
+    Performs feasibility checks, initial rotation (with sign disambiguation
+    when lines alone determine rotation), final sign-aligned re-solve, and
+    returns the inverted SE(2) transform as a 3x3 matrix.
 
-    # Step 1: initial rotation from points
-    H0 = cross_covariance_2x2(p, q,
-                               np.empty((0, 2)), np.empty((0, 2)), 1.0, 0.0)
-    R0, s0 = svd_rotation_2x2(H0)
-    if s0 < eps:
-        return T
+    Returns
+    -------
+    status : int
+        0 on success; non-zero codes described by the REGISTER_* constants.
+    T : (3, 3) float64 ndarray
+        SE(2) transform mapping target to source (identity on failure).
+    """
+    num_points = p.shape[0]
+    num_lines = s_norm.shape[0]
+    T = np.eye(3)
 
-    # Step 2: sign-align normals
-    if nl > 0:
-        nt_a, ot_a = sign_align_normals(R0, ns, nt, ot)
+    # Points-only rotation: doubles as the feasibility check (s0 > eps) and,
+    # when valid, as the initial R — no need to recompute it below.
+    R_pts = np.eye(2)
+    points_determine_rotation = False
+    if num_points >= 2:
+        H_pts = cross_covariance_2x2(p, q, _EMPTY_2, _EMPTY_2, 1.0, 0.0)
+        R_pts, s0_pts = svd_rotation_2x2(H_pts)
+        points_determine_rotation = s0_pts > eps
+
+    has_rotation = num_lines >= 1 or points_determine_rotation
+
+    # Translation: N has rank 2 iff σ_min(N) > 0.
+    has_translation = num_points >= 1
+    if not has_translation and num_lines >= 2:
+        NN = cross_covariance_2x2(_EMPTY_2, _EMPTY_2, s_norm, s_norm, 0.0, 1.0)
+        _, S_NN, _ = np.linalg.svd(NN)
+        has_translation = S_NN[1] > eps
+
+    if not has_rotation:
+        return REGISTER_NO_ROTATION, T
+    if not has_translation:
+        return REGISTER_NO_TRANSLATION, T
+
+    if num_lines > 0 and not points_determine_rotation:
+        # Lines determine rotation: try both signs for the first line normal,
+        # keep the winner's sign-aligned arrays to avoid re-aligning below.
+        best_loss = np.inf
+        second_best_loss = np.inf
+        best_R = np.eye(2)
+        best_t_norm_a = t_norm
+        best_t_off_a = t_off
+        found = False
+
+        for sign_idx in range(2):
+            sign_val = -1.0 if sign_idx == 0 else 1.0
+            first_t_norm = sign_val * t_norm[0:1]
+            H = cross_covariance_2x2(p, q, s_norm[0:1], first_t_norm, W_P, W_D)
+            R_cand, s0 = svd_rotation_2x2(H)
+            if s0 < eps:
+                continue
+
+            t_norm_a, t_off_a = sign_align_normals(R_cand, s_norm, t_norm, t_off)
+            trans_cand = solve_translation_2x2(
+                R_cand, p, q, s_norm, s_off, t_off_a, W_P, W_L_M
+            )
+
+            loss = point_line_loss_2d(
+                R_cand, trans_cand, p, q,
+                s_norm, t_norm, s_off, t_off,
+                W_P, W_D, W_L_M, True,
+            )
+
+            if loss < best_loss:
+                second_best_loss = best_loss
+                best_loss = loss
+                best_R = R_cand
+                best_t_norm_a = t_norm_a
+                best_t_off_a = t_off_a
+                found = True
+            elif loss < second_best_loss:
+                second_best_loss = loss
+
+        if not found or second_best_loss - best_loss < dup_eps:
+            return REGISTER_DEGENERATE_SIGN, T
+        R = best_R
+        t_norm_aligned = best_t_norm_a
+        t_off_aligned = best_t_off_a
     else:
-        nt_a = np.empty((0, 2))
-        ot_a = np.empty(0)
+        # Points determine rotation — reuse R_pts from the feasibility SVD.
+        R = R_pts
+        if num_lines > 0:
+            t_norm_aligned, t_off_aligned = sign_align_normals(R, s_norm, t_norm, t_off)
+        else:
+            t_norm_aligned = t_norm
+            t_off_aligned = t_off
 
-    # Step 3: final rotation with all points + aligned normals
-    H1 = cross_covariance_2x2(p, q, ns, nt_a, W_P, W_D)
-    R1, s1 = svd_rotation_2x2(H1)
-    if s1 < eps:
-        return T
+    # Refine R with the full sign-aligned data.
+    if num_lines > 0:
+        H_final = cross_covariance_2x2(p, q, s_norm, t_norm_aligned, W_P, W_D)
+        R_final, s0_f = svd_rotation_2x2(H_final)
+        if s0_f < eps:
+            return REGISTER_SINGULAR, T
+    else:
+        R_final = R
 
-    # Step 4: translation
-    t = solve_translation_2x2(R1, p, q, ns, os_, ot_a, W_P, W_L_M)
+    trans_final = solve_translation_2x2(
+        R_final, p, q, s_norm, s_off, t_off_aligned, W_P, W_L_M
+    )
 
-    # Step 5: assemble inv(T)  —  T_inv = [[R^T, -R^T t], [0 0 1]]
-    T[0, 0] = R1[0, 0]; T[0, 1] = R1[1, 0]
-    T[1, 0] = R1[0, 1]; T[1, 1] = R1[1, 1]
-    T[0, 2] = -(R1[0, 0] * t[0] + R1[1, 0] * t[1])
-    T[1, 2] = -(R1[0, 1] * t[0] + R1[1, 1] * t[1])
-    T[2, 0] = 0.0; T[2, 1] = 0.0; T[2, 2] = 1.0
+    # T = [[R, t], [0, 1]] ; T^-1 = [[R^T, -R^T t], [0, 1]]
+    r00 = R_final[0, 0]; r01 = R_final[0, 1]
+    r10 = R_final[1, 0]; r11 = R_final[1, 1]
+    T[0, 0] = r00; T[0, 1] = r10
+    T[1, 0] = r01; T[1, 1] = r11
+    T[0, 2] = -(r00 * trans_final[0] + r10 * trans_final[1])
+    T[1, 2] = -(r01 * trans_final[0] + r11 * trans_final[1])
 
-    return T
+    return REGISTER_OK, T
