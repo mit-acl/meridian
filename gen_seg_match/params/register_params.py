@@ -29,9 +29,9 @@ class RegisterParams(ParamsBase):
     refine_transforms_kwargs: dict = None
 
     # Hypothesis clustering params (for multi-hypothesis matching)
-    cluster_trans_thresh_m: float = 3.0
+    cluster_trans_thresh_m: float = 1.0
     cluster_rot_thresh_deg: float = 5.0
-    max_hypotheses: int = 100  # 0 = no limit
+    max_hypotheses: int = 25  # 0 = no limit
 
     def __post_init__(self):
         if self.refine_transforms_kwargs is None:

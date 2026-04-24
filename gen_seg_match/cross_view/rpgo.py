@@ -354,6 +354,10 @@ class CrossViewRPGO:
         iparams.trans_eps_m = self.params.trans_consistency_eps_m
         iparams.added_trans_noise_m_per_m = self.params.added_trans_noise_m_per_m
         iparams.added_rot_noise_deg_per_m = self.params.added_rot_noise_deg_per_m
+        iparams.single_lc_per_ground_sm = self.params.single_lc_per_ground_sm
+        iparams.single_lc_per_ground_aerial_pair = (
+            self.params.single_lc_per_ground_aerial_pair
+        )
         invariant = clipperpy.invariants.LoopClosureConsistency(
             aerial_poses, ground_poses, ground_distances, iparams
         )

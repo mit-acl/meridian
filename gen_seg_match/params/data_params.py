@@ -74,6 +74,8 @@ class CrossViewLocalizationDataParams(ParamsBase):
     T_camera_flu: list = None
 
     def __post_init__(self):
+        self.aerial_img_path = expandvars_recursive(self.aerial_img_path)
+        self.ground_map_path = expandvars_recursive(self.ground_map_path)
         if self.T_camera_flu is not None:
             self.T_camera_flu = np.array(self.T_camera_flu).reshape((4, 4))
         if self.gt_pose_data is not None:

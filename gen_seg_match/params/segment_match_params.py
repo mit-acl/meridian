@@ -79,7 +79,7 @@ class SegmentMatchParams(ParamsBase):
     ratio_weight: float = 1.0
     cosine_weight: float = 1.0
     ratio_epsilon: np.ndarray = field(default_factory=lambda: np.zeros(0))
-    cosine_min: float = 0.2
+    cosine_min: float = 0.1
     cosine_max: float = 0.5
     z_dir_constrained: bool = False
     xyz_dir_constrained: bool = False

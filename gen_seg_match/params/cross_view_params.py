@@ -16,7 +16,7 @@ class CrossViewMatchingParams(ParamsBase):
 
     match_min_len_m: float = 4.0
 
-    ground_dist_from_aerial_patch_center_m: float = 75.0
+    ground_dist_from_aerial_patch_center_m: float = 25.0
 
     # Use CLIPPER instead of Langevin for pass 2 (rerun with known rotation)
     clipper_pass2: bool = False
@@ -62,10 +62,12 @@ class CrossViewRPGOParams(ParamsBase):
     # CLIPPER consistency
     rot_consistency_sigma_deg: float = 5.0
     rot_consistency_eps_deg: float = 5.0
-    trans_consistency_sigma_m: float = 1.0
-    trans_consistency_eps_m: float = 1.0
+    trans_consistency_sigma_m: float = 2.0
+    trans_consistency_eps_m: float = 2.0
     added_trans_noise_m_per_m: float = 0.02
     added_rot_noise_deg_per_m: float = 0.02
+    single_lc_per_ground_sm: bool = True
+    single_lc_per_ground_aerial_pair: bool = True
     min_num_associations: int = 3
     min_num_associations_rerun: Optional[int] = None
 
