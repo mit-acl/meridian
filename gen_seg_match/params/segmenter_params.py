@@ -15,7 +15,7 @@ class SegmenterParamsBase(ParamsBase):
     model_type: str = "fastsam"
     weights_path: str = "$ROMAN_WEIGHTS/FastSAM-x.pt"
     imgsz: Tuple[int, int] = (1024, 1024)
-    conf: float = 0.5
+    conf: float = 0.2
     iou: float = 0.9
     device: str = "cuda"
 
