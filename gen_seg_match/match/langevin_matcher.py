@@ -40,11 +40,15 @@ class LangevinMatcher:
             return []
 
         # Run Langevin dynamics
+        t_setup0 = time.time()
         C_ld = (M == 0).astype(int)
         dim = M.shape[0]
         ld_solver = LangevinDynamics(M, C_ld, dim, dim, device=self.params.device)
 
         u = torch.rand(self.params.n_particles, dim).to(self.params.device)
+        t_setup = time.time() - t_setup0
+
+        start_time = time.time()
         u = ld_solver.updateParticles(
             u,
             stepsize=self.params.step_size,
@@ -67,8 +71,10 @@ class LangevinMatcher:
         sorted_values = ld_solver.extract_associations(u, A)
 
         # Build lookup for objective computation
+        t_lookup0 = time.time()
         A_np = np.asarray(A)
         A_lookup = {(int(r[0]), int(r[1])): i for i, r in enumerate(A_np)}
+        t_lookup = time.time() - t_lookup0
 
         # Filter and compute objectives
         results = []
@@ -95,7 +101,14 @@ class LangevinMatcher:
             results.append((assoc_matrix, obj, count))
 
         # Sort by objective descending (best first)
+        t_sort0 = time.time()
         results.sort(key=lambda x: x[1], reverse=True)
+        t_sort = time.time() - t_sort0
+
+        print(
+            f"LM_INNER setup={t_setup*1000:.1f}ms lookup={t_lookup*1000:.1f}ms "
+            f"sort={t_sort*1000:.1f}ms n_results={len(results)} |A|={len(A_np)}"
+        )
 
         logger.debug(
             f"Langevin matcher: {len(results)} valid hypotheses from "

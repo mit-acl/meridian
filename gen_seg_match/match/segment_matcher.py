@@ -655,11 +655,13 @@ class SegmentMatcher:
         Returns:
             (n, 2) array of segment IDs.
         """
-        Ain_by_ids = np.zeros_like(association_matrix)
-        for i in range(association_matrix.shape[0]):
-            Ain_by_ids[i, 0] = map1.get_type_ordered_idx(association_matrix[i, 0]).id
-            Ain_by_ids[i, 1] = map2.get_type_ordered_idx(association_matrix[i, 1]).id
-        return Ain_by_ids
+        if association_matrix.size == 0:
+            return np.zeros_like(association_matrix)
+        ids1 = map1.type_ordered_ids()
+        ids2 = map2.type_ordered_ids()
+        return np.column_stack(
+            (ids1[association_matrix[:, 0]], ids2[association_matrix[:, 1]])
+        )
 
     # Keep backward-compatible alias
     _assoc_idx_to_ids = assoc_idx_to_ids

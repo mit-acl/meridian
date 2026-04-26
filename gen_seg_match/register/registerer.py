@@ -1,6 +1,9 @@
+import logging
 import numpy as np
 from typing import Any, List, Tuple
 from dataclasses import dataclass
+
+logger = logging.getLogger(__name__)
 
 from gen_seg_match.segment.segment_types import (
     SegmentPoint,
@@ -71,11 +74,15 @@ class Registerer2D:
                 ]
                 source = [s for s, _ in pairs]
                 target = [t for _, t in pairs]
-            source = SegmentList(source)
-            target = SegmentList(target)
+            if not isinstance(source, SegmentList):
+                source = SegmentList(source)
+            if not isinstance(target, SegmentList):
+                target = SegmentList(target)
         else:
-            source = SegmentList(source)
-            target = SegmentList(target)
+            if not isinstance(source, SegmentList):
+                source = SegmentList(source)
+            if not isinstance(target, SegmentList):
+                target = SegmentList(target)
             if self.params.only_use_points:
                 correspondences = np.array([
                     c for c in correspondences
@@ -185,4 +192,10 @@ class Registerer2D:
         if max_hyp > 0:
             clusters = clusters[:max_hyp]
 
-        return [c[0] for c in clusters]
+        logger.info(
+            f"Hypothesis clustering: {N} hypotheses -> "
+            f"{len(rep_idxs)} clusters, top counts: "
+            f"{[cluster_counts[k] for k in order[:5]]}"
+        )
+
+        return [items[rep_idxs[k]][0] for k in order]

@@ -405,6 +405,10 @@ class CrossViewMatching:
             self.matcher.params.xy_dir_constrained_2d = False
 
         all_matches = match_result.association_arrays
+        n_hyps = len(all_matches)
+        t_reg_total = 0.0
+        t_segl_total = 0.0
+        t_dim = 0.0
 
         raw_results = []
         for idx, (matches, score, count) in enumerate(zip(
@@ -412,19 +416,19 @@ class CrossViewMatching:
             match_result.scores,
             match_result.counts,
         )):
-            # TODO: originally switched, check that this is correct
-            matched_ground = SegmentList(
-                [ground_segs_i.get_segment_from_id(g_id) for _, g_id in matches]
-            )
-            matched_aerial = SegmentList(
-                [aerial_segs_j.get_segment_from_id(a_id) for a_id, _ in matches]
-            )
+            t_segl0 = time.time()
+            matched_ground = ground_segs_i.sublist_from_ids(matches[:, 1])
+            matched_aerial = aerial_segs_j.sublist_from_ids(matches[:, 0])
+            t_segl_total += time.time() - t_segl0
 
+            t_reg0 = time.time()
             try:
                 T_aerial_ground_odom_2d = self.registerer.register(matched_aerial, matched_ground).transformation
             except Exception as e:
+                t_reg_total += time.time() - t_reg0
                 print(f"Registration failed for idx {idx}/{len(all_matches)}: {e}")
                 continue
+            t_reg_total += time.time() - t_reg0
 
             # TODO: transform everything in SE(2) instead?
             T_aerial_ground_odom_hat = self._se2_to_se3(T_aerial_ground_odom_2d)
