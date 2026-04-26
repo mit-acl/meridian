@@ -155,3 +155,10 @@ class CrossViewRPGOParams(ParamsBase):
     @property
     def prior_rot_sigma_rad(self) -> float:
         return np.deg2rad(self.prior_rot_sigma_deg)
+
+
+@dataclass
+class CrossViewIncrementalParams(ParamsBase):
+    params_key: ClassVar[str] = "cross_view_incremental"
+
+    consistent_loop_closure_thresh: int = 3

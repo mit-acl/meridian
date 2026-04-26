@@ -248,6 +248,20 @@ class CrossViewRPGO:
             candidates=candidates,
         )
 
+    def solve_clipper_only(
+        self,
+        candidates: List[dict],
+        trajectory: List[np.ndarray],
+        times: np.ndarray,
+    ) -> Tuple[np.ndarray, Optional[np.ndarray], Optional[np.ndarray]]:
+        """Run only the outlier-rejection step (CLIPPER or GT) without PGO.
+
+        Returns (inlier_indices, M, C). M and C are None when gt_inliers is set.
+        """
+        if self.params.gt_inliers:
+            return self._gt_inlier_selection(candidates), None, None
+        return self.run_clipper_cpp(candidates, trajectory, times)
+
     def _gt_inlier_selection(self, candidates: List[dict]) -> np.ndarray:
         """Select inliers by comparing each candidate's T_i_j_hat to GT T_i_j.
 
