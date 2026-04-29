@@ -161,4 +161,5 @@ class CrossViewRPGOParams(ParamsBase):
 class CrossViewIncrementalParams(ParamsBase):
     params_key: ClassVar[str] = "cross_view_incremental"
 
-    consistent_loop_closure_thresh: int = 3
+    consistent_loop_closure_thresh: int = 4
+    rot_constrained_consistent_lc_thresh: int = 8

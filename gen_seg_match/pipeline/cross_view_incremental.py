@@ -1,19 +1,24 @@
 """Online cross-view localization pipeline.
 
 Combines online ground submap creation (segment_mapping) with cross-view
-matching, CLIPPER outlier rejection, and PGO. Operates as a state machine:
+matching, CLIPPER outlier rejection, and PGO. Operates as a state machine
+with two gates before committing to global localization:
 
 - PRE: configured-mode matching with free rotation, CLIPPER over accumulated
-  candidates, no PGO. Stays here until CLIPPER inliers >= threshold.
-- PERFORMING-GLOBAL-LOC (one-shot transition): PGO on PRE candidates -> rough
-  trajectory -> rerun max_intersection + translation_only matching on submaps
-  1..n -> rebuild candidate set from rerun -> CLIPPER + PGO on rerun set.
+  candidates, no PGO. Once CLIPPER inliers >= consistent_loop_closure_thresh
+  (gate #1), an attempt is made.
+- ATTEMPT (synchronous, may be retried): PGO on PRE candidates -> rough
+  trajectory -> rerun max_intersection + translation_only matching on
+  submaps 1..n -> CLIPPER on rerun candidates. Gate #2: if rerun inliers
+  >= rot_constrained_consistent_lc_thresh, commit (replace candidates, run
+  final PGO, transition to POST). Otherwise, leave PRE state untouched and
+  retry on the next new submap.
 - POST: per new submap match only that submap with max_intersection +
   translation_only against latest optimized trajectory, append candidates,
   CLIPPER + PGO on full accumulated set.
 
-Instantaneous pose is causal: NaN before global localization, T_utm_odom @
-pose_cam after.
+Instantaneous pose is causal: NaN before successful global localization,
+T_utm_odom @ pose_cam after.
 """
 
 import argparse
@@ -119,6 +124,10 @@ class CrossViewIncremental:
     )
     _global_loc_frame_idx: Optional[int] = field(default=None, init=False)
     _global_loc_wall_time: Optional[float] = field(default=None, init=False)
+    _failed_attempt_count: int = field(default=0, init=False)
+    _gate1_first_submap_count: Optional[int] = field(default=None, init=False)
+    _gate2_passed_submap_count: Optional[int] = field(default=None, init=False)
+    _compute_wall_time: float = field(default=0.0, init=False)
     _last_descriptor_position: Optional[np.ndarray] = field(default=None, init=False)
     _timing: dict = field(
         default_factory=lambda: {
@@ -152,6 +161,7 @@ class CrossViewIncremental:
         times = np.arange(t0, tf, self.mapping_params.dt)
         print(f"Processing {len(times)} frames from t={t0:.2f} to t={tf:.2f}")
 
+        t_loop_start = time.time()
         for t in tqdm.tqdm(times, desc="Incremental cross-view"):
             t_data_start = time.time()
             try:
@@ -208,6 +218,8 @@ class CrossViewIncremental:
                 self._submap_count += 1
 
             self._record_instantaneous_pose(img_t, pose)
+
+        self._compute_wall_time += time.time() - t_loop_start
 
     # ------------------------------------------------------------------
     # New-submap handler
@@ -286,8 +298,10 @@ class CrossViewIncremental:
 
         if self._state == "PRE":
             if n_inliers >= self.incremental_params.consistent_loop_closure_thresh:
-                self._perform_global_localization()
-                self._state = "POST"
+                if self._gate1_first_submap_count is None:
+                    self._gate1_first_submap_count = len(self.mapper.submaps_2d)
+                if self._attempt_global_localization():
+                    self._state = "POST"
         else:
             self._run_post_pgo(inlier_indices)
 
@@ -333,13 +347,22 @@ class CrossViewIncremental:
         )
 
     # ------------------------------------------------------------------
-    # PRE -> POST one-shot transition
+    # PRE -> POST attempt (gated; may be retried)
     # ------------------------------------------------------------------
 
-    def _perform_global_localization(self):
+    def _attempt_global_localization(self) -> bool:
+        """Attempt global localization. Returns True iff both gates pass and
+        trajectory state was committed; False otherwise (caller stays in PRE).
+
+        Invariant: must not mutate self._candidates, self._results_per_submap,
+        self._match_details_per_submap, self._last_T_utm_odom,
+        self._last_optimized_trajectory, or self._optimized_pose_data until
+        gate #2 passes.
+        """
         wc_start = time.time()
+        gate2_thresh = self.incremental_params.rot_constrained_consistent_lc_thresh
         logger.info(
-            f"[global-loc] triggered at submap {self._submap_count}: "
+            f"[global-loc] gate-1 met at submap {self._submap_count}: "
             f"{len(self._candidates)} candidates"
         )
 
@@ -357,12 +380,14 @@ class CrossViewIncremental:
         except Exception as e:
             logger.warning(f"[global-loc] initial PGO failed: {e}")
             self._timing["pgo"].append(time.time() - t_pgo_start)
-            return
+            self._failed_attempt_count += 1
+            return False
         self._timing["pgo"].append(time.time() - t_pgo_start)
 
         if not initial_result.success:
             logger.warning("[global-loc] initial PGO returned no success — aborting.")
-            return
+            self._failed_attempt_count += 1
+            return False
 
         # Step 2: rough-trajectory pose data for known-rotation matching.
         rough_pose_data = self._build_camera_pose_data(
@@ -389,7 +414,7 @@ class CrossViewIncremental:
         )
         self._timing["match"].append(time.time() - t_match_start)
 
-        # Step 4: discard PRE candidates, rebuild from rerun.
+        # Step 4: build rerun_candidates locally — do NOT assign to self yet.
         min_assoc = (
             self.rpgo_params.min_num_associations_rerun
             if self.rpgo_params.min_num_associations_rerun is not None
@@ -402,60 +427,68 @@ class CrossViewIncremental:
             self.data,
             min_assoc,
         )
-        self._candidates = rerun_candidates
-        self._results_per_submap = dict(rerun_result.results)
-        self._match_details_per_submap = dict(rerun_result.match_details)
 
-        # Step 5: CLIPPER + PGO on rerun candidates.
+        # Step 5: CLIPPER on rerun candidates (still local, no commit yet).
         t_or_start = time.time()
         try:
-            inlier_indices, _, _ = rpgo.solve_clipper_only(
-                self._candidates,
+            rerun_inliers, _, _ = rpgo.solve_clipper_only(
+                rerun_candidates,
                 self.mapper.poses_cam_history,
                 np.array(self.mapper.times_history),
             )
         except Exception as e:
             logger.warning(f"[global-loc] rerun CLIPPER failed: {e}")
-            inlier_indices = np.array([], dtype=int)
+            rerun_inliers = np.array([], dtype=int)
         self._timing["outlier_rej"].append(time.time() - t_or_start)
 
-        if len(inlier_indices) == 0:
-            logger.warning("[global-loc] rerun CLIPPER returned empty — using initial.")
-            self._last_T_utm_odom = initial_result.T_utm_odom
-            self._last_optimized_trajectory = initial_result.optimized_trajectory
-            self._optimized_pose_data = rough_pose_data
-        else:
-            t_pgo_start = time.time()
-            T_utm_odom = rpgo._frame_align(self._candidates, inlier_indices)
-            if self.rpgo_params.optimization_method == "pgo":
-                optimized_trajectory = rpgo._pgo(
-                    self._candidates,
-                    inlier_indices,
-                    self.mapper.poses_cam_history,
-                    np.array(self.mapper.times_history),
-                    self.data.T_camera_flu,
-                    T_utm_odom,
-                )
-            else:
-                optimized_trajectory = rpgo._apply_rigid_transform(
-                    T_utm_odom,
-                    self.mapper.poses_cam_history,
-                    self.data.T_camera_flu,
-                )
-            self._timing["pgo"].append(time.time() - t_pgo_start)
-
-            self._last_T_utm_odom = T_utm_odom
-            self._last_optimized_trajectory = optimized_trajectory
-            self._optimized_pose_data = self._build_camera_pose_data(
-                optimized_trajectory, np.array(self.mapper.times_history)
+        # Step 6: gate #2 check.
+        if len(rerun_inliers) < gate2_thresh:
+            logger.warning(
+                f"[global-loc] gate-2 FAILED: rerun inliers={len(rerun_inliers)} "
+                f"< rot_constrained_consistent_lc_thresh={gate2_thresh}. "
+                f"Staying in PRE; preserving {len(self._candidates)} PRE candidates."
             )
+            self._failed_attempt_count += 1
+            return False
+
+        # Step 7: commit (gate #2 passed).
+        t_pgo_start = time.time()
+        T_utm_odom = rpgo._frame_align(rerun_candidates, rerun_inliers)
+        if self.rpgo_params.optimization_method == "pgo":
+            optimized_trajectory = rpgo._pgo(
+                rerun_candidates,
+                rerun_inliers,
+                self.mapper.poses_cam_history,
+                np.array(self.mapper.times_history),
+                self.data.T_camera_flu,
+                T_utm_odom,
+            )
+        else:
+            optimized_trajectory = rpgo._apply_rigid_transform(
+                T_utm_odom,
+                self.mapper.poses_cam_history,
+                self.data.T_camera_flu,
+            )
+        self._timing["pgo"].append(time.time() - t_pgo_start)
+
+        self._candidates = rerun_candidates
+        self._results_per_submap = dict(rerun_result.results)
+        self._match_details_per_submap = dict(rerun_result.match_details)
+        self._last_T_utm_odom = T_utm_odom
+        self._last_optimized_trajectory = optimized_trajectory
+        self._optimized_pose_data = self._build_camera_pose_data(
+            optimized_trajectory, np.array(self.mapper.times_history)
+        )
 
         self._global_loc_frame_idx = len(self._instant_pose_history)
         self._global_loc_wall_time = time.time() - wc_start
+        self._gate2_passed_submap_count = len(self.mapper.submaps_2d)
         logger.info(
-            f"[global-loc] complete: {len(self._candidates)} rerun candidates, "
-            f"{len(inlier_indices)} inliers, {self._global_loc_wall_time:.2f}s"
+            f"[global-loc] gate-2 PASSED: {len(rerun_candidates)} rerun candidates, "
+            f"{len(rerun_inliers)} inliers >= {gate2_thresh}, "
+            f"{self._global_loc_wall_time:.2f}s"
         )
+        return True
 
     # ------------------------------------------------------------------
     # Helpers
@@ -659,11 +692,13 @@ class CrossViewIncremental:
         lines.append(f"  match calls:        {n_match}")
         lines.append(f"  outlier_rej calls:  {n_or}")
         lines.append(f"  pgo calls:          {n_pgo}")
+        lines.append(f"  failed attempts:    {self._failed_attempt_count}")
+        lines.append(f"\nCompute wall time:      {self._compute_wall_time:.2f}s")
         if self._global_loc_frame_idx is not None:
-            lines.append(f"\nGlobal loc frame index: {self._global_loc_frame_idx}")
+            lines.append(f"Global loc frame index: {self._global_loc_frame_idx}")
             lines.append(f"Global loc wall time:   {self._global_loc_wall_time:.2f}s")
         else:
-            lines.append("\nGlobal loc: not triggered")
+            lines.append("Global loc: not triggered")
         lines.append(f"Final state:            {self._state}")
 
         with open(out / "timing.txt", "w") as f:
@@ -827,6 +862,20 @@ class CrossViewIncremental:
         lines = []
         lines.append(f"Final state:           {self._state}")
         lines.append(f"Total ground submaps:  {len(self.mapper.submaps_2d)}")
+        lines.append(f"Compute wall time (s): {self._compute_wall_time:.2f}")
+        gate1_str = (
+            str(self._gate1_first_submap_count)
+            if self._gate1_first_submap_count is not None
+            else "none"
+        )
+        gate2_str = (
+            str(self._gate2_passed_submap_count)
+            if self._gate2_passed_submap_count is not None
+            else "none"
+        )
+        lines.append(f"Gate-1 first submap:   {gate1_str}")
+        lines.append(f"Gate-2 passed submap:  {gate2_str}")
+        lines.append(f"Failed attempts:       {self._failed_attempt_count}")
         if self._global_loc_frame_idx is not None:
             lines.append(f"Global loc frame idx:  {self._global_loc_frame_idx}")
             lines.append(f"Global loc wall time:  {self._global_loc_wall_time:.2f}s")
