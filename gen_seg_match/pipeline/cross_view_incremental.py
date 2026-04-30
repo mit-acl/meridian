@@ -616,6 +616,7 @@ class CrossViewIncremental:
                     self.conversion_params.alpha_shape_grid_downsample,
                     self.conversion_params.alpha_shape_max_n_pts,
                     self.conversion_params.alpha_shape_ref_size_m,
+                    show_origin=ground_submap_params.viz_show_sm_origin,
                 )
                 fig.savefig(viz_dir / f"{k}.png", dpi=400)
                 plt.close(fig)

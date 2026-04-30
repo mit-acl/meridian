@@ -499,22 +499,73 @@ class SegmentMapper:
         times_arr = np.array(self.times_history)
         nearest_idx = int(np.argmin(np.abs(times_arr - submap_time)))
         submap_pose = self.poses_cam_history[nearest_idx]
+        center = submap_pose[:3, 3]
+
+        # Apply same radius cap as the post-processed ground submap path
+        # (ground_submap_primitive_mapping.py:131-167) so long road segments
+        # don't trail far past the current submap center.
+        gs_params = (
+            self._ground_submap_mapping.submap_params
+            if self._ground_submap_mapping is not None
+            else None
+        )
+        rad_m = gs_params.ground_submap_rad_m if gs_params is not None else None
 
         # Convert MapSegments to DenseSegments
         dense_segments = []
         for seg in selected_segs:
             if seg.points is None or len(seg.points) == 0:
                 continue
+            pts = seg.points
+            occ = seg.occluded_points
+
+            if rad_m is not None:
+                dists = np.linalg.norm(pts - center, axis=1)
+                mask = dists <= rad_m
+                if not np.any(mask):
+                    continue
+
+                if occ is not None and len(occ) > 0:
+                    occ = occ[np.linalg.norm(occ - center, axis=1) <= rad_m]
+                    if len(occ) > 0:
+                        grid = gs_params.occluded_grid_voxel_size_m
+                        dp_xy = np.floor(pts[mask][:, :2] / grid).astype(int)
+                        regular_keys = set(map(tuple, dp_xy))
+                        occ_xy = np.floor(occ[:, :2] / grid).astype(int)
+                        occ_keep = np.array(
+                            [tuple(k_) not in regular_keys for k_ in occ_xy]
+                        )
+                        occ = occ[occ_keep] if np.any(occ_keep) else None
+                    else:
+                        occ = None
+
+                border_mask = mask & (
+                    dists > rad_m - gs_params.occluded_radius_thresh_m
+                )
+                border_occluded = pts[border_mask].copy()
+
+                all_occluded = [border_occluded]
+                if occ is not None and len(occ) > 0:
+                    all_occluded.append(occ)
+                total = sum(len(a) for a in all_occluded)
+                occ_final = (
+                    np.concatenate(all_occluded, axis=0) if total > 0 else None
+                )
+                pts = pts[mask].copy()
+            else:
+                occ_final = (
+                    occ.copy() if occ is not None and len(occ) > 0 else None
+                )
+                pts = pts.copy()
+
             ds = DenseSegment(
                 id=seg.id,
-                dense_points=seg.points.copy(),
+                dense_points=pts,
                 ratio_feature=DenseToSparseConverter.get_roman_ratio_feature(seg),
                 cos_feature=seg.semantic_descriptor,
                 first_seen=seg.first_seen,
                 last_seen=seg.last_seen,
-                occluded_points=seg.occluded_points.copy()
-                if seg.occluded_points is not None and len(seg.occluded_points) > 0
-                else None,
+                occluded_points=occ_final,
                 history=getattr(seg, "history", []),
             )
             ds.point = np.mean(ds.dense_points, axis=0)
@@ -549,6 +600,12 @@ class SegmentMapper:
         T_submap_odom = np.linalg.inv(submap_pose)
         for seg in submap_3d.segments:
             seg.transform(T_submap_odom)
+
+        # convert_submap_to_sparse_2d transforms segments back to odom before
+        # flattening, so the flattened_submap consumed by the ground viz is in
+        # odom frame. Anchor coordinate-frame axes at the camera's odom pose
+        # (matches the metadata stamp at ground_submap_primitive_mapping.py:291).
+        submap_3d.metadata = {"camera_pose": submap_pose}
 
         # Convert to sparse 2D
         submap_2d, intermediate = (
