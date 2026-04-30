@@ -583,7 +583,7 @@ class SegmentMapper:
             "salad",
         ):
             submap_descriptor = self._compute_gem_descriptor_from_history(
-                dense_segments
+                dense_segments, center=center, max_dist_m=rad_m
             )
 
         # Build 3D submap in CAMERA frame
@@ -642,11 +642,16 @@ class SegmentMapper:
             f"{len(submap_2d.segments)} primitives at t={submap_time:.2f}"
         )
 
-    def _compute_gem_descriptor_from_history(self, submap_segments):
+    def _compute_gem_descriptor_from_history(
+        self, submap_segments, center=None, max_dist_m=None
+    ):
         """Compute semantic-gem descriptor from frame descriptor history.
 
         Replicates the logic of CrossViewPlaceRecognition._ground_descriptor_gem()
-        but reads directly from the mapper's live history arrays.
+        but reads directly from the mapper's live history arrays. When
+        ``center`` and ``max_dist_m`` are provided, frames captured from camera
+        poses farther than ``max_dist_m`` from ``center`` are excluded so the
+        descriptor reflects only the area inside the submap radius.
         """
         seg_first = [s.first_seen for s in submap_segments if s.first_seen is not None]
         seg_last = [s.last_seen for s in submap_segments if s.last_seen is not None]
@@ -679,6 +684,9 @@ class SegmentMapper:
             if desc_i is None:
                 continue
             pos_i = self.poses_cam_history[i][:3, 3]
+            if center is not None and max_dist_m is not None:
+                if np.linalg.norm(pos_i - center) > max_dist_m:
+                    continue
             if last_pos is None or np.linalg.norm(pos_i - last_pos) >= dist_thresh:
                 stacked.append(desc_i)
                 last_pos = pos_i

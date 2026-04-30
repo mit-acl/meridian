@@ -179,7 +179,10 @@ class GroundSubmapPrimitiveMapping:
             submap_descriptor = None
             if _attach_gem_descriptors:
                 submap_descriptor = self.place_recognition.ground_descriptor(
-                    None, submap_segments=submap_segments
+                    None,
+                    submap_segments=submap_segments,
+                    center=center,
+                    max_dist_m=rad_m,
                 )
 
             submap = Submap(
