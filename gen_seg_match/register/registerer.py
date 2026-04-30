@@ -100,10 +100,29 @@ class Registerer2D:
                 + f"Got match between {type(source[i])} and {type(target[i])}."
             )
 
+        # Pre-center inlier clouds at the origin so line moments (normal · point)
+        # don't carry the lever arm of the segment frame's origin. We register
+        # the centered copies and then undo the centering on the returned T.
+        c_src = np.mean(
+            np.array([np.asarray(seg.point).flatten()[:2] for seg in source]),
+            axis=0,
+        )
+        c_tgt = np.mean(
+            np.array([np.asarray(seg.point).flatten()[:2] for seg in target]),
+            axis=0,
+        )
+
         p = np.ascontiguousarray(source.get_points().points, dtype=np.float64)
         q = np.ascontiguousarray(target.get_points().points, dtype=np.float64)
         s_norm, s_off = extract_line_arrays(source)
         t_norm, t_off = extract_line_arrays(target)
+
+        if p.shape[0] > 0:
+            p = np.ascontiguousarray(p - c_src, dtype=np.float64)
+            q = np.ascontiguousarray(q - c_tgt, dtype=np.float64)
+        if s_norm.shape[0] > 0:
+            s_off = s_off - s_norm @ c_src
+            t_off = t_off - t_norm @ c_tgt
 
         status, T = register_2d_core(
             p, q, s_norm, s_off, t_norm, t_off,
@@ -115,6 +134,12 @@ class Registerer2D:
         )
 
         if status == REGISTER_OK:
+            # Undo pre-centering: T_src_tgt = translate(+c_src) @ T̃ @ translate(-c_tgt)
+            T_pos_src = np.eye(3)
+            T_pos_src[:2, 2] = c_src
+            T_neg_tgt = np.eye(3)
+            T_neg_tgt[:2, 2] = -c_tgt
+            T = T_pos_src @ T @ T_neg_tgt
             return RegistrationResult(transformation=T, losses=[])
 
         n_pts = p.shape[0]
