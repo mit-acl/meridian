@@ -945,7 +945,10 @@ if __name__ == "__main__":
         help="Skip segment matching (passed to cross_view_matching).",
     )
     parser.add_argument(
-        "--no-viz", action="store_true", help="Skip per-match viz images."
+        "-v",
+        "--viz",
+        action="store_true",
+        help="Save per-match viz images (default: off).",
     )
     parser.add_argument(
         "--aerial",
@@ -968,7 +971,7 @@ if __name__ == "__main__":
             skip_aerial=args.skip_aerial,
             skip_ground=args.skip_ground,
             skip_match=args.skip_match,
-            save_viz=not args.no_viz,
+            save_viz=args.viz,
             aerial_dir=args.aerial,
             ground_dir=args.ground,
         )
@@ -1037,5 +1040,5 @@ if __name__ == "__main__":
         ground_submaps=ground_submaps,
         aerial_img=data.aerial_img,
         main_output_dir=args.output,
-        save_viz=not args.no_viz,
+        save_viz=args.viz,
     )
