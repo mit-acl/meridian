@@ -26,6 +26,7 @@ class SegmenterParamsBase(ParamsBase):
     dino_half: bool = False
     dinov3_path: str = "~/code/dinov3"
     dinov3_weights: str = None
+    subtract_frame_descriptor: bool = False
 
     # Shared
     triangle_ignore_masks: List[

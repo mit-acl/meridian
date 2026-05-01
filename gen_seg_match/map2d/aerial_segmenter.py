@@ -102,10 +102,11 @@ class AerialSegmenter(SegmenterBase):
 
         # Extract DINO features
         dino_features = None
+        dino_output_patches = None
         if self.params.semantics in ("dino", "dinov3", "dinov3-hf"):
             # Convert downsampled RGB back to BGR for _extract_dino_features
             img_bgr_ds = cv.cvtColor(image_rgb, cv.COLOR_RGB2BGR)
-            dino_features, _ = self._extract_dino_features(img_bgr_ds)
+            dino_features, dino_output_patches = self._extract_dino_features(img_bgr_ds)
 
         # First pass: filter masks by area and compute geometry
         valid_entries = []
@@ -133,8 +134,16 @@ class AerialSegmenter(SegmenterBase):
                 valid_masks[0].shape[0] == dino_features.shape[0]
                 and valid_masks[0].shape[1] == dino_features.shape[1]
             ), "Mask and DINO features must have the same shape."
+            dino_frame_embedding = (
+                self._compute_dino_frame_embedding(dino_output_patches)
+                if self.params.subtract_frame_descriptor
+                and dino_output_patches is not None
+                else None
+            )
             descriptors = self._compute_batch_mean_dino_descriptors(
-                dino_features, valid_masks
+                dino_features,
+                valid_masks,
+                dino_frame_embedding=dino_frame_embedding,
             )
 
         # Build segments

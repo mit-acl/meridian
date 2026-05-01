@@ -295,12 +295,34 @@ class SegmenterBase:
             descriptor = descriptor / torch.norm(descriptor)
         return descriptor.cpu().numpy()
 
-    def _compute_mean_dino_descriptor(self, dino_features, mask):
+    def _compute_dino_frame_embedding(self, dino_output_patches) -> torch.Tensor:
+        """L2-normalized mean (GAP) over all DINO patch tokens in a frame.
+
+        Args:
+            dino_output_patches: (..., C) tensor of patch tokens.
+
+        Returns:
+            1-D torch tensor of shape (C,) on the same device.
+        """
+        with torch.no_grad():
+            flat = dino_output_patches.reshape(-1, dino_output_patches.shape[-1]).float()
+            mean = flat.mean(dim=0)
+            mean = mean / mean.norm().clamp(min=1e-12)
+        return mean
+
+    def _compute_mean_dino_descriptor(
+        self, dino_features, mask, dino_frame_embedding=None
+    ):
         """Compute mean DINO descriptor over a binary mask.
 
         Args:
             dino_features: (H, W, C) tensor of per-pixel features.
             mask: (H, W) binary mask.
+            dino_frame_embedding: optional (C,) torch tensor — the L2-normalized
+                mean of all patch tokens for this frame. When provided, it is
+                subtracted from the segment's normalized mean and the result is
+                re-normalized, so the descriptor encodes how the masked region
+                differs from the rest of the frame.
 
         Returns:
             Normalized 1-D numpy array of shape (C,).
@@ -309,10 +331,15 @@ class SegmenterBase:
             mask_tensor = torch.from_numpy(mask.astype(bool)).to(dino_features.device)
             dino_mask = dino_features[mask_tensor].float()  # (K, C) on GPU, float32
             mean_dino = dino_mask.mean(dim=0)  # (C,) on GPU
-            mean_dino = mean_dino / mean_dino.norm()
+            mean_dino = mean_dino / mean_dino.norm().clamp(min=1e-12)
+            if dino_frame_embedding is not None:
+                mean_dino = mean_dino - dino_frame_embedding
+                mean_dino = mean_dino / mean_dino.norm().clamp(min=1e-12)
         return mean_dino.cpu().numpy()
 
-    def _compute_batch_mean_dino_descriptors(self, dino_features, masks):
+    def _compute_batch_mean_dino_descriptors(
+        self, dino_features, masks, dino_frame_embedding=None
+    ):
         """Compute normalized mean DINO descriptors for multiple masks at once.
 
         Uses a single GPU matmul instead of per-mask transfers.
@@ -320,6 +347,8 @@ class SegmenterBase:
         Args:
             dino_features: (H, W, C) tensor of per-pixel features on GPU.
             masks: list of (H, W) numpy binary masks.
+            dino_frame_embedding: optional (C,) torch tensor — see
+                _compute_mean_dino_descriptor.
 
         Returns:
             List of normalized numpy arrays, each of shape (C,).
@@ -336,6 +365,10 @@ class SegmenterBase:
             means = (mask_tensor @ features_flat) / counts
             norms = means.norm(dim=1, keepdim=True).clamp(min=1e-12)
             descriptors = means / norms
+            if dino_frame_embedding is not None:
+                descriptors = descriptors - dino_frame_embedding.unsqueeze(0)
+                new_norms = descriptors.norm(dim=1, keepdim=True).clamp(min=1e-12)
+                descriptors = descriptors / new_norms
         return list(descriptors.cpu().numpy())
 
     def get_output_patches(
