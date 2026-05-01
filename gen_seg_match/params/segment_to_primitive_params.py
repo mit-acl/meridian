@@ -35,6 +35,9 @@ class SegmentToPrimitiveConversionParams(ParamsBase):
     line_merge_semantic_sim: float = 0.8
     line_split_length_m: float = np.inf
 
+    concat_nearby_descriptors: bool = False
+    concat_nearby_descriptors_dist_m: float = 5.0
+
     sparse_conversion_max_threads: int = 16
 
     @property

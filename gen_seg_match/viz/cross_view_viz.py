@@ -416,16 +416,25 @@ def viz_ground_segments(
         camera_pose = meta.get("camera_pose")
         if camera_pose is not None:
             origin = np.asarray(camera_pose[:2, 3]).flatten()
-            # Project the camera-frame X and Z axes onto the world XY plane.
-            # Camera Y points "down" into the ground in optical convention, so
-            # it collapses to ~zero length in a top-down view; X and Z are the
-            # informative pair.
+            # Project all three frame axes onto the world XY plane. Some may
+            # collapse to ~zero length depending on which pose is being
+            # plotted (e.g. camera-Y points into the ground in optical
+            # convention), but plotting all three keeps the viz robust to
+            # convention changes.
             x_end = origin + np.asarray(camera_pose[:2, 0]).flatten() * origin_axis_len_m
+            y_end = origin + np.asarray(camera_pose[:2, 1]).flatten() * origin_axis_len_m
             z_end = origin + np.asarray(camera_pose[:2, 2]).flatten() * origin_axis_len_m
-            origin_endpoints = [origin, x_end, z_end]
+            origin_endpoints = [origin, x_end, y_end, z_end]
             for axi in visible_axes:
                 axi.plot(
                     [origin[0], x_end[0]], [origin[1], x_end[1]], "-", color="red", lw=2
+                )
+                axi.plot(
+                    [origin[0], y_end[0]],
+                    [origin[1], y_end[1]],
+                    "-",
+                    color="green",
+                    lw=2,
                 )
                 axi.plot(
                     [origin[0], z_end[0]],

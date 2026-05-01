@@ -245,7 +245,45 @@ class SegmentToPrimitiveConverter:
             result, convert_to_infinite=convert_to_infinite
         )
 
+        if self.params.concat_nearby_descriptors:
+            result = self._concat_nearby_descriptors(result)
+
         return result
+
+    @staticmethod
+    def _primitive_distance(a, b) -> float:
+        """Min distance between two primitives (point or line)."""
+        if isinstance(a, SegmentLine) and isinstance(b, SegmentLine):
+            return a.min_dist_to(b)
+        if isinstance(a, SegmentLine):
+            return a.min_dist_to_point(b.get_point())
+        if isinstance(b, SegmentLine):
+            return b.min_dist_to_point(a.get_point())
+        return float(np.linalg.norm(a.get_point() - b.get_point()))
+
+    def _concat_nearby_descriptors(self, segments: SegmentList) -> SegmentList:
+        """Append the mean cos_feature of all primitives within
+        concat_nearby_descriptors_dist_m (including self) to each primitive's
+        cos_feature."""
+        dist_m = self.params.concat_nearby_descriptors_dist_m
+        prims = [s for s in segments if s.cos_feature is not None]
+        if not prims:
+            return segments
+
+        means = []
+        for s in prims:
+            feats = [s.cos_feature.flatten()]
+            for o in prims:
+                if o is s:
+                    continue
+                if self._primitive_distance(s, o) <= dist_m:
+                    feats.append(o.cos_feature.flatten())
+            means.append(np.mean(np.stack(feats, axis=0), axis=0))
+
+        for s, m in zip(prims, means):
+            s.cos_feature = np.concatenate([s.cos_feature.flatten(), m])
+
+        return segments
 
     def _cleanup_and_merge(
         self, segments: SegmentList, convert_to_infinite: bool = True
