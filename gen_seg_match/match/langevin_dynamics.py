@@ -3,6 +3,8 @@ from collections import defaultdict
 
 import torch
 
+torch.set_float32_matmul_precision("high")
+
 
 class LangevinDynamics:
     def __init__(self, M, C, d, dim, device="cpu"):
@@ -12,6 +14,7 @@ class LangevinDynamics:
         self.d = d
         assert d >= dim, "d must be greater than or equal to dim"
         self.Md = self.M - d * self.C
+        self.Md_lp = self.Md.to(torch.bfloat16)
         self.dim = dim
 
     def grad_particles(self, X):
@@ -69,9 +72,8 @@ class LangevinDynamics:
         historical_grad = None
         self._actual_iters = 0
 
-        # EMA of objective for smoothing stochastic noise
         obj_ema = None
-        ema_beta = 0.5  # smoothing factor (higher = more smoothing)
+        ema_beta = 0.5
         converge_count = 0
 
         # Drop the redundant "2.0 *" in grad and the "0.5 *" everywhere by
@@ -104,18 +106,18 @@ class LangevinDynamics:
                     rel_change = abs(obj_ema - prev_ema) / (abs(prev_ema) + 1e-12)
                     if debug:
                         print(
-                            f"  iter {iter + 1}: obj={obj:.4f}, ema={obj_ema:.4f}, rel_change={rel_change:.2e}"
+                            f"  iter {iter}: obj={obj:.4f}, ema={obj_ema:.4f}, rel_change={rel_change:.2e}"
                         )
                     if rel_change < obj_tol:
                         converge_count += 1
                         if converge_count >= patience:
                             if debug:
-                                print(f"  Converged at iter {iter + 1}")
+                                print(f"  Converged at iter {iter}")
                             break
                     else:
                         converge_count = 0
                 if debug and obj_ema == obj:
-                    print(f"  iter {iter + 1}: obj={obj:.4f} (initial)")
+                    print(f"  iter {iter}: obj={obj:.4f} (initial)")
 
             if no_noise:
                 direct = logpgrad
