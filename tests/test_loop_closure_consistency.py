@@ -107,6 +107,9 @@ def build_candidates(
                 "T_i_j_hat": T_hat.copy(),
                 "T_utm_odom_se2": np.eye(3),
                 "ground_submap_time": float(k),
+                "ground_key": str(k),
+                "aerial_key": "0_0",
+                "count": 1,
             }
         )
 
@@ -121,6 +124,9 @@ def build_candidates(
                 "T_i_j_hat": T_hat.copy(),
                 "T_utm_odom_se2": np.eye(3),
                 "ground_submap_time": float(n_consistent + k),
+                "ground_key": str(n_consistent + k),
+                "aerial_key": "0_0",
+                "count": 1,
             }
         )
 
@@ -158,8 +164,9 @@ def test_affinity_matrix_agrees():
     M_py, _ = rpgo._build_affinity_matrix_python(candidates)
 
     # C++ via CLIPPERPairwiseAndSingle
+    lc_scores = np.ones(len(candidates), dtype=np.float64)
     D, aerial_poses, ground_poses, ground_distances = _build_clipper_data(
-        candidates, trajectory, times
+        candidates, trajectory, times, lc_scores
     )
     iparams = clipperpy.invariants.LoopClosureConsistencyParams()
     iparams.rot_sigma_rad = params.rot_consistency_sigma_rad
@@ -168,6 +175,7 @@ def test_affinity_matrix_agrees():
     iparams.trans_eps_m = params.trans_consistency_eps_m
     iparams.added_trans_noise_m_per_m = 0.0
     iparams.added_rot_noise_deg_per_m = 0.0
+    iparams.fuse_lc_score = False
     invariant = clipperpy.invariants.LoopClosureConsistency(
         aerial_poses, ground_poses, ground_distances, iparams
     )
@@ -193,8 +201,9 @@ def test_diagonal_ones():
     )
     N = len(candidates)
 
+    lc_scores = np.ones(len(candidates), dtype=np.float64)
     D, aerial_poses, ground_poses, ground_distances = _build_clipper_data(
-        candidates, trajectory, times
+        candidates, trajectory, times, lc_scores
     )
     iparams = clipperpy.invariants.LoopClosureConsistencyParams()
     iparams.rot_sigma_rad = params.rot_consistency_sigma_rad

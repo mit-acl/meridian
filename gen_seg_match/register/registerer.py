@@ -237,4 +237,9 @@ class Registerer2D:
             f"{[cluster_counts[k] for k in order[:5]]}"
         )
 
-        return [items[rep_idxs[k]][0] for k in order]
+        result = []
+        for k in order:
+            payload = items[rep_idxs[k]][0]
+            payload.pose_result.count = cluster_counts[k]
+            result.append(payload)
+        return result

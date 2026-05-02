@@ -132,6 +132,7 @@ def build_candidates_from_match_result(
                         "num_associations": result.num_associations,
                         "ground_submap_time": ground_submap.time,
                         "T_utm_odom_gt_se2": T_utm_odom_gt_se2,
+                        "count": getattr(result, "count", 1),
                     }
                 )
 
@@ -480,6 +481,7 @@ class CrossViewLocalization:
                             "num_associations": result.num_associations,
                             "ground_submap_time": ground_submap.time,
                             "T_utm_odom_gt_se2": T_utm_odom_gt_se2,
+                            "count": getattr(result, "count", 1),
                         }
                     )
 

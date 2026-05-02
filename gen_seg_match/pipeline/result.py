@@ -20,6 +20,7 @@ class PoseEstimationResult:
     T_i_j_hat: np.ndarray = field(default_factory=lambda: np.full((4, 4), np.nan))
     descriptor_similarity: float = np.nan
     runtime_s: float = np.nan
+    count: int = 1
 
     @property
     def T_error(self):

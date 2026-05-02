@@ -121,6 +121,8 @@ class CrossViewRPGOParams(ParamsBase):
     added_rot_noise_deg_per_m: float = 0.02
     single_lc_per_ground_sm: bool = True
     single_lc_per_ground_aerial_pair: bool = True
+    fuse_lc_score: bool = True
+    lc_score_method: str = "frequency-ratio"
     min_num_associations: int = 3
     min_num_associations_rerun: Optional[int] = None
 
