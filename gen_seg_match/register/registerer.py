@@ -170,27 +170,41 @@ class Registerer2D:
 
         trans_thresh = self.params.cluster_trans_thresh_m
         rot_thresh = np.deg2rad(self.params.cluster_rot_thresh_deg)
+        two_pi = 2.0 * np.pi
 
-        # Each cluster: [representative_payload, T_rep, total_count]
-        clusters = []
-        for payload, T, count in items:
-            assigned = False
-            for cluster in clusters:
-                t_dist, r_dist = self._se2_distance(T, cluster[1])
-                if t_dist <= trans_thresh and r_dist <= rot_thresh:
-                    cluster[2] += count
-                    assigned = True
-                    break
-            if not assigned:
-                clusters.append([payload, T, count])
+        N = len(items)
+        T_stack = np.stack([item[1] for item in items])  # (N, 4, 4)
+        trans_all = T_stack[:, :2, 3]  # (N, 2)
+        yaws_all = np.arctan2(T_stack[:, 1, 0], T_stack[:, 0, 0])  # (N,)
+        counts_all = np.fromiter((item[2] for item in items), dtype=np.int64, count=N)
 
-        # Sort clusters by total particle count descending
-        clusters.sort(key=lambda c: c[2], reverse=True)
+        # Indices into items[] for each cluster representative.
+        rep_idxs: List[int] = []
+        cluster_counts: List[int] = []
 
-        # Optionally keep only the top-N clusters
+        for i in range(N):
+            if not rep_idxs:
+                rep_idxs.append(i)
+                cluster_counts.append(int(counts_all[i]))
+                continue
+            rep_trans = trans_all[rep_idxs]
+            rep_yaws = yaws_all[rep_idxs]
+            dt = trans_all[i] - rep_trans
+            t_dists = np.sqrt(dt[:, 0] * dt[:, 0] + dt[:, 1] * dt[:, 1])
+            yaw_diff = np.abs(yaws_all[i] - rep_yaws)
+            r_dists = np.minimum(yaw_diff, two_pi - yaw_diff)
+            in_thresh = (t_dists <= trans_thresh) & (r_dists <= rot_thresh)
+            if in_thresh.any():
+                first_match = int(np.argmax(in_thresh))
+                cluster_counts[first_match] += int(counts_all[i])
+            else:
+                rep_idxs.append(i)
+                cluster_counts.append(int(counts_all[i]))
+
+        order = sorted(range(len(rep_idxs)), key=lambda k: -cluster_counts[k])
         max_hyp = self.params.max_hypotheses
         if max_hyp > 0:
-            clusters = clusters[:max_hyp]
+            order = order[:max_hyp]
 
         logger.info(
             f"Hypothesis clustering: {N} hypotheses -> "

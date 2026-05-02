@@ -16,6 +16,8 @@ from gen_seg_match.segment.segment_types import (
 from gen_seg_match.params.segment_match_params import SegmentMatchParams
 from gen_seg_match.match.match_result import MatchResult
 
+import time
+
 logger = logging.getLogger(__name__)
 
 
@@ -208,9 +210,12 @@ class SegmentMatcher:
         if global_y_dir2 is not None:
             dir_kwargs["global_y_dir2"] = global_y_dir2
 
+        start_time = time.time()
         M, C, A, map1_ordered, map2_ordered = self.get_MCA_with_maps(
             map1, map2, **dir_kwargs
         )
+        end_time = time.time()
+        logger.debug(f"get_MCA_with_maps took {end_time - start_time:.3f} seconds for maps of size {len(map1)} and {len(map2)}")
 
         empty_result = MatchResult([np.array([])], [0.0], [1])
         if M.shape[0] == 0:
