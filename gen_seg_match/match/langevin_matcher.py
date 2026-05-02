@@ -105,7 +105,7 @@ class LangevinMatcher:
         results.sort(key=lambda x: x[1], reverse=True)
         t_sort = time.time() - t_sort0
 
-        print(
+        logger.debug(
             f"LM_INNER setup={t_setup*1000:.1f}ms lookup={t_lookup*1000:.1f}ms "
             f"sort={t_sort*1000:.1f}ms n_results={len(results)} |A|={len(A_np)}"
         )
