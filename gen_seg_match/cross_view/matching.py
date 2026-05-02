@@ -417,8 +417,12 @@ class CrossViewMatching:
             match_result.counts,
         )):
             t_segl0 = time.time()
-            matched_ground = ground_segs_i.sublist_from_ids(matches[:, 1])
-            matched_aerial = aerial_segs_j.sublist_from_ids(matches[:, 0])
+            matched_ground = SegmentList(
+                [ground_segs_i.get_segment_from_id(g_id) for _, g_id in matches]
+            )
+            matched_aerial = SegmentList(
+                [aerial_segs_j.get_segment_from_id(a_id) for a_id, _ in matches]
+            )
             t_segl_total += time.time() - t_segl0
 
             t_reg0 = time.time()
