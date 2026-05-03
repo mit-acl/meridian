@@ -430,7 +430,7 @@ class CrossViewMatching:
                 T_aerial_ground_odom_2d = self.registerer.register(matched_aerial, matched_ground).transformation
             except Exception as e:
                 t_reg_total += time.time() - t_reg0
-                print(f"Registration failed for idx {idx}/{len(all_matches)}: {e}")
+                logger.debug(f"Registration failed for idx {idx}/{len(all_matches)}: {e}")
                 continue
             t_reg_total += time.time() - t_reg0
 

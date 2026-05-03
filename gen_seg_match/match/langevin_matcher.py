@@ -66,20 +66,16 @@ class LangevinMatcher:
             patience=self.params.patience,
         )
         end_time = time.time()
-        print(
+        logger.debug(
             f"Langevin dynamics took {end_time - start_time:.3f} seconds "
             f"({ld_solver._actual_iters}/{self.params.n_iter} iters)"
-        )
-
-        logger.debug(
-            f"Langevin dynamics: {ld_solver._actual_iters}/{self.params.n_iter} iterations"
         )
 
         start_time = time.time()
         # Extract association sets from converged particles
         sorted_values = ld_solver.extract_associations(u, A)
         end_time = time.time()
-        print(f"Extracting association sets took {end_time - start_time:.3f} seconds")
+        logger.debug(f"Extracting association sets took {end_time - start_time:.3f} seconds")
 
         # Build lookup for objective computation
         t_lookup0 = time.time()
@@ -113,7 +109,7 @@ class LangevinMatcher:
             results.append((assoc_matrix, obj, count))
 
         end_time = time.time()
-        print(f"Filtering and computing objectives for {len(sorted_values)} association sets took {end_time - start_time:.3f} seconds")
+        logger.debug(f"Filtering and computing objectives for {len(sorted_values)} association sets took {end_time - start_time:.3f} seconds")
 
         # Sort by objective descending (best first)
         t_sort0 = time.time()
