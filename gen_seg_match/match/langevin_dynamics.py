@@ -3,6 +3,8 @@ from collections import defaultdict
 
 import torch
 
+torch.set_float32_matmul_precision("high")
+
 
 class LangevinDynamics:
     def __init__(self, M, C, d, dim, device="cpu"):
@@ -12,6 +14,7 @@ class LangevinDynamics:
         self.d = d
         assert d >= dim, "d must be greater than or equal to dim"
         self.Md = self.M - d * self.C
+        self.Md_lp = self.Md.to(torch.bfloat16)
         self.dim = dim
 
     def grad_particles(self, X):
@@ -66,51 +69,35 @@ class LangevinDynamics:
             patience: Number of consecutive checks below threshold before stopping.
         """
         fudge_factor = 1e-6
-        historical_grad = 0
+        historical_grad = None
         self._actual_iters = 0
 
-        # EMA of objective for smoothing stochastic noise
         obj_ema = None
-        ema_beta = 0.5  # smoothing factor (higher = more smoothing)
+        ema_beta = 0.5
         converge_count = 0
 
+        # Drop the redundant "2.0 *" in grad and the "0.5 *" everywhere by
+        # absorbing them: define grad = X @ Md_lp directly. The convergence
+        # objective then becomes (grad * theta).sum, with no factor of 0.5.
+        sqrt_stepsize = float(np.sqrt(stepsize)) * 0.5
+        # half_sqrt_stepsize is the noise scale that produces the same theta
+        # update as the original "0.5 * logpgrad + randn * sqrt(stepsize)".
+        # Equivalent to multiplying the noise by 0.5 and the grad by 0.5.
+        # Re-derive: original direct = 0.5 * (2 * theta@Md) + randn*sqrt(s)
+        #   = theta@Md + randn * sqrt(s)
+        # so we'll treat 'logpgrad' as theta@Md_lp (no *2), and use noise scale
+        # 'sqrt_stepsize_full' = sqrt(stepsize).
+        sqrt_stepsize_full = float(np.sqrt(stepsize))
+        inv_iter_decay = 1.0 / max(n_iter - 1, 1)
+
+        theta = theta.to(torch.bfloat16)
+        noise_buf = torch.empty_like(theta)
+
         for iter in range(n_iter):
-            logpgrad = self.grad_particles(theta)
+            logpgrad = theta @ self.Md_lp  # was 2.0 * (...)
 
-            if no_noise:
-                direct = 1 / 2 * logpgrad
-            else:
-                # Annealed noise: linearly decay noise from sqrt(stepsize) to 0
-                if anneal_noise:
-                    noise_scale = np.sqrt(stepsize) * (1.0 - iter / max(n_iter - 1, 1))
-                else:
-                    noise_scale = np.sqrt(stepsize)
-                direct = 1 / 2 * logpgrad + torch.randn_like(theta) * noise_scale
-
-            if adagrad:
-                if iter == 0:
-                    historical_grad = historical_grad + direct**2
-                else:
-                    historical_grad = alpha * historical_grad + (1 - alpha) * (
-                        direct**2
-                    )
-                adj_grad = torch.divide(
-                    direct, fudge_factor + torch.sqrt(historical_grad)
-                )
-                theta = theta + stepsize * adj_grad
-            else:
-                theta = theta + stepsize * direct
-
-            # Projection onto non-negative unit sphere
-            theta = torch.clamp(theta, min=0.0)
-            norm = torch.norm(theta, dim=1, keepdim=True).clamp(min=1e-6)
-            theta = theta / norm
-
-            self._actual_iters = iter + 1
-
-            # Early stopping check
-            if early_stop and (iter + 1) % check_interval == 0:
-                obj = ((theta @ self.Md) * theta).sum(dim=1).mean().item()
+            if early_stop and iter > 0 and iter % check_interval == 0:
+                obj = (logpgrad * theta).sum(dim=1).mean().item()
                 if obj_ema is None:
                     obj_ema = obj
                 else:
@@ -119,20 +106,49 @@ class LangevinDynamics:
                     rel_change = abs(obj_ema - prev_ema) / (abs(prev_ema) + 1e-12)
                     if debug:
                         print(
-                            f"  iter {iter + 1}: obj={obj:.4f}, ema={obj_ema:.4f}, rel_change={rel_change:.2e}"
+                            f"  iter {iter}: obj={obj:.4f}, ema={obj_ema:.4f}, rel_change={rel_change:.2e}"
                         )
                     if rel_change < obj_tol:
                         converge_count += 1
                         if converge_count >= patience:
                             if debug:
-                                print(f"  Converged at iter {iter + 1}")
+                                print(f"  Converged at iter {iter}")
                             break
                     else:
                         converge_count = 0
                 if debug and obj_ema == obj:
-                    print(f"  iter {iter + 1}: obj={obj:.4f} (initial)")
+                    print(f"  iter {iter}: obj={obj:.4f} (initial)")
 
-        return theta
+            if no_noise:
+                direct = logpgrad
+            else:
+                if anneal_noise:
+                    noise_scale = sqrt_stepsize_full * (1.0 - iter * inv_iter_decay)
+                else:
+                    noise_scale = sqrt_stepsize_full
+                # Refill noise buffer in-place (no allocation).
+                torch.randn(theta.shape, out=noise_buf)
+                direct = logpgrad.add_(noise_buf, alpha=noise_scale)
+
+            if adagrad:
+                if historical_grad is None:
+                    historical_grad = direct * direct
+                else:
+                    # historical_grad = alpha * historical_grad + (1-alpha) * direct**2
+                    historical_grad.mul_(alpha).addcmul_(direct, direct, value=1.0 - alpha)
+                # adj_grad = direct / (fudge + sqrt(historical_grad))
+                adj_grad = direct.div_(historical_grad.sqrt().add_(fudge_factor))
+                theta.add_(adj_grad, alpha=stepsize)
+            else:
+                theta.add_(direct, alpha=stepsize)
+
+            theta.clamp_(min=0.0)
+            norm = torch.linalg.vector_norm(theta, dim=1, keepdim=True).clamp_(min=1e-6)
+            theta.div_(norm)
+
+            self._actual_iters = iter + 1
+
+        return theta.float()
 
     def extract_associations(self, u, A_put):
         """Extract and deduplicate association sets from converged particles.
@@ -146,32 +162,32 @@ class LangevinDynamics:
             List of (association_set, count) tuples sorted by count ascending.
             Each association_set is a tuple of (source_idx, target_idx) tuples.
         """
-        _, sorted_idx = torch.sort(u, dim=1, descending=True)
+        # All GPU work in one fused block, then a single sync to host.
+        sorted_idx = torch.argsort(u, dim=1, descending=True)
+        Md_u = u @ self.Md
+        omega_hat = (
+            torch.round((Md_u * u).sum(dim=1))
+            .clamp(min=0, max=u.size(1))
+            .to(torch.long)
+        )
+        sorted_idx_cpu = sorted_idx.cpu().numpy()
+        omega_hat_cpu = omega_hat.cpu().numpy()
 
         if isinstance(A_put, torch.Tensor):
             A_cpu = A_put.detach().cpu().numpy()
         else:
             A_cpu = np.asarray(A_put)
-        sorted_idx_cpu = sorted_idx.cpu().numpy()
 
-        # Estimate clique size per particle: k = round(x^T Md x)
-        Md_u = u @ self.Md  # (n_particles, n)
-        omega_hat = torch.round((Md_u * u).sum(dim=1))  # (n_particles,)
-        omega_hat = omega_hat.clamp(min=0, max=u.size(1)).to(torch.long)
-
-        associations = []
-        for i in range(u.size(0)):
-            k = int(omega_hat[i].item())
+        merged_dict = defaultdict(int)
+        for i in range(sorted_idx_cpu.shape[0]):
+            k = int(omega_hat_cpu[i])
             if k == 0:
-                associations.append(tuple())
+                merged_dict[()] += 1
                 continue
             sel = sorted_idx_cpu[i, :k]
-            associations.append(tuple(map(tuple, A_cpu[sel])))
-
-        # Merge duplicates (normalize by sorting each set)
-        merged_dict = defaultdict(int)
-        for assoc in associations:
-            normalized_key = tuple(sorted(assoc))
+            assoc = A_cpu[sel]
+            order = np.lexsort((assoc[:, 1], assoc[:, 0]))
+            normalized_key = tuple(map(tuple, assoc[order]))
             merged_dict[normalized_key] += 1
 
         return sorted(merged_dict.items(), key=lambda item: item[1])

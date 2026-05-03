@@ -845,7 +845,7 @@ def cross_view_localization(
         )
         from gen_seg_match.cross_view.place_recognition import CrossViewPlaceRecognition
         from gen_seg_match.match.segment_matcher import SegmentMatcher
-        from gen_seg_match.register.registerer import Registerer
+        from gen_seg_match.register.registerer import Registerer2D
 
         pipeline_params = CrossViewMatchingParams.load(params)
         aerial_patch_params = AerialPatchParams.load(params)
@@ -865,7 +865,7 @@ def cross_view_localization(
             aerial_patch_params=aerial_patch_params,
             pixel_len_m=data.aerial_img_scale,
             matcher=SegmentMatcher(segment_match_params),
-            registerer=Registerer(RegisterParams.load(params)),
+            registerer=Registerer2D(RegisterParams.load(params)),
             place_recognition=place_recognition,
         )
         pipeline = CrossViewMatchingPipeline(algorithm=algorithm)
@@ -979,7 +979,7 @@ if __name__ == "__main__":
         )
         from gen_seg_match.cross_view.place_recognition import CrossViewPlaceRecognition
         from gen_seg_match.match.segment_matcher import SegmentMatcher
-        from gen_seg_match.register.registerer import Registerer
+        from gen_seg_match.register.registerer import Registerer2D
 
         pipeline_params = CrossViewMatchingParams.load(args.params)
         aerial_patch_params = AerialPatchParams.load(args.params)
@@ -999,7 +999,7 @@ if __name__ == "__main__":
             aerial_patch_params=aerial_patch_params,
             pixel_len_m=data.aerial_img_scale,
             matcher=SegmentMatcher(segment_match_params),
-            registerer=Registerer(RegisterParams.load(args.params)),
+            registerer=Registerer2D(RegisterParams.load(args.params)),
             place_recognition=place_recognition,
         )
         pipeline = CrossViewMatchingPipeline(algorithm=algorithm)

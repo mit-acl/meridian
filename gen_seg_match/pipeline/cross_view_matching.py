@@ -39,7 +39,7 @@ from gen_seg_match.map2d.ground_submap_primitive_mapping import (
     GroundSegmentationResult,
 )
 from gen_seg_match.match.segment_matcher import SegmentMatcher
-from gen_seg_match.register.registerer import Registerer
+from gen_seg_match.register.registerer import Registerer2D
 from gen_seg_match.map3d.submap import Submap
 from gen_seg_match.viz.cross_view_viz import (
     viz_cross_view_matches,
@@ -812,7 +812,7 @@ def cross_view_matching(
         aerial_patch_params=aerial_patch_params,
         pixel_len_m=aerial_segmenter.params.pixel_len_m,
         matcher=SegmentMatcher(segment_match_params),
-        registerer=Registerer(RegisterParams.load(params)),
+        registerer=Registerer2D(RegisterParams.load(params)),
         place_recognition=place_recognition,
     )
     viz_params = CrossViewVisualizationParams.load(params)

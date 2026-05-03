@@ -40,7 +40,7 @@ from gen_seg_match.pipeline.result import (
 )
 from gen_seg_match.utils import expandvars_recursive
 from gen_seg_match.map3d.dense_to_sparse_converter import DenseToSparseConverter
-from gen_seg_match.register.registerer import (
+from gen_seg_match.register.r3d.registerer import (
     Registerer,
     InsufficientAssociationsException,
 )

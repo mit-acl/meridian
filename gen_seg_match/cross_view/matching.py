@@ -17,8 +17,7 @@ from gen_seg_match.pipeline.result import (
     PoseEstimationResultMatrix,
 )
 from gen_seg_match.register.registerer import (
-    InsufficientAssociationsException,
-    Registerer,
+    Registerer2D,
 )
 from gen_seg_match.segment.segment_types import SegmentList
 
@@ -67,7 +66,7 @@ class CrossViewMatching:
     aerial_patch_params: AerialPatchParams
     pixel_len_m: float
     matcher: SegmentMatcher
-    registerer: Registerer
+    registerer: Registerer2D
     place_recognition: CrossViewPlaceRecognition = None
 
     # ------------------------------------------------------------------
@@ -405,38 +404,57 @@ class CrossViewMatching:
         if translation_only and R_aerial_ground_2d is not None:
             self.matcher.params.xy_dir_constrained_2d = False
 
-        # Precompute 3D segments once
-        aerial_segs_3d = aerial_segs_j.to_dim(3)
-        ground_segs_3d = ground_segs_i.to_dim(3)
+        all_matches = match_result.association_arrays
+        n_hyps = len(all_matches)
+        t_reg_total = 0.0
+        t_segl_total = 0.0
+        t_dim = 0.0
 
-        # Register each hypothesis
         raw_results = []
-        for matches, score, count in zip(
-            match_result.association_arrays,
+        for idx, (matches, score, count) in enumerate(zip(
+            all_matches,
             match_result.scores,
             match_result.counts,
-        ):
-            T_aerial_ground_hat = self._register_single_hypothesis(
-                matches,
-                aerial_segs_3d,
-                ground_segs_3d,
-                T_ground_odom_ground_robot,
-                T_camera_flu,
+        )):
+            t_segl0 = time.time()
+            matched_ground = SegmentList(
+                [ground_segs_i.get_segment_from_id(g_id) for _, g_id in matches]
             )
-            if T_aerial_ground_hat is None:
+            matched_aerial = SegmentList(
+                [aerial_segs_j.get_segment_from_id(a_id) for a_id, _ in matches]
+            )
+            t_segl_total += time.time() - t_segl0
+
+            t_reg0 = time.time()
+            try:
+                T_aerial_ground_odom_2d = self.registerer.register(matched_aerial, matched_ground).transformation
+            except Exception as e:
+                t_reg_total += time.time() - t_reg0
+                logger.debug(f"Registration failed for idx {idx}/{len(all_matches)}: {e}")
                 continue
+            t_reg_total += time.time() - t_reg0
+
+            # TODO: transform everything in SE(2) instead?
+            T_aerial_ground_odom_hat = self._se2_to_se3(T_aerial_ground_odom_2d)
+            T_aerial_ground_hat = T_aerial_ground_odom_hat @ T_ground_odom_ground_robot
+            if T_camera_flu is not None:
+                T_aerial_ground_hat = T_aerial_ground_hat @ T_camera_flu
+
+            if np.any(np.isnan(T_aerial_ground_hat)):
+                continue
+
+            # Aerial-to-ground registration flips Z, so the 2D rotation
+            # block must have negative determinant.  Reject flipped hypotheses.
+            if np.linalg.det(T_aerial_ground_hat[:2, :2]) > 0:
+                # print("skipping proper rotation")
+                continue
+            
+            T_aerial_ground_hat[2, 3] = 0.0
 
             pose_result = PoseEstimationResult(
                 T_i_j_hat=T_aerial_ground_hat,
                 T_i_j=T_aerial_ground,
                 associations=matches,
-            )
-
-            matched_ground = SegmentList(
-                [ground_segs_i.get_segment_from_id(g_id) for g_id, _ in matches]
-            )
-            matched_aerial = SegmentList(
-                [aerial_segs_j.get_segment_from_id(a_id) for _, a_id in matches]
             )
 
             result = SingleMatchResult(
@@ -477,37 +495,26 @@ class CrossViewMatching:
 
         return results
 
-    def _register_single_hypothesis(
-        self,
-        matches: np.ndarray,
-        aerial_segs_3d: SegmentList,
-        ground_segs_3d: SegmentList,
-        T_ground_odom_ground_robot: np.ndarray,
-        T_camera_flu: Optional[np.ndarray],
-    ) -> Optional[np.ndarray]:
-        """Register a single hypothesis, returning T_aerial_ground_hat or None."""
-        try:
-            T_aerial_ground_odom_hat = self.registerer.register(
-                aerial_segs_3d,
-                ground_segs_3d,
-                correspondences=matches,
-            ).transformation
-            T_aerial_ground_hat = T_aerial_ground_odom_hat @ T_ground_odom_ground_robot
-            if T_camera_flu is not None:
-                T_aerial_ground_hat = T_aerial_ground_hat @ T_camera_flu
-        except InsufficientAssociationsException:
-            return None
+    @staticmethod
+    def _se3_to_se2(T_4x4: np.ndarray) -> np.ndarray:
+        """Extract 3x3 SE(2) from a 4x4 SE(3) matrix (xy-plane projection)."""
+        yaw = np.arctan2(T_4x4[1, 0], T_4x4[0, 0])
+        c, s = np.cos(yaw), np.sin(yaw)
+        return np.array([
+            [c, -s, T_4x4[0, 3]],
+            [s,  c, T_4x4[1, 3]],
+            [0,  0,      1     ],
+        ])
 
-        if np.any(np.isnan(T_aerial_ground_hat)):
-            return None
-
-        # Aerial-to-ground registration flips Z, so the 2D rotation
-        # block must have negative determinant.  Reject flipped hypotheses.
-        if np.linalg.det(T_aerial_ground_hat[:2, :2]) > 0:
-            return None
-
-        T_aerial_ground_hat[2, 3] = 0.0
-        return T_aerial_ground_hat
+    @staticmethod
+    def _se2_to_se3(T_3x3: np.ndarray) -> np.ndarray:
+        """Embed 3x3 SE(2) into a 4x4 SE(3) matrix (z=0 plane)."""
+        T_4x4 = np.eye(4)
+        T_4x4[:2, :2] = T_3x3[:2, :2]
+        T_4x4[:2, 3] = T_3x3[:2, 2]
+        if np.linalg.det(T_4x4[:2, :2]) < 0:
+            T_4x4[2, 2] = -1.0
+        return T_4x4
 
     def _find_max_intersection_patches(
         self,

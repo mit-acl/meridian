@@ -725,24 +725,43 @@ class SegmentList(List[GeneralSegment]):
         return PlaneList([seg for seg in self if type(seg) is SegmentPlane])
 
     def type_ordered(self) -> "SegmentList":
-        points = self.get_points()
-        lines = self.get_lines()
-        planes = self.get_planes()
-        return SegmentList(points + lines + planes)
+        cache = self.__dict__.get("_type_ordered_cache")
+        if cache is None or cache[0] != len(self):
+            points = self.get_points()
+            lines = self.get_lines()
+            planes = self.get_planes()
+            ordered = SegmentList(points + lines + planes)
+            ids = np.fromiter(
+                (s.id for s in ordered), dtype=np.int64, count=len(ordered)
+            )
+            self.__dict__["_type_ordered_cache"] = (len(self), ordered, ids)
+            return ordered
+        return cache[1]
+
+    def type_ordered_ids(self) -> np.ndarray:
+        self.type_ordered()
+        return self.__dict__["_type_ordered_cache"][2]
 
     def get_type_ordered_idx(self, idx) -> GeneralSegment:
         return self.type_ordered()[idx]
 
+    def _id_index(self) -> dict:
+        cache = self.__dict__.get("_id_index_cache")
+        if cache is None or cache[0] != len(self):
+            index = {seg.id: seg for seg in self}
+            self.__dict__["_id_index_cache"] = (len(self), index)
+            return index
+        return cache[1]
+
     def get_segment_from_id(self, id) -> GeneralSegment:
-        matching_segs = [seg for seg in self if seg.id == id]
-        assert len(matching_segs) <= 1, f"Multiple segments with id {id} found"
-        return matching_segs[0] if len(matching_segs) == 1 else None
+        return self._id_index().get(id)
 
     def sublist_from_ids(self, ids: List[int]) -> "SegmentList":
-        return SegmentList([self.get_segment_from_id(id_i) for id_i in ids])
+        index = self._id_index()
+        return SegmentList([index[id_i] for id_i in ids if id_i in index])
 
     def has_id(self, id) -> bool:
-        return any(seg.id == id for seg in self)
+        return id in self._id_index()
 
     def transform(self, T: np.ndarray) -> "SegmentList":
         for seg in self:

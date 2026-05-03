@@ -6,7 +6,7 @@ from gen_seg_match.segment.segment_types import SegmentLine, SegmentPoint
 from gen_seg_match.match.segment_matcher import SegmentMatcher
 from gen_seg_match.params.segment_match_params import SegmentMatchParams
 from gen_seg_match.params import RegisterParams
-from gen_seg_match.register.registerer import Registerer
+from gen_seg_match.register.r3d.registerer import Registerer
 
 
 @pytest.fixture

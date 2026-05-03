@@ -4,7 +4,7 @@ import torch
 # import pypose as pp
 from typing import Tuple, Optional, List
 
-from gen_seg_match.register.geometry import transform_plucker_torch
+from gen_seg_match.register.r3d.geometry import transform_plucker_torch
 from gen_seg_match.segment.segment_types import SegmentList
 
 # def refine_transform(R_init: np.ndarray, t_init: np.ndarray,
