@@ -81,7 +81,7 @@ from gen_seg_match.pipeline.data import (
     CrossViewLocalizationData,
     SegmentMappingData,
 )
-from gen_seg_match.register.registerer import Registerer
+from gen_seg_match.register.registerer import Registerer2D
 from gen_seg_match.utils import save_commit_hash, save_params
 from gen_seg_match.viz.cross_view_viz import viz_ground_segments
 
@@ -999,7 +999,7 @@ def cross_view_incremental(
             aerial_patch_params=aerial_patch_params,
             pixel_len_m=loc_data_params.aerial_img_scale or 0.01,
             matcher=SegmentMatcher(segment_match_params),
-            registerer=Registerer(register_params),
+            registerer=Registerer2D(register_params),
             place_recognition=place_recognition,
         ),
     )
