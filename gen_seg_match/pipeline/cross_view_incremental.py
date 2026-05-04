@@ -1013,6 +1013,22 @@ def cross_view_incremental(
     if bag_t_range is not None:
         full_t0, full_tf = bag_t_range
         print(f"Bag time range: {full_t0:.2f} to {full_tf:.2f}")
+        # Honor user-specified time_range in params so chunking stops at the
+        # requested end instead of the bag's end.
+        user_range = (mapping_data_params.img_data or {}).get("time_range")
+        if user_range is not None:
+            relative = (mapping_data_params.img_data or {}).get(
+                "time_range_relative", False
+            )
+            user_t0, user_tf = user_range
+            if relative:
+                user_t0 = full_t0 + user_t0
+                user_tf = full_t0 + user_tf
+            full_t0 = max(full_t0, user_t0)
+            full_tf = min(full_tf, user_tf)
+            print(
+                f"Clamped to user time_range: {full_t0:.2f} to {full_tf:.2f}"
+            )
     else:
         full_t0, full_tf = None, None
 

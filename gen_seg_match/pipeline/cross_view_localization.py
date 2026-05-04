@@ -606,9 +606,11 @@ class CrossViewLocalization:
         """Plot full trajectory on aerial image and compute error metrics."""
         if viz_params is None:
             viz_params = CrossViewVisualizationParams()
-        ground_map = data.ground_map
-        traj_times = np.array(ground_map.times)
         optimized_traj = result.optimized_trajectory
+        if result.times is not None:
+            traj_times = np.asarray(result.times)
+        else:
+            traj_times = np.array(data.ground_map.times)
 
         # Build estimated UTM positions & yaws from optimized trajectory
         est_utm_positions = np.full((len(optimized_traj), 2), np.nan)

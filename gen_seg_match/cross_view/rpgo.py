@@ -87,6 +87,7 @@ class CrossViewRPGOResult:
     success: bool
     T_utm_odom: Optional[np.ndarray] = None
     optimized_trajectory: Optional[List[np.ndarray]] = None
+    times: Optional[np.ndarray] = None
     inlier_indices: np.ndarray = field(default_factory=lambda: np.array([]))
     M: Optional[np.ndarray] = None
     C: Optional[np.ndarray] = None
@@ -245,6 +246,7 @@ class CrossViewRPGO:
             success=True,
             T_utm_odom=T_utm_odom,
             optimized_trajectory=optimized_trajectory,
+            times=np.asarray(times),
             inlier_indices=inlier_indices,
             M=M,
             C=C,
