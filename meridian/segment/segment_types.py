@@ -566,6 +566,22 @@ class ParallelLinesException(Exception):
         super().__init__(message)
 
 
+def get_roman_ratio_feature(roman_segment) -> np.ndarray:
+    """Pack ROMAN segment volume/linearity/planarity/scattering into a 4-vector."""
+    try:
+        volume = roman_segment.volume
+    except Exception:
+        volume = 0.0
+    return np.array(
+        [
+            volume,
+            roman_segment.linearity,
+            roman_segment.planarity,
+            roman_segment.scattering,
+        ]
+    )
+
+
 @dataclass
 class DenseSegment(GeneralSegment):
     id: int

@@ -33,7 +33,6 @@ from meridian.map2d.aerial_patch_primitive_mapping import (
     AerialPatchPrimitiveMapping,
     AerialSegmentationResult,
 )
-from meridian.segmenter.ground_segmenter import GroundSegmenter
 from meridian.map2d.ground_submap_primitive_mapping import (
     GroundSubmapPrimitiveMapping,
     GroundSegmentationResult,
@@ -840,7 +839,7 @@ def cross_view_matching(
 
     aerial_segmenter = AerialSegmenter(AerialSegmenterParams.load(params))
     converter = SegmentToPrimitiveConverter(conversion_params)
-    ground_segmenter = GroundSegmenter(GroundSegmenterParams.load(params))
+    ground_segmenter_params = GroundSegmenterParams.load(params)
 
     aerial_mapping = AerialPatchPrimitiveMapping(
         patch_params=aerial_patch_params,
@@ -851,7 +850,7 @@ def cross_view_matching(
     ground_mapping = GroundSubmapPrimitiveMapping(
         submap_params=ground_submap_params,
         converter=converter,
-        ground_segmenter=ground_segmenter,
+        ground_segmenter_params=ground_segmenter_params,
         place_recognition=place_recognition,
     )
 

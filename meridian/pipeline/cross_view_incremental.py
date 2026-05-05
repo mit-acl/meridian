@@ -46,13 +46,12 @@ from meridian.cross_view.rpgo import (
     CrossViewRPGO,
     pose_data_from_trajectory,
 )
-from meridian.segmenter.ground_segmenter import GroundSegmenter
 from meridian.map2d.ground_submap_primitive_mapping import (
     GroundSubmapPrimitiveMapping,
 )
 from meridian.map2d.segment_to_primitive import SegmentToPrimitiveConverter
 from meridian.map3d.segment_mapper import SegmentMapper
-from meridian.map3d.segmenter import Segmenter
+from meridian.segmenter.segmenter3d import Segmenter
 from meridian.map3d.submap import Submap
 from meridian.match.segment_matcher import SegmentMatcher
 from meridian.params import (
@@ -1053,11 +1052,10 @@ def cross_view_incremental(
     segmenter = Segmenter(segmenter_params, depth_cam_params=camera_params)
 
     converter = SegmentToPrimitiveConverter(conversion_params)
-    ground_segmenter = GroundSegmenter(ground_segmenter_params)
     ground_submap_mapping = GroundSubmapPrimitiveMapping(
         ground_submap_params,
         converter,
-        ground_segmenter,
+        ground_segmenter_params,
         place_recognition,
     )
     mapper = SegmentMapper(

@@ -5,15 +5,22 @@ from typing import List, Optional, Union
 import numpy as np
 from tqdm import tqdm
 
-from meridian.segmenter.ground_segmenter import GroundSegmenter
 from meridian.map2d.segment_to_primitive import (
     SegmentToPrimitiveConverter,
     line_is_valid,
 )
-from meridian.map3d.dense_to_sparse_converter import DenseToSparseConverter
+from meridian.map3d.dense3d_to_dense2d import (
+    flatten_3d_submap,
+    submap_2d_to_aerial,
+)
 from meridian.map3d.submap import FrameType, Submap
+from meridian.params.ground_segmenter_params import GroundSegmenterParams
 from meridian.params.segment_to_primitive_params import GroundSubmapParams
-from meridian.segment.segment_types import DenseSegment, SegmentList
+from meridian.segment.segment_types import (
+    DenseSegment,
+    SegmentList,
+    get_roman_ratio_feature,
+)
 
 from roman.map.map import ROMANMap
 from meridian.map3d.map import SegmentMap
@@ -51,12 +58,12 @@ class GroundSubmapPrimitiveMapping:
         self,
         submap_params: GroundSubmapParams,
         converter: SegmentToPrimitiveConverter,
-        ground_segmenter: GroundSegmenter,
+        ground_segmenter_params: GroundSegmenterParams,
         place_recognition=None,
     ):
         self.submap_params = submap_params
         self.converter = converter
-        self.ground_segmenter = ground_segmenter
+        self.ground_segmenter_params = ground_segmenter_params
         self.place_recognition = place_recognition
 
     # ------------------------------------------------------------------
@@ -76,7 +83,7 @@ class GroundSubmapPrimitiveMapping:
             ds = DenseSegment(
                 id=seg.id,
                 dense_points=seg.points,
-                ratio_feature=DenseToSparseConverter.get_roman_ratio_feature(seg),
+                ratio_feature=get_roman_ratio_feature(seg),
                 cos_feature=seg.semantic_descriptor,
                 first_seen=seg.first_seen,
                 last_seen=seg.last_seen,
@@ -226,8 +233,14 @@ class GroundSubmapPrimitiveMapping:
         )
         submap.segments.transform(submap.pose)
 
-        flattened_submap = self.ground_segmenter.flatten_3d_submap(submap)
-        aerial_segments = self.ground_segmenter.submap_2d_to_aerial(flattened_submap)
+        gs_params = self.ground_segmenter_params
+        flattened_submap = flatten_3d_submap(
+            submap,
+            outlier_removal_std=gs_params.outlier_removal_std,
+            dbscan_epsilon=gs_params.dbscan_epsilon,
+            dbscan_min_points=gs_params.dbscan_min_points,
+        )
+        aerial_segments = submap_2d_to_aerial(flattened_submap)
         aerial_segments = [
             seg
             for seg in aerial_segments

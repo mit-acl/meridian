@@ -445,9 +445,12 @@ class SegmentMapper:
         if self._ground_submap_mapping is None:
             return
 
-        from meridian.map3d.dense_to_sparse_converter import DenseToSparseConverter
         from meridian.map3d.submap import FrameType, Submap
-        from meridian.segment.segment_types import DenseSegment, SegmentList
+        from meridian.segment.segment_types import (
+            DenseSegment,
+            SegmentList,
+            get_roman_ratio_feature,
+        )
 
         all_segs = self.segments + self.inactive_segments + self.segment_graveyard
         current_ids = {seg.id for seg in all_segs}
@@ -591,7 +594,7 @@ class SegmentMapper:
             ds = DenseSegment(
                 id=seg.id,
                 dense_points=pts,
-                ratio_feature=DenseToSparseConverter.get_roman_ratio_feature(seg),
+                ratio_feature=get_roman_ratio_feature(seg),
                 cos_feature=seg.semantic_descriptor,
                 first_seen=seg.first_seen,
                 last_seen=seg.last_seen,
