@@ -6,7 +6,7 @@ import numpy as np
 import torch
 from typing import List
 
-from meridian.segment.aerial_segment import AerialSegment
+from meridian.map2d.segment2d import Segment2D
 from meridian.params import AerialSegmenterParams
 from meridian.segmenter.segmenter_base import SegmenterBase
 
@@ -73,7 +73,7 @@ class AerialSegmenter(SegmenterBase):
 
         return self._compute_gem_descriptor(features)
 
-    def segment(self, img_bgr, crop=None) -> List[AerialSegment]:
+    def segment(self, img_bgr, crop=None) -> List[Segment2D]:
         """
         Run segmentation on the given image and return a list of AerialSegments.
         """
@@ -150,7 +150,7 @@ class AerialSegmenter(SegmenterBase):
         aerial_segments = []
         for (i, mask, points, area), desc in zip(valid_entries, descriptors):
             aerial_segments.append(
-                AerialSegment(
+                Segment2D(
                     id=i,
                     center=np.mean(points, axis=0),
                     area=area,
@@ -160,6 +160,6 @@ class AerialSegmenter(SegmenterBase):
             )
         return aerial_segments
 
-    def run(self, img_bgr, crop=None) -> List[AerialSegment]:
+    def run(self, img_bgr, crop=None) -> List[Segment2D]:
         """Backward-compatible alias for segment()."""
         return self.segment(img_bgr, crop=crop)

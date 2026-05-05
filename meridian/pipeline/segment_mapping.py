@@ -17,7 +17,7 @@ from meridian.params import (
     SegmenterParams,
 )
 from meridian.pipeline.data import SegmentMappingData
-from meridian.map3d.segmenter import Segmenter
+from meridian.segmenter.segmenter3d import Segmenter
 from meridian.map3d.segment_mapper import SegmentMapper
 from meridian.map3d.map import SegmentMap
 
@@ -278,7 +278,6 @@ def segment_mapping(
             SegmentToPrimitiveConversionParams,
             GroundSegmenterParams,
         )
-        from meridian.segmenter.ground_segmenter import GroundSegmenter
         from meridian.map2d.segment_to_primitive import SegmentToPrimitiveConverter
         from meridian.map2d.ground_submap_primitive_mapping import (
             GroundSubmapPrimitiveMapping,
@@ -291,7 +290,6 @@ def segment_mapping(
         ground_segmenter_params = GroundSegmenterParams.load(params_path, run=run)
 
         converter = SegmentToPrimitiveConverter(conversion_params)
-        ground_segmenter = GroundSegmenter(ground_segmenter_params)
 
         # Place recognition is optional
         try:
@@ -308,7 +306,7 @@ def segment_mapping(
         ground_submap_mapping = GroundSubmapPrimitiveMapping(
             ground_submap_params,
             converter,
-            ground_segmenter,
+            ground_segmenter_params,
             place_recognition,
         )
         print(

@@ -6,14 +6,9 @@ import clipperpy
 from copy import deepcopy
 from sklearn.neighbors import NearestNeighbors
 
-from meridian.segment.segment_types import (
-    SegmentPoint,
-    GeneralSegment,
-    SegmentList,
-    SegmentLine,
-    SegmentPlane,
-)
-from meridian.params.segment_match_params import SegmentMatchParams
+from meridian.primitive.primitive import PointPrimitive, Primitive, LinePrimitive
+from meridian.primitive.primitive_list import PrimitiveList
+from meridian.params.primitive_match_params import PrimitiveMatchParams
 from meridian.match.match_result import MatchResult
 
 import time
@@ -30,8 +25,8 @@ class InsufficientAssociationsException(Exception):
         super().__init__(message)
 
 
-class SegmentMatcher:
-    def __init__(self, params: SegmentMatchParams):
+class PrimitiveMatcher:
+    def __init__(self, params: PrimitiveMatchParams):
         self.params = params
         self._langevin_matcher = None
 
@@ -49,8 +44,8 @@ class SegmentMatcher:
 
     def match(
         self,
-        map1: List[GeneralSegment],
-        map2: List[GeneralSegment],
+        map1: List[Primitive],
+        map2: List[Primitive],
         global_x_dir1: np.ndarray = None,
         global_y_dir1: np.ndarray = None,
         global_z_dir1: np.ndarray = None,
@@ -87,8 +82,8 @@ class SegmentMatcher:
 
     def _match_clipper(
         self,
-        map1: List[GeneralSegment],
-        map2: List[GeneralSegment],
+        map1: List[Primitive],
+        map2: List[Primitive],
         global_x_dir1: np.ndarray = None,
         global_y_dir1: np.ndarray = None,
         global_z_dir1: np.ndarray = None,
@@ -99,10 +94,10 @@ class SegmentMatcher:
         putative_match_matrix: np.ndarray = None,
     ) -> MatchResult:
         """CLIPPER single-hypothesis matching."""
-        map1 = SegmentList(deepcopy(map1))
-        map2 = SegmentList(deepcopy(map2))
-        map1 = map1.get_points() + map1.get_lines() + map1.get_planes()
-        map2 = map2.get_points() + map2.get_lines() + map2.get_planes()
+        map1 = PrimitiveList(deepcopy(map1))
+        map2 = PrimitiveList(deepcopy(map2))
+        map1 = map1.get_points() + map1.get_lines()
+        map2 = map2.get_points() + map2.get_lines()
 
         empty_result = MatchResult([np.array([])], [0.0], [1])
 
@@ -192,8 +187,8 @@ class SegmentMatcher:
 
     def _match_langevin(
         self,
-        map1: List[GeneralSegment],
-        map2: List[GeneralSegment],
+        map1: List[Primitive],
+        map2: List[Primitive],
         global_x_dir1: np.ndarray = None,
         global_y_dir1: np.ndarray = None,
         global_x_dir2: np.ndarray = None,
@@ -286,14 +281,14 @@ class SegmentMatcher:
             for idx, _, total_count in clusters
         ]
 
-    def get_MCA(self, map1: List[GeneralSegment], map2: List[GeneralSegment]):
+    def get_MCA(self, map1: List[Primitive], map2: List[Primitive]):
         M, C, A_init, _, _ = self.get_MCA_with_maps(map1, map2)
         return M, C, A_init
 
     def get_MCA_with_maps(
         self,
-        map1: List[GeneralSegment],
-        map2: List[GeneralSegment],
+        map1: List[Primitive],
+        map2: List[Primitive],
         global_x_dir1: np.ndarray = None,
         global_y_dir1: np.ndarray = None,
         global_x_dir2: np.ndarray = None,
@@ -301,14 +296,14 @@ class SegmentMatcher:
     ):
         """Return affinity matrix, constraint matrix, putative associations, and ordered maps.
 
-        The returned map1/map2 SegmentLists are in type-ordered form (points + lines + planes)
+        The returned map1/map2 PrimitiveLists are in type-ordered form (points + lines)
         matching the index space of M, C, and A_init. These are needed for
         assoc_idx_to_ids() to convert association indices back to segment IDs.
         """
-        map1 = SegmentList(deepcopy(map1))
-        map2 = SegmentList(deepcopy(map2))
-        map1 = map1.get_points() + map1.get_lines() + map1.get_planes()
-        map2 = map2.get_points() + map2.get_lines() + map2.get_planes()
+        map1 = PrimitiveList(deepcopy(map1))
+        map2 = PrimitiveList(deepcopy(map2))
+        map1 = map1.get_points() + map1.get_lines()
+        map2 = map2.get_points() + map2.get_lines()
 
         # Return empty matrices if either map is empty
         if len(map1) == 0 or len(map2) == 0:
@@ -337,10 +332,10 @@ class SegmentMatcher:
         return M, C, A_init, map1, map2
 
     def match_multiple(
-        self, map1: List[GeneralSegment], map2: List[GeneralSegment], num_solutions=2
+        self, map1: List[Primitive], map2: List[Primitive], num_solutions=2
     ):
-        map1 = SegmentList(map1)
-        map2 = SegmentList(map2)
+        map1 = PrimitiveList(map1)
+        map2 = PrimitiveList(map2)
         M, C, A = self.get_MCA(map1, map2)
         M_orig = M.copy()
         clipper = clipperpy.CLIPPER(
@@ -378,8 +373,8 @@ class SegmentMatcher:
 
     def register(
         self,
-        map1: List[GeneralSegment],
-        map2: List[GeneralSegment],
+        map1: List[Primitive],
+        map2: List[Primitive],
         global_x_dir1: np.ndarray = None,
         global_y_dir1: np.ndarray = None,
         global_z_dir1: np.ndarray = None,
@@ -389,11 +384,11 @@ class SegmentMatcher:
         correspondences: np.array = None,
     ):
         """
-        Computes the transformation that aligns map2 to map1 (T^map1_map2). Currently only uses SegmentPoint correspondences.
+        Computes the transformation that aligns map2 to map1 (T^map1_map2). Currently only uses PointPrimitive correspondences.
 
         Args:
-            map1 (List[GeneralSegment]): Segment list in frame 1
-            map2 (List[GeneralSegment]): Segment list in frame 2
+            map1 (List[Primitive]): Segment list in frame 1
+            map2 (List[Primitive]): Segment list in frame 2
             correspondences (np.array, shape=(n,2), optional): If correspondences have already
                 been found, set to None. Otherwise, performs register before aligning. Defaults to None.
 
@@ -417,14 +412,14 @@ class SegmentMatcher:
         if len(correspondences) == 0:
             raise InsufficientAssociationsException(len(map1), len(map2))
 
-        map1 = SegmentList(map1)
-        map2 = SegmentList(map2)
+        map1 = PrimitiveList(map1)
+        map2 = PrimitiveList(map2)
 
         filtered_correspondences = [
             corr
             for corr in correspondences
-            if type(map1.get_segment_from_id(corr[0])) is SegmentPoint
-            and type(map2.get_segment_from_id(corr[1])) is SegmentPoint
+            if type(map1.get_segment_from_id(corr[0])) is PointPrimitive
+            and type(map2.get_segment_from_id(corr[1])) is PointPrimitive
         ]
 
         all_pairs = [
@@ -479,32 +474,34 @@ class SegmentMatcher:
 
     def view_registration(
         self,
-        map1: List[GeneralSegment],
-        map2: List[GeneralSegment],
+        map1: List[Primitive],
+        map2: List[Primitive],
         correspondences: np.array,
         T: np.array,
         ax=None,
         **kwargs,
     ):
         """
-        Visualize the registration between map1 and map2 (currently only supports SegmentPoint)
+        Visualize the registration between map1 and map2 (currently only supports PointPrimitive)
 
         Args:
-            map1 (List[GeneralSegment]): Segment list in frame 1
-            map2 (List[GeneralSegment]): Segment list in frame 2
+            map1 (List[Primitive]): Segment list in frame 1
+            map2 (List[Primitive]): Segment list in frame 2
             correspondences (np.array, shape=(n,2)): Correspondences between map1 and map2
             T (np.array): Transformation matrix that aligns map2 to map1
         """
         if ax is None:
             _, ax = plt.subplots()
 
-        map1 = SegmentList([seg for seg in map1 if type(seg) is SegmentPoint])
-        map2 = SegmentList([seg.copy() for seg in map2 if type(seg) is SegmentPoint])
+        map1 = PrimitiveList([seg for seg in map1 if type(seg) is PointPrimitive])
+        map2 = PrimitiveList(
+            [seg.copy() for seg in map2 if type(seg) is PointPrimitive]
+        )
 
         map2.transform(T)
 
         for seg in map1:
-            if type(seg) is SegmentPoint:
+            if type(seg) is PointPrimitive:
                 ax.plot(
                     seg.get_point()[0],
                     seg.get_point()[1],
@@ -514,7 +511,7 @@ class SegmentMatcher:
                 )
 
         for seg in map2:
-            if type(seg) is SegmentPoint:
+            if type(seg) is PointPrimitive:
                 ax.plot(
                     seg.get_point()[0], seg.get_point()[1], "o", color="blue", **kwargs
                 )
@@ -549,17 +546,15 @@ class SegmentMatcher:
     def _setup_problem(
         self,
         clipper,
-        map1: SegmentList,
-        map2: SegmentList,
+        map1: PrimitiveList,
+        map2: PrimitiveList,
     ):
         points1 = map1.get_points()
         lines1 = map1.get_lines()
-        planes1 = map1.get_planes()
         points2 = map2.get_points()
         lines2 = map2.get_lines()
-        planes2 = map2.get_planes()
 
-        # set up putative associations between points, lines, and planes separately
+        # set up putative associations between points and lines separately
         k = self.params.k_nearest_neighbors
         use_knn = k is not None and self.params.cos_feature_dim > 0
 
@@ -573,28 +568,16 @@ class SegmentMatcher:
             A_init_lines = self._knn_filter_associations(lines1, lines2, k)
         else:
             A_init_lines = clipperpy.utils.create_all_to_all(len(lines1), len(lines2))
-        if use_knn and len(planes1) > 0 and len(planes2) > 0:
-            A_init_planes = self._knn_filter_associations(planes1, planes2, k)
-        else:
-            A_init_planes = clipperpy.utils.create_all_to_all(
-                len(planes1), len(planes2)
-            )
         A_init_lines[:, 0] += len(points1)
         A_init_lines[:, 1] += len(points2)
-        A_init_planes[:, 0] += len(points1) + len(lines1)
-        A_init_planes[:, 1] += len(points2) + len(lines2)
-        A_init = np.vstack([A_init_points, A_init_lines, A_init_planes])
+        A_init = np.vstack([A_init_points, A_init_lines])
 
-        map1_arrays = (
-            [self._get_seg_array(obj) for obj in points1]
-            + [self._get_seg_array(obj) for obj in lines1]
-            + [self._get_seg_array(obj) for obj in planes1]
-        )
-        map2_arrays = (
-            [self._get_seg_array(obj) for obj in points2]
-            + [self._get_seg_array(obj) for obj in lines2]
-            + [self._get_seg_array(obj) for obj in planes2]
-        )
+        map1_arrays = [self._get_seg_array(obj) for obj in points1] + [
+            self._get_seg_array(obj) for obj in lines1
+        ]
+        map2_arrays = [self._get_seg_array(obj) for obj in points2] + [
+            self._get_seg_array(obj) for obj in lines2
+        ]
         map1_cl, map2_cl = self._create_padded_map_arrays(map1_arrays, map2_arrays)
 
         clipper.score_pairwise_and_single_consistency(map1_cl.T, map2_cl.T, A_init)
@@ -649,15 +632,15 @@ class SegmentMatcher:
     def assoc_idx_to_ids(
         self,
         association_matrix: np.ndarray,
-        map1: SegmentList,
-        map2: SegmentList,
+        map1: PrimitiveList,
+        map2: PrimitiveList,
     ) -> np.ndarray:
         """Convert association index pairs to segment ID pairs.
 
         Args:
             association_matrix: (n, 2) array of type-ordered indices.
-            map1: Source SegmentList (as returned by get_MCA_with_maps).
-            map2: Target SegmentList (as returned by get_MCA_with_maps).
+            map1: Source PrimitiveList (as returned by get_MCA_with_maps).
+            map2: Target PrimitiveList (as returned by get_MCA_with_maps).
 
         Returns:
             (n, 2) array of segment IDs.
@@ -673,7 +656,7 @@ class SegmentMatcher:
     # Keep backward-compatible alias
     _assoc_idx_to_ids = assoc_idx_to_ids
 
-    def _get_seg_array(self, seg: GeneralSegment) -> np.ndarray:
+    def _get_seg_array(self, seg: Primitive) -> np.ndarray:
         return seg.to_array(
             include_ratio=self.params.ratio_feature_dim > 0,
             include_cos=self.params.cos_feature_dim > 0,

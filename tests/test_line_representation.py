@@ -2,26 +2,26 @@ import pytest
 import numpy as np
 import robotdatapy.transform as rdpt
 
-from meridian.segment.segment_types import SegmentLine
+from meridian.primitive.primitive import LinePrimitive
 
 
 @pytest.fixture
 def three_line_segments():
-    linea1 = SegmentLine(
+    linea1 = LinePrimitive(
         id=1,
         point=np.array([0.0, 0.0, 0.0]),
         direction=np.array([1.0, 0.0, 0.0]),
         cos_feature=np.array([0.5, 0.5, 0.0, 0.0, 0.0, 0.0]),
     )
 
-    linea2 = SegmentLine(
+    linea2 = LinePrimitive(
         id=2,
         point=np.array([0.0, 0.0, 0.0]),
         direction=np.array([1.0, 0.0, 1.0]),
         cos_feature=np.array([0.5, 0.0, 0.5, 0.0, 0.0, 0.0]),
     )
 
-    linea3 = SegmentLine(
+    linea3 = LinePrimitive(
         id=3,
         point=np.array([2.0, 0.0, 1.0]),
         direction=np.array([0.0, 1.0, 0.0]),
@@ -47,7 +47,7 @@ def three_line_segments():
 def test_lines_a(three_line_segments):
     linesa, _ = three_line_segments
     assert len(linesa) == 3
-    assert all(isinstance(line, SegmentLine) for line in linesa)
+    assert all(isinstance(line, LinePrimitive) for line in linesa)
 
     assert linesa[0].to_array().shape == (
         14,
@@ -124,7 +124,7 @@ def test_lines_a(three_line_segments):
 def test_lines_b(three_line_segments):
     _, linesb = three_line_segments
     assert len(linesb) == 3
-    assert all(isinstance(line, SegmentLine) for line in linesb)
+    assert all(isinstance(line, LinePrimitive) for line in linesb)
 
     assert linesb[0].to_array().shape == (
         17,
@@ -218,7 +218,7 @@ def test_lines_a_transformed(three_line_segments):
         )
 
     assert len(linesa) == 3
-    assert all(isinstance(line, SegmentLine) for line in linesa)
+    assert all(isinstance(line, LinePrimitive) for line in linesa)
 
     assert linesa[0].to_array().shape == (
         14,

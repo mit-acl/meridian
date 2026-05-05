@@ -33,7 +33,7 @@ class SegmentMappingParams(ParamsBase):
 
     # Voxelization
     iou_voxel_size: float = 0.25
-    segment_voxel_size: float = 0.05
+    segment_voxel_size: float = 0.1
     segment_outlier_removal_std: float = 0.0  # disabled by default
     segment_dbscan_eps: float = 1.0
     segment_dbscan_min_points: int = 10
@@ -62,7 +62,7 @@ class SegmentMappingParams(ParamsBase):
             self.T_camera_flu = np.eye(4)
 
     def get_map_segment_params(self):
-        from meridian.segment.map_segment import MapSegmentParams
+        from meridian.map3d.map_segment import MapSegmentParams
 
         return MapSegmentParams(
             voxel_size=self.segment_voxel_size,

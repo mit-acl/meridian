@@ -1,21 +1,24 @@
 import logging
 from dataclasses import dataclass
-from typing import List, Optional, Union
+from typing import List, Optional
 
 import numpy as np
 from tqdm import tqdm
 
-from meridian.segmenter.ground_segmenter import GroundSegmenter
 from meridian.map2d.segment_to_primitive import (
     SegmentToPrimitiveConverter,
     line_is_valid,
 )
-from meridian.map3d.dense_to_sparse_converter import DenseToSparseConverter
+from meridian.map3d.dense3d_to_dense2d import (
+    flatten_3d_submap,
+    submap_2d_to_aerial,
+)
 from meridian.map3d.submap import FrameType, Submap
+from meridian.params.ground_segmenter_params import GroundSegmenterParams
 from meridian.params.segment_to_primitive_params import GroundSubmapParams
-from meridian.segment.segment_types import DenseSegment, SegmentList
+from meridian.primitive.primitive_list import PrimitiveList
+from meridian.primitive.dense_segment import DenseSegment, get_roman_ratio_feature
 
-from roman.map.map import ROMANMap
 from meridian.map3d.map import SegmentMap
 
 logger = logging.getLogger(__name__)
@@ -30,7 +33,7 @@ logger = logging.getLogger(__name__)
 class GroundSubmapIntermediates:
     flattened_submap: Submap = None
     aerial_segments: list = None
-    general_segments: SegmentList = None
+    general_segments: PrimitiveList = None
 
 
 @dataclass
@@ -51,12 +54,12 @@ class GroundSubmapPrimitiveMapping:
         self,
         submap_params: GroundSubmapParams,
         converter: SegmentToPrimitiveConverter,
-        ground_segmenter: GroundSegmenter,
+        ground_segmenter_params: GroundSegmenterParams,
         place_recognition=None,
     ):
         self.submap_params = submap_params
         self.converter = converter
-        self.ground_segmenter = ground_segmenter
+        self.ground_segmenter_params = ground_segmenter_params
         self.place_recognition = place_recognition
 
     # ------------------------------------------------------------------
@@ -65,7 +68,7 @@ class GroundSubmapPrimitiveMapping:
 
     def create_submaps_from_map(
         self,
-        ground_map: Union[ROMANMap, SegmentMap],
+        ground_map: SegmentMap,
     ) -> List[Submap]:
         """Create 3D dense submaps from a ground map by spatial/temporal windowing.
 
@@ -76,7 +79,7 @@ class GroundSubmapPrimitiveMapping:
             ds = DenseSegment(
                 id=seg.id,
                 dense_points=seg.points,
-                ratio_feature=DenseToSparseConverter.get_roman_ratio_feature(seg),
+                ratio_feature=get_roman_ratio_feature(seg),
                 cos_feature=seg.semantic_descriptor,
                 first_seen=seg.first_seen,
                 last_seen=seg.last_seen,
@@ -188,7 +191,7 @@ class GroundSubmapPrimitiveMapping:
             submap = Submap(
                 id=k,
                 time=ground_map.times[idx],
-                segments=SegmentList(submap_segments),
+                segments=PrimitiveList(submap_segments),
                 pose=pose,
                 segment_frame=FrameType.CAMERA,
                 descriptor=submap_descriptor,
@@ -226,8 +229,14 @@ class GroundSubmapPrimitiveMapping:
         )
         submap.segments.transform(submap.pose)
 
-        flattened_submap = self.ground_segmenter.flatten_3d_submap(submap)
-        aerial_segments = self.ground_segmenter.submap_2d_to_aerial(flattened_submap)
+        gs_params = self.ground_segmenter_params
+        flattened_submap = flatten_3d_submap(
+            submap,
+            outlier_removal_std=gs_params.outlier_removal_std,
+            dbscan_epsilon=gs_params.dbscan_epsilon,
+            dbscan_min_points=gs_params.dbscan_min_points,
+        )
+        aerial_segments = submap_2d_to_aerial(flattened_submap)
         aerial_segments = [
             seg
             for seg in aerial_segments
@@ -247,7 +256,7 @@ class GroundSubmapPrimitiveMapping:
 
         # Remove lines that are FOV border artifacts
         params = self.submap_params
-        valid_lines = SegmentList()
+        valid_lines = PrimitiveList()
         for line in sparse_general_segments.get_lines():
             parent_id = line.history[0] if line.history else None
             parent_seg = (

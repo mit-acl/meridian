@@ -9,7 +9,7 @@ from tqdm import tqdm
 
 from meridian.cross_view.place_recognition import CrossViewPlaceRecognition
 from meridian.map3d.submap import Submap
-from meridian.match.segment_matcher import SegmentMatcher
+from meridian.match.primitive_matcher import PrimitiveMatcher
 from meridian.params import CrossViewMatchingParams
 from meridian.params.segment_to_primitive_params import AerialPatchParams
 from meridian.pipeline.result import (
@@ -19,7 +19,7 @@ from meridian.pipeline.result import (
 from meridian.register.registerer import (
     Registerer2D,
 )
-from meridian.segment.segment_types import SegmentList
+from meridian.primitive.primitive_list import PrimitiveList
 
 logger = logging.getLogger(__name__)
 
@@ -41,10 +41,10 @@ def _aerial_key_to_tuple(key: str) -> Tuple[int, ...]:
 @dataclass
 class SingleMatchResult:
     pose_result: PoseEstimationResult
-    aerial_segs_processed: SegmentList = None
-    ground_segs_processed: SegmentList = None
-    matched_ground: SegmentList = None
-    matched_aerial: SegmentList = None
+    aerial_segs_processed: PrimitiveList = None
+    ground_segs_processed: PrimitiveList = None
+    matched_ground: PrimitiveList = None
+    matched_aerial: PrimitiveList = None
 
 
 @dataclass
@@ -65,7 +65,7 @@ class CrossViewMatching:
     pipeline_params: CrossViewMatchingParams
     aerial_patch_params: AerialPatchParams
     pixel_len_m: float
-    matcher: SegmentMatcher
+    matcher: PrimitiveMatcher
     registerer: Registerer2D
     place_recognition: CrossViewPlaceRecognition = None
 
@@ -249,7 +249,7 @@ class CrossViewMatching:
                     for line in segments_2d.get_lines()
                     if line.get_length() >= self.pipeline_params.match_min_len_m
                 ]
-                segments_2d = segments_2d.get_points() + SegmentList(filtered_lines)
+                segments_2d = segments_2d.get_points() + PrimitiveList(filtered_lines)
                 submaps_2d_dict[key] = deepcopy(submap)
                 submaps_2d_dict[key].segments = segments_2d
 
@@ -419,10 +419,10 @@ class CrossViewMatching:
             )
         ):
             t_segl0 = time.time()
-            matched_ground = SegmentList(
+            matched_ground = PrimitiveList(
                 [ground_segs_i.get_segment_from_id(g_id) for _, g_id in matches]
             )
-            matched_aerial = SegmentList(
+            matched_aerial = PrimitiveList(
                 [aerial_segs_j.get_segment_from_id(a_id) for a_id, _ in matches]
             )
             t_segl_total += time.time() - t_segl0

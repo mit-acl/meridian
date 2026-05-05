@@ -11,12 +11,9 @@ from meridian.map2d.map_processing import clean_up_line_map
 from meridian.params.segment_to_primitive_params import (
     SegmentToPrimitiveConversionParams,
 )
-from meridian.segment.aerial_segment import AerialSegment, _grid_downsample_2d
-from meridian.segment.segment_types import (
-    SegmentLine,
-    SegmentList,
-    SegmentPoint,
-)
+from meridian.map2d.segment2d import Segment2D, _grid_downsample_2d
+from meridian.primitive.primitive import LinePrimitive, PointPrimitive
+from meridian.primitive.primitive_list import PrimitiveList
 
 logger = logging.getLogger(__name__)
 
@@ -76,7 +73,7 @@ def _classify_single_segment(
     """Classify a single aerial segment into points and/or lines.
 
     Module-level function for use with ProcessPoolExecutor.
-    Returns a list of SegmentPoint and SegmentLine objects.
+    Returns a list of PointPrimitive and LinePrimitive objects.
     """
     # Compute border bounds
     if crop is not None and pixel_len_m is not None:
@@ -102,7 +99,7 @@ def _classify_single_segment(
         if not pt_within_border(center):
             return []
         return [
-            SegmentPoint(
+            PointPrimitive(
                 j,
                 center,
                 cos_feature=semantic_descriptor,
@@ -141,7 +138,7 @@ def _classify_single_segment(
                 c = np.array([xc, yc])
                 if pt_within_border(c):
                     return [
-                        SegmentPoint(
+                        PointPrimitive(
                             j,
                             c,
                             cos_feature=semantic_descriptor,
@@ -159,7 +156,7 @@ def _classify_single_segment(
         keep = np.linalg.norm(pt1 - pt0) > params.line_min_length_m
         keep &= pt_within_border(pt0) and pt_within_border(pt1)
         if keep:
-            line = SegmentLine.from_endpoints(
+            line = LinePrimitive.from_endpoints(
                 j,
                 pt0,
                 pt1,
@@ -173,19 +170,19 @@ def _classify_single_segment(
 
 
 class SegmentToPrimitiveConverter:
-    """Converts 2D dense segments (AerialSegment) to sparse primitives (points + lines)."""
+    """Converts 2D dense segments (Segment2D) to sparse primitives (points + lines)."""
 
     def __init__(self, params: SegmentToPrimitiveConversionParams):
         self.params = params
 
     def convert(
         self,
-        aerial_segments: List[AerialSegment],
+        aerial_segments: List[Segment2D],
         pixel_len_m: float = None,
         crop: Crop = None,
         border_dist_m: float = 0.5,
         convert_to_infinite: bool = True,
-    ) -> SegmentList:
+    ) -> PrimitiveList:
         """Convert aerial segments to sparse point/line primitives.
 
         Args:
@@ -196,10 +193,10 @@ class SegmentToPrimitiveConverter:
             convert_to_infinite: Whether to convert long lines to infinite.
 
         Returns:
-            SegmentList of sparse SegmentPoint and SegmentLine primitives.
+            PrimitiveList of sparse PointPrimitive and LinePrimitive primitives.
         """
         if not aerial_segments:
-            return SegmentList()
+            return PrimitiveList()
 
         max_workers = self.params.sparse_conversion_max_threads
         all_primitives = []
@@ -237,7 +234,7 @@ class SegmentToPrimitiveConverter:
             for task in tasks:
                 all_primitives.extend(_classify_single_segment(*task))
 
-        result = SegmentList(all_primitives)
+        result = PrimitiveList(all_primitives)
         result.reindex()
 
         # Post-processing: line cleanup and merge (sequential, needs full set)
@@ -253,15 +250,15 @@ class SegmentToPrimitiveConverter:
     @staticmethod
     def _primitive_distance(a, b) -> float:
         """Min distance between two primitives (point or line)."""
-        if isinstance(a, SegmentLine) and isinstance(b, SegmentLine):
+        if isinstance(a, LinePrimitive) and isinstance(b, LinePrimitive):
             return a.min_dist_to(b)
-        if isinstance(a, SegmentLine):
+        if isinstance(a, LinePrimitive):
             return a.min_dist_to_point(b.get_point())
-        if isinstance(b, SegmentLine):
+        if isinstance(b, LinePrimitive):
             return b.min_dist_to_point(a.get_point())
         return float(np.linalg.norm(a.get_point() - b.get_point()))
 
-    def _concat_nearby_descriptors(self, segments: SegmentList) -> SegmentList:
+    def _concat_nearby_descriptors(self, segments: PrimitiveList) -> PrimitiveList:
         """Append the mean cos_feature of all primitives within
         concat_nearby_descriptors_dist_m (including self) to each primitive's
         cos_feature."""
@@ -286,8 +283,8 @@ class SegmentToPrimitiveConverter:
         return segments
 
     def _cleanup_and_merge(
-        self, segments: SegmentList, convert_to_infinite: bool = True
-    ) -> SegmentList:
+        self, segments: PrimitiveList, convert_to_infinite: bool = True
+    ) -> PrimitiveList:
         """Merge nearby lines and optionally convert long lines to infinite."""
         points = segments.get_points()
         lines = segments.get_lines()
@@ -302,7 +299,7 @@ class SegmentToPrimitiveConverter:
                 semantic_sim_thresh=self.params.line_merge_semantic_sim,
             )
         else:
-            merged_lines = SegmentList()
+            merged_lines = PrimitiveList()
 
         result = points + merged_lines
         if convert_to_infinite:
@@ -311,7 +308,7 @@ class SegmentToPrimitiveConverter:
         return result
 
 
-def convert_long_lines_to_infinite(segments: SegmentList, threshold: float):
+def convert_long_lines_to_infinite(segments: PrimitiveList, threshold: float):
     """Convert lines longer than threshold to infinite lines (no endpoints)."""
     if threshold is None:
         return
@@ -324,7 +321,7 @@ def convert_long_lines_to_infinite(segments: SegmentList, threshold: float):
 
 
 def line_is_valid(
-    line: SegmentLine,
+    line: LinePrimitive,
     original_segment,
     line_occlusion_num_samples: int,
     line_pt_dist_check_m: float,

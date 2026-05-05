@@ -187,6 +187,12 @@ class CrossViewLocalization:
             logger.warning("No candidates passed filtering — returning None.")
             return None
 
+        if data.ground_map is None:
+            raise ValueError(
+                "Offline cross_view_localization requires a ground map for trajectory "
+                "and timestamps. Set `ground_map_path` in the "
+                "cross_view_localization_data params."
+            )
         ground_map = data.ground_map
         trajectory = ground_map.trajectory
         times = np.array(ground_map.times)
@@ -609,8 +615,13 @@ class CrossViewLocalization:
         optimized_traj = result.optimized_trajectory
         if result.times is not None:
             traj_times = np.asarray(result.times)
-        else:
+        elif data.ground_map is not None:
             traj_times = np.array(data.ground_map.times)
+        else:
+            raise ValueError(
+                "_visualize_and_report needs either result.times (incremental path) "
+                "or data.ground_map.times (offline path); both are None."
+            )
 
         # Build estimated UTM positions & yaws from optimized trajectory
         est_utm_positions = np.full((len(optimized_traj), 2), np.nan)
@@ -854,20 +865,20 @@ def cross_view_localization(
     ground_submaps = None
     if rpgo_params.rerun_match_with_known_rot:
         from meridian.params import (
-            SegmentMatchParams,
+            PrimitiveMatchParams,
             CrossViewMatchingParams,
             CrossViewPlaceRecognitionParams,
             AerialPatchParams,
             RegisterParams,
         )
         from meridian.cross_view.place_recognition import CrossViewPlaceRecognition
-        from meridian.match.segment_matcher import SegmentMatcher
+        from meridian.match.primitive_matcher import PrimitiveMatcher
         from meridian.register.registerer import Registerer2D
 
         pipeline_params = CrossViewMatchingParams.load(params)
         aerial_patch_params = AerialPatchParams.load(params)
-        segment_match_params = SegmentMatchParams.load(params)
-        segment_match_params.dim = 2
+        primitive_match_params = PrimitiveMatchParams.load(params)
+        primitive_match_params.dim = 2
 
         try:
             pr_params = CrossViewPlaceRecognitionParams.load(params)
@@ -881,7 +892,7 @@ def cross_view_localization(
             pipeline_params=pipeline_params,
             aerial_patch_params=aerial_patch_params,
             pixel_len_m=data.aerial_img_scale,
-            matcher=SegmentMatcher(segment_match_params),
+            matcher=PrimitiveMatcher(primitive_match_params),
             registerer=Registerer2D(RegisterParams.load(params)),
             place_recognition=place_recognition,
         )
@@ -991,20 +1002,20 @@ if __name__ == "__main__":
     ground_submaps = None
     if rpgo_params.rerun_match_with_known_rot:
         from meridian.params import (
-            SegmentMatchParams,
+            PrimitiveMatchParams,
             CrossViewMatchingParams,
             CrossViewPlaceRecognitionParams,
             AerialPatchParams,
             RegisterParams,
         )
         from meridian.cross_view.place_recognition import CrossViewPlaceRecognition
-        from meridian.match.segment_matcher import SegmentMatcher
+        from meridian.match.primitive_matcher import PrimitiveMatcher
         from meridian.register.registerer import Registerer2D
 
         pipeline_params = CrossViewMatchingParams.load(args.params)
         aerial_patch_params = AerialPatchParams.load(args.params)
-        segment_match_params = SegmentMatchParams.load(args.params)
-        segment_match_params.dim = 2
+        primitive_match_params = PrimitiveMatchParams.load(args.params)
+        primitive_match_params.dim = 2
 
         try:
             pr_params = CrossViewPlaceRecognitionParams.load(args.params)
@@ -1018,7 +1029,7 @@ if __name__ == "__main__":
             pipeline_params=pipeline_params,
             aerial_patch_params=aerial_patch_params,
             pixel_len_m=data.aerial_img_scale,
-            matcher=SegmentMatcher(segment_match_params),
+            matcher=PrimitiveMatcher(primitive_match_params),
             registerer=Registerer2D(RegisterParams.load(args.params)),
             place_recognition=place_recognition,
         )

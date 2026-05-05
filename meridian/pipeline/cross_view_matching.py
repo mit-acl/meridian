@@ -12,7 +12,7 @@ import matplotlib.pyplot as plt
 import pickle
 
 from meridian.params import (
-    SegmentMatchParams,
+    PrimitiveMatchParams,
     CrossViewMatchingParams,
     CrossViewVisualizationParams,
     CrossViewLocalizationDataParams,
@@ -33,12 +33,11 @@ from meridian.map2d.aerial_patch_primitive_mapping import (
     AerialPatchPrimitiveMapping,
     AerialSegmentationResult,
 )
-from meridian.segmenter.ground_segmenter import GroundSegmenter
 from meridian.map2d.ground_submap_primitive_mapping import (
     GroundSubmapPrimitiveMapping,
     GroundSegmentationResult,
 )
-from meridian.match.segment_matcher import SegmentMatcher
+from meridian.match.primitive_matcher import PrimitiveMatcher
 from meridian.register.registerer import Registerer2D
 from meridian.map3d.submap import Submap
 from meridian.viz.cross_view_viz import (
@@ -823,8 +822,8 @@ def cross_view_matching(
 ):
     pipeline_params = CrossViewMatchingParams.load(params)
     pipeline_params.output_directory = output_dir
-    segment_match_params = SegmentMatchParams.load(params)
-    segment_match_params.dim = 2
+    primitive_match_params = PrimitiveMatchParams.load(params)
+    primitive_match_params.dim = 2
 
     conversion_params = SegmentToPrimitiveConversionParams.load(params)
     aerial_patch_params = AerialPatchParams.load(params)
@@ -840,7 +839,7 @@ def cross_view_matching(
 
     aerial_segmenter = AerialSegmenter(AerialSegmenterParams.load(params))
     converter = SegmentToPrimitiveConverter(conversion_params)
-    ground_segmenter = GroundSegmenter(GroundSegmenterParams.load(params))
+    ground_segmenter_params = GroundSegmenterParams.load(params)
 
     aerial_mapping = AerialPatchPrimitiveMapping(
         patch_params=aerial_patch_params,
@@ -851,7 +850,7 @@ def cross_view_matching(
     ground_mapping = GroundSubmapPrimitiveMapping(
         submap_params=ground_submap_params,
         converter=converter,
-        ground_segmenter=ground_segmenter,
+        ground_segmenter_params=ground_segmenter_params,
         place_recognition=place_recognition,
     )
 
@@ -859,7 +858,7 @@ def cross_view_matching(
         pipeline_params=pipeline_params,
         aerial_patch_params=aerial_patch_params,
         pixel_len_m=aerial_segmenter.params.pixel_len_m,
-        matcher=SegmentMatcher(segment_match_params),
+        matcher=PrimitiveMatcher(primitive_match_params),
         registerer=Registerer2D(RegisterParams.load(params)),
         place_recognition=place_recognition,
     )
@@ -912,7 +911,7 @@ def cross_view_matching(
         conversion_params,
         aerial_patch_params,
         ground_submap_params,
-        segment_match_params,
+        primitive_match_params,
         algorithm.registerer.params,
         aerial_segmenter.params,
     ]
@@ -927,6 +926,12 @@ def cross_view_matching(
 
     # Extract ground segments
     if not skip_ground:
+        if data.ground_map is None:
+            raise ValueError(
+                "Ground segmentation is enabled but no ground map is loaded. "
+                "Set `ground_map_path` in the cross_view_localization_data params, "
+                "or pass --ground <existing_ground_dir> to skip ground segmentation."
+            )
         ground_map = data.ground_map
         ground_submaps = ground_mapping.create_submaps_from_map(ground_map)
         initial_ground_submaps = pipeline.run_ground(ground_submaps, ground_output_dir)

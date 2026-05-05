@@ -1,7 +1,7 @@
 """
 Tests for translation-only point matching in 2D and 3D.
 
-Verifies that SegmentMatcher with constrained invariants
+Verifies that PrimitiveMatcher with constrained invariants
 (xy_dir_constrained_2d for 2D, xyz_dir_constrained for 3D) produces
 matches whose per-axis within-map differences are consistent — the
 geometric property guaranteed by a pure-translation transformation.
@@ -16,9 +16,10 @@ clipper/src/invariants/general_segment_distance.cpp:
 import pytest
 import numpy as np
 
-from meridian.segment.segment_types import SegmentPoint, SegmentList
-from meridian.match.segment_matcher import SegmentMatcher
-from meridian.params.segment_match_params import SegmentMatchParams
+from meridian.primitive.primitive import PointPrimitive
+from meridian.primitive.primitive_list import PrimitiveList
+from meridian.match.primitive_matcher import PrimitiveMatcher
+from meridian.params.primitive_match_params import PrimitiveMatchParams
 
 SQRT_ONE_HALF = 0.70710678118
 SQRT_ONE_THIRD = 0.57735026919
@@ -30,10 +31,10 @@ SQRT_ONE_THIRD = 0.57735026919
 
 
 def make_point_list(positions, start_id=0):
-    """Create a SegmentList of SegmentPoints from a (N, dim) positions array."""
-    return SegmentList(
+    """Create a PrimitiveList of SegmentPoints from a (N, dim) positions array."""
+    return PrimitiveList(
         [
-            SegmentPoint(id=start_id + i, point=np.array(pos, dtype=float))
+            PointPrimitive(id=start_id + i, point=np.array(pos, dtype=float))
             for i, pos in enumerate(positions)
         ]
     )
@@ -51,8 +52,8 @@ def check_pairwise_consistency(map1, map2, matches, epsilon_dist, dim):
     scale = SQRT_ONE_HALF if dim == 2 else SQRT_ONE_THIRD
     threshold = scale * epsilon_dist
 
-    map1_sl = map1 if isinstance(map1, SegmentList) else SegmentList(map1)
-    map2_sl = map2 if isinstance(map2, SegmentList) else SegmentList(map2)
+    map1_sl = map1 if isinstance(map1, PrimitiveList) else PrimitiveList(map1)
+    map2_sl = map2 if isinstance(map2, PrimitiveList) else PrimitiveList(map2)
 
     for i in range(len(matches)):
         for j in range(i + 1, len(matches)):
@@ -90,7 +91,7 @@ def rotz(theta):
 class TestTranslationOnly2D:
     @pytest.fixture
     def params(self):
-        return SegmentMatchParams(
+        return PrimitiveMatchParams(
             dim=2,
             xy_dir_constrained_2d=True,
             sigma_dist=1.0,
@@ -122,7 +123,7 @@ class TestTranslationOnly2D:
         map2 = make_point_list([np.array(p) + t for p in positions])
 
         matches = (
-            SegmentMatcher(params).match(map1, map2, **axis_dirs).association_array
+            PrimitiveMatcher(params).match(map1, map2, **axis_dirs).association_array
         )
 
         assert len(matches) == 5
@@ -139,7 +140,7 @@ class TestTranslationOnly2D:
         map2 = make_point_list([R @ np.array(p) + t for p in positions])
 
         matches = (
-            SegmentMatcher(params)
+            PrimitiveMatcher(params)
             .match(
                 map1,
                 map2,
@@ -167,7 +168,7 @@ class TestTranslationOnly2D:
         map2 = make_point_list(rng.uniform(-20, 20, (15, 2)))
 
         matches = (
-            SegmentMatcher(params).match(map1, map2, **axis_dirs).association_array
+            PrimitiveMatcher(params).match(map1, map2, **axis_dirs).association_array
         )
 
         check_pairwise_consistency(map1, map2, matches, params.epsilon_dist, dim=2)
@@ -187,7 +188,7 @@ class TestTranslationOnly2D:
         map2 = make_point_list(map2_pos)
 
         matches = (
-            SegmentMatcher(params)
+            PrimitiveMatcher(params)
             .match(
                 map1,
                 map2,
@@ -222,7 +223,7 @@ class TestTranslationOnly2D:
         map2 = make_point_list([[0.0, 0.0], [20.0, 0.0]])
 
         matches = (
-            SegmentMatcher(params).match(map1, map2, **axis_dirs).association_array
+            PrimitiveMatcher(params).match(map1, map2, **axis_dirs).association_array
         )
 
         # At most 1 match; if 2 are returned the invariant check will fail.
@@ -244,7 +245,7 @@ class TestTranslationOnly2D:
 class TestTranslationOnly3D:
     @pytest.fixture
     def params(self):
-        return SegmentMatchParams(
+        return PrimitiveMatchParams(
             dim=3,
             xyz_dir_constrained=True,
             sigma_dist=1.0,
@@ -278,7 +279,7 @@ class TestTranslationOnly3D:
         map2 = make_point_list([np.array(p) + t for p in positions])
 
         matches = (
-            SegmentMatcher(params).match(map1, map2, **axis_dirs).association_array
+            PrimitiveMatcher(params).match(map1, map2, **axis_dirs).association_array
         )
 
         assert len(matches) == 5
@@ -295,7 +296,7 @@ class TestTranslationOnly3D:
         map2 = make_point_list([R @ np.array(p) + t for p in positions])
 
         matches = (
-            SegmentMatcher(params)
+            PrimitiveMatcher(params)
             .match(
                 map1,
                 map2,
@@ -325,7 +326,7 @@ class TestTranslationOnly3D:
         map2 = make_point_list(rng.uniform(-20, 20, (15, 3)))
 
         matches = (
-            SegmentMatcher(params).match(map1, map2, **axis_dirs).association_array
+            PrimitiveMatcher(params).match(map1, map2, **axis_dirs).association_array
         )
 
         check_pairwise_consistency(map1, map2, matches, params.epsilon_dist, dim=3)
@@ -345,7 +346,7 @@ class TestTranslationOnly3D:
         map2 = make_point_list(map2_pos)
 
         matches = (
-            SegmentMatcher(params)
+            PrimitiveMatcher(params)
             .match(
                 map1,
                 map2,
@@ -381,7 +382,7 @@ class TestTranslationOnly3D:
         map2 = make_point_list([[0, 0, 0], [20, 0, 0]])
 
         matches = (
-            SegmentMatcher(params).match(map1, map2, **axis_dirs).association_array
+            PrimitiveMatcher(params).match(map1, map2, **axis_dirs).association_array
         )
 
         if len(matches) >= 2:

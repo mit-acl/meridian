@@ -18,7 +18,7 @@ from functools import cached_property
 from robotdatapy.data.img_data import CameraParams
 
 from meridian.map3d.similarity_metrics import ChamferDistance
-from meridian.segment.map_segment import MapSegment
+from meridian.map3d.map_segment import MapSegment
 from meridian.map3d.observation import Observation
 from meridian.map3d.global_nearest_neighbor import global_nearest_neighbor
 from meridian.params.segment_mapping_params import SegmentMappingParams
@@ -445,9 +445,12 @@ class SegmentMapper:
         if self._ground_submap_mapping is None:
             return
 
-        from meridian.map3d.dense_to_sparse_converter import DenseToSparseConverter
         from meridian.map3d.submap import FrameType, Submap
-        from meridian.segment.segment_types import DenseSegment, SegmentList
+        from meridian.primitive.primitive_list import PrimitiveList
+        from meridian.primitive.dense_segment import (
+            DenseSegment,
+            get_roman_ratio_feature,
+        )
 
         all_segs = self.segments + self.inactive_segments + self.segment_graveyard
         current_ids = {seg.id for seg in all_segs}
@@ -591,7 +594,7 @@ class SegmentMapper:
             ds = DenseSegment(
                 id=seg.id,
                 dense_points=pts,
-                ratio_feature=DenseToSparseConverter.get_roman_ratio_feature(seg),
+                ratio_feature=get_roman_ratio_feature(seg),
                 cos_feature=seg.semantic_descriptor,
                 first_seen=seg.first_seen,
                 last_seen=seg.last_seen,
@@ -620,7 +623,7 @@ class SegmentMapper:
         submap_3d = Submap(
             id=self._submap_counter,
             time=submap_time,
-            segments=SegmentList(dense_segments),
+            segments=PrimitiveList(dense_segments),
             pose=submap_pose,
             segment_frame=FrameType.CAMERA,
             descriptor=submap_descriptor,

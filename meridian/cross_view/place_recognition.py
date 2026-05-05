@@ -86,7 +86,7 @@ class CrossViewPlaceRecognition:
             ground_submap: Submap, or None if submap_segments is provided
             submap_segments: segment list for this submap. For "semantic-gem",
                 a list of DenseSegment (time range extraction). For
-                "semantic-point-line", a SegmentList of SegmentPoint/SegmentLine.
+                "semantic-point-line", a PrimitiveList of PointPrimitive/LinePrimitive.
             center: optional 3D submap center (in odom frame). When provided
                 with ``max_dist_m``, frame descriptors captured from camera
                 positions farther than ``max_dist_m`` from ``center`` are
@@ -185,7 +185,7 @@ class CrossViewPlaceRecognition:
         """Compute mean-point + mean-line cosine feature descriptor.
 
         Args:
-            segments: SegmentList
+            segments: PrimitiveList
 
         Returns:
             np.ndarray of shape (2*cos_feature_dim,) or None

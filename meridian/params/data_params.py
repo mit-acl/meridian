@@ -7,56 +7,6 @@ from meridian.utils import expandvars_recursive
 
 
 @dataclass
-class RGBDPoseEstimationDataParams(ParamsBase):
-    # class attribute
-    params_key: ClassVar[str] = "rgbd_pose_estimation_data"
-
-    ##################
-
-    img_data: dict = None
-    depth_data: dict = None
-    camera_est_pose_data: dict = None
-    camera_gt_pose_data: dict = None
-    gravity_direction: np.ndarray = (0.0, 0.0, -1.0)
-    depth_scale: float = 1e-3  # Multiplier to convert depth image values to meters
-
-    def __post_init__(self):
-        if self.img_data is None:
-            self.img_data = {}
-        else:
-            self.img_data = expandvars_recursive(self.img_data)
-
-        if self.depth_data is None:
-            self.depth_data = {}
-        else:
-            self.depth_data = expandvars_recursive(self.depth_data)
-
-        if self.camera_est_pose_data is None:
-            self.camera_est_pose_data = {}
-        else:
-            self.camera_est_pose_data = expandvars_recursive(self.camera_est_pose_data)
-
-        if self.camera_gt_pose_data is None:
-            self.camera_gt_pose_data = {}
-        else:
-            self.camera_gt_pose_data = expandvars_recursive(self.camera_gt_pose_data)
-
-        for pose_data in [self.camera_est_pose_data, self.camera_gt_pose_data]:
-            if "T_premultiply" in pose_data:
-                pose_data["T_premultiply"] = np.array(
-                    pose_data["T_premultiply"]
-                ).reshape((4, 4))
-
-            if "T_postmultiply" in pose_data:
-                pose_data["T_postmultiply"] = np.array(
-                    pose_data["T_postmultiply"]
-                ).reshape((4, 4))
-
-        if self.gravity_direction is not None:
-            self.gravity_direction = np.array(self.gravity_direction).reshape((3, 1))
-
-
-@dataclass
 class CrossViewLocalizationDataParams(ParamsBase):
     # class attribute
     params_key: ClassVar[str] = "cross_view_localization_data"
@@ -64,7 +14,10 @@ class CrossViewLocalizationDataParams(ParamsBase):
     ##################
 
     aerial_img_path: str
-    ground_map_path: str
+    # Required only for pipelines that consume the ground map (offline
+    # cross_view_matching ground segmentation, offline cross_view_localization).
+    # aerial_patch_mapping and cross_view_incremental run without it.
+    ground_map_path: str = None
     gt_pose_data: dict = None
 
     aerial_img_scale: float = None  # None = auto-detect from GeoTIFF
@@ -75,49 +28,12 @@ class CrossViewLocalizationDataParams(ParamsBase):
 
     def __post_init__(self):
         self.aerial_img_path = expandvars_recursive(self.aerial_img_path)
-        self.ground_map_path = expandvars_recursive(self.ground_map_path)
+        if self.ground_map_path is not None:
+            self.ground_map_path = expandvars_recursive(self.ground_map_path)
         if self.T_camera_flu is not None:
             self.T_camera_flu = np.array(self.T_camera_flu).reshape((4, 4))
         if self.gt_pose_data is not None:
             self.gt_pose_data = expandvars_recursive(self.gt_pose_data)
-
-
-@dataclass
-class GroundToBEVDataParams(ParamsBase):
-    # class attribute
-    params_key: ClassVar[str] = "ground_to_bev_data"
-
-    ##################
-
-    img_data: dict = None
-    depth_data: dict = None
-    camera_pose_data: dict = None
-
-    def __post_init__(self):
-        if self.img_data is None:
-            self.img_data = {}
-        else:
-            self.img_data = expandvars_recursive(self.img_data)
-
-        if self.depth_data is None:
-            self.depth_data = {}
-        else:
-            self.depth_data = expandvars_recursive(self.depth_data)
-
-        if self.camera_pose_data is None:
-            self.camera_pose_data = {}
-        else:
-            self.camera_pose_data = expandvars_recursive(self.camera_pose_data)
-
-        if "T_premultiply" in self.camera_pose_data:
-            self.camera_pose_data["T_premultiply"] = np.array(
-                self.camera_pose_data["T_premultiply"]
-            ).reshape((4, 4))
-
-        if "T_postmultiply" in self.camera_pose_data:
-            self.camera_pose_data["T_postmultiply"] = np.array(
-                self.camera_pose_data["T_postmultiply"]
-            ).reshape((4, 4))
 
 
 @dataclass

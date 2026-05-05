@@ -8,14 +8,9 @@ import robotdatapy as rdp
 import cv2 as cv
 
 from meridian.map3d.observation import Observation
-from meridian.segment.segment_types import (
-    SegmentList,
-    SegmentPoint,
-    SegmentLine,
-    SegmentPlane,
-    GeneralSegment,
-)
-from meridian.segment.map_segment import MapSegment
+from meridian.primitive.primitive import PointPrimitive, LinePrimitive, Primitive
+from meridian.primitive.primitive_list import PrimitiveList
+from meridian.map3d.map_segment import MapSegment
 from meridian.viz.utils import color_from_seed
 
 
@@ -29,7 +24,7 @@ def _make_material(shader="defaultUnlit", point_size=None):
 
 
 def viz_segments(
-    segments: Union[SegmentList | List[Observation]],
+    segments: Union[PrimitiveList | List[Observation]],
     id_range=None,
     time_range=None,
     time_range_relative=True,
@@ -41,8 +36,6 @@ def viz_segments(
     line_radius: float = 0.05,
     point_radius: float = 0.05,
     inf_line_len: float = 10.0,
-    plane_size: float = 4.0,
-    plane_opacity: float = 0.8,
     dense_opacity: float = 0.8,
     dense_point_size: float = 3.0,
 ):
@@ -69,7 +62,7 @@ def viz_segments(
             color = seg.color_from_id(num_type=float)
 
         # ---- dense points ----
-        if isinstance(seg, GeneralSegment):
+        if isinstance(seg, Primitive):
             points = seg.dense_points
         elif isinstance(seg, Observation):
             points = seg.point_cloud
@@ -90,7 +83,7 @@ def viz_segments(
 
         # ---- sparse geometry ----
         if show_sparse:
-            if type(seg) is SegmentLine:
+            if type(seg) is LinePrimitive:
                 # Determine the two visualized endpoints
                 if seg.num_endpoints == 2:
                     pt1, pt2 = seg.endpoints[0], seg.endpoints[1]
@@ -124,46 +117,12 @@ def viz_segments(
                 cyl.paint_uniform_color(color)
                 geometry_list.append((cyl, _make_material()))
 
-            elif type(seg) is SegmentPoint:
+            elif type(seg) is PointPrimitive:
                 sphere = o3d.geometry.TriangleMesh.create_sphere(radius=point_radius)
                 sphere.compute_vertex_normals()
                 sphere.translate(seg.get_point())
                 sphere.paint_uniform_color(color)
                 geometry_list.append((sphere, _make_material()))
-
-            elif type(seg) is SegmentPlane:
-                # Build a square patch centred on plane.point, perpendicular to normal
-                normal = seg.get_normal()
-                ref = (
-                    np.array([0.0, 0.0, 1.0])
-                    if abs(normal[2]) < 0.9
-                    else np.array([1.0, 0.0, 0.0])
-                )
-                v1 = np.cross(normal, ref)
-                v1 /= np.linalg.norm(v1)
-                v2 = np.cross(normal, v1)
-                v2 /= np.linalg.norm(v2)
-
-                h = plane_size / 2.0
-                corners = np.array(
-                    [
-                        seg.get_point() - h * v1 - h * v2,
-                        seg.get_point() + h * v1 - h * v2,
-                        seg.get_point() + h * v1 + h * v2,
-                        seg.get_point() - h * v1 + h * v2,
-                    ]
-                )
-
-                mesh = o3d.geometry.TriangleMesh()
-                mesh.vertices = o3d.utility.Vector3dVector(corners)
-                mesh.triangles = o3d.utility.Vector3iVector(
-                    np.array([[0, 1, 2], [0, 2, 3]])
-                )
-                mesh.compute_vertex_normals()
-                mesh.paint_uniform_color(color)
-                mat = _make_material(shader="defaultLitTransparency")
-                mat.base_color = [color[0], color[1], color[2], plane_opacity]
-                geometry_list.append((mesh, mat))
 
         # ---- labels ----
         if show_labels:

@@ -22,7 +22,7 @@ def _grid_downsample_2d(points: np.ndarray, voxel_size: float) -> np.ndarray:
 
 
 @dataclass
-class AerialSegment:
+class Segment2D:
     id: int
     center: np.ndarray
     area: float

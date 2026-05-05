@@ -29,9 +29,9 @@ class LangevinMatcherParams(ParamsBase):
 
 
 @dataclass
-class SegmentMatchParams(ParamsBase):
+class PrimitiveMatchParams(ParamsBase):
     """
-    SegmentMatchParams: dataclass for segment matching parameters.
+    PrimitiveMatchParams: dataclass for segment matching parameters.
 
     Args:
         dim (int = 3): dimension of points (2 or 3).

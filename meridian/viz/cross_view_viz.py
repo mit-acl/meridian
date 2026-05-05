@@ -4,7 +4,8 @@ import cv2 as cv
 import matplotlib.pyplot as plt
 import numpy as np
 
-from meridian.segment.segment_types import SegmentLine, SegmentPoint, SegmentList
+from meridian.primitive.primitive import LinePrimitive, PointPrimitive
+from meridian.primitive.primitive_list import PrimitiveList
 from meridian.viz.utils import color_from_seed
 
 color_list = [
@@ -27,7 +28,7 @@ def plot_seg(seg, ax, custom_color=None):
         if custom_color is None
         else custom_color
     )
-    if isinstance(seg, SegmentLine):
+    if isinstance(seg, LinePrimitive):
         if seg.num_endpoints == 2:
             ax.plot(
                 [seg.endpoints[0][0], seg.endpoints[1][0]],
@@ -44,7 +45,7 @@ def plot_seg(seg, ax, custom_color=None):
                 color=color,
                 linewidth=4,
             )
-    elif isinstance(seg, SegmentPoint):
+    elif isinstance(seg, PointPrimitive):
         ax.plot(
             seg.get_point()[0],
             seg.get_point()[1],
@@ -56,8 +57,8 @@ def plot_seg(seg, ax, custom_color=None):
 
 
 def viz_registration_alignment(
-    aerial_segments: SegmentList,
-    ground_segments: SegmentList,
+    aerial_segments: PrimitiveList,
+    ground_segments: PrimitiveList,
     matches: np.ndarray,
     T_align: np.ndarray,
 ):
@@ -72,14 +73,14 @@ def viz_registration_alignment(
     aerial_ids = [int(m[0]) for m in matches]
     ground_ids = [int(m[1]) for m in matches]
 
-    inlier_aerial = SegmentList(
+    inlier_aerial = PrimitiveList(
         [aerial_segments.get_segment_from_id(aid) for aid in aerial_ids]
     )
-    inlier_ground = SegmentList(
+    inlier_ground = PrimitiveList(
         [ground_segments.get_segment_from_id(gid) for gid in ground_ids]
     )
-    inlier_aerial = SegmentList([s for s in inlier_aerial if s is not None])
-    inlier_ground = SegmentList([s for s in inlier_ground if s is not None])
+    inlier_aerial = PrimitiveList([s for s in inlier_aerial if s is not None])
+    inlier_ground = PrimitiveList([s for s in inlier_ground if s is not None])
 
     inlier_ground = inlier_ground.copy()
     inlier_ground.transform(T_align)
@@ -100,11 +101,11 @@ def viz_registration_alignment(
 
 
 def viz_cross_view_matches(
-    aerial_segments: SegmentList,
-    ground_segments: SegmentList,
+    aerial_segments: PrimitiveList,
+    ground_segments: PrimitiveList,
     matches: np.ndarray,
     aerial_crop: np.ndarray = None,
-    ground_segments_all: SegmentList = None,
+    ground_segments_all: PrimitiveList = None,
     dense_points_by_id: dict = None,
     px_per_m: float = None,
     aerial_origin_m: tuple = None,
@@ -163,7 +164,7 @@ def viz_cross_view_matches(
             for i, match in enumerate(matches):
                 seg = aerial_segments.get_segment_from_id(match[0])
                 match_color = color_from_seed(i, order="rgb", num_type="float")
-                if isinstance(seg, SegmentLine) and seg.num_endpoints == 2:
+                if isinstance(seg, LinePrimitive) and seg.num_endpoints == 2:
                     pts_px = [
                         (
                             (ep[0] - aerial_origin_m[0]) * px_per_m,
@@ -177,7 +178,7 @@ def viz_cross_view_matches(
                         color=match_color,
                         linewidth=2,
                     )
-                elif isinstance(seg, SegmentLine):
+                elif isinstance(seg, LinePrimitive):
                     pt = seg.get_point().flatten()
                     d = seg.get_direction().flatten()
                     pt_px = (
@@ -191,7 +192,7 @@ def viz_cross_view_matches(
                         color=match_color,
                         linewidth=2,
                     )
-                elif isinstance(seg, SegmentPoint):
+                elif isinstance(seg, PointPrimitive):
                     pt = seg.get_point()
                     x_px = (pt[0] - aerial_origin_m[0]) * px_per_m
                     y_px = (pt[1] - aerial_origin_m[1]) * px_per_m
@@ -282,7 +283,7 @@ def viz_aerial_segments(
 
 def viz_general_segments_img(
     img: np.ndarray,
-    segments: SegmentList,
+    segments: PrimitiveList,
     crop,
     px_per_m: float,
     downsample_factor: int = 5,
@@ -336,8 +337,8 @@ def viz_general_segments_img(
 def viz_ground_segments(
     flattened_submap,
     aerial_segments,
-    general_segments: SegmentList,
-    sparse_general_segments: SegmentList,
+    general_segments: PrimitiveList,
+    sparse_general_segments: PrimitiveList,
     alpha_shape_alpha: float,
     alpha_shape_grid_downsample: float,
     alpha_shape_max_n_pts: int = None,
@@ -472,7 +473,7 @@ def viz_ground_segments(
     return fig, ax
 
 
-def viz_general_segments_plt(ax: plt.Axes, general_segments: SegmentList) -> plt.Axes:
+def viz_general_segments_plt(ax: plt.Axes, general_segments: PrimitiveList) -> plt.Axes:
     for seg in general_segments.get_points():
         p = seg.get_point()
         ax.plot(

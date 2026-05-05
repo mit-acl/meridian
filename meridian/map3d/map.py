@@ -5,7 +5,7 @@ from copy import deepcopy
 from dataclasses import dataclass, field
 from typing import List
 
-from meridian.segment.map_segment import MapSegment
+from meridian.map3d.map_segment import MapSegment
 
 
 @dataclass(frozen=True)

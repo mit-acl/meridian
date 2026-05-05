@@ -21,7 +21,8 @@ import cv2
 import pathlib
 
 from scipy.spatial.transform import Rotation as Rot
-from meridian.segment.segment_types import SegmentList, SegmentPoint, SegmentLine
+from meridian.primitive.primitive import PointPrimitive, LinePrimitive
+from meridian.primitive.primitive_list import PrimitiveList
 from meridian.params import AerialPatchParams
 from meridian.params.data_params import CrossViewLocalizationDataParams
 from meridian.pipeline.data import CrossViewLocalizationData
@@ -54,7 +55,7 @@ def plot_segments_px(
     for seg in segments:
         pt_px = m_to_px(seg.point[:2], px_per_m, crop_origin_px)
         kw = dict(label=label) if not labeled and label else {}
-        if isinstance(seg, SegmentLine):
+        if isinstance(seg, LinePrimitive):
             ep0, ep1 = seg.endpoints
             if ep0 is not None and ep1 is not None:
                 p0_px = m_to_px(ep0[:2], px_per_m, crop_origin_px)
@@ -70,26 +71,26 @@ def plot_segments_px(
                 )
                 labeled = True
             ax.plot(pt_px[0], pt_px[1], "o", color=color, ms=ms - 1, alpha=alpha)
-        elif isinstance(seg, SegmentPoint):
+        elif isinstance(seg, PointPrimitive):
             ax.plot(pt_px[0], pt_px[1], "o", color=color, ms=ms, alpha=alpha, **kw)
             labeled = True
 
 
 def transform_segments_2d(segments, T):
-    """Apply a 4x4 transform to 2D segments, returning new SegmentList."""
+    """Apply a 4x4 transform to 2D segments, returning new PrimitiveList."""
     R = T[:2, :2]
     t = T[:2, 3]
     out = []
     for seg in segments:
         pt_new = R @ seg.point[:2] + t
-        if isinstance(seg, SegmentLine):
+        if isinstance(seg, LinePrimitive):
             dir_new = R @ seg.direction[:2]
             dir_new = dir_new / (np.linalg.norm(dir_new) + 1e-12)
             ep0, ep1 = seg.endpoints
             ep0_new = R @ ep0[:2] + t if ep0 is not None else None
             ep1_new = R @ ep1[:2] + t if ep1 is not None else None
             out.append(
-                SegmentLine(
+                LinePrimitive(
                     id=seg.id,
                     point=pt_new,
                     direction=dir_new,
@@ -98,16 +99,16 @@ def transform_segments_2d(segments, T):
                     cos_feature=seg.cos_feature,
                 )
             )
-        elif isinstance(seg, SegmentPoint):
+        elif isinstance(seg, PointPrimitive):
             out.append(
-                SegmentPoint(
+                PointPrimitive(
                     id=seg.id,
                     point=pt_new,
                     ratio_feature=seg.ratio_feature,
                     cos_feature=seg.cos_feature,
                 )
             )
-    return SegmentList(out)
+    return PrimitiveList(out)
 
 
 def draw_associations_px(
