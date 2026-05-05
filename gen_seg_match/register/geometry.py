@@ -36,14 +36,24 @@ def cross_covariance_2x2(p, q, s_norm, t_norm, W_P, W_D):
     n_l = s_norm.shape[0]
 
     if n_p > 0:
-        pmx = 0.0; pmy = 0.0; qmx = 0.0; qmy = 0.0
+        pmx = 0.0
+        pmy = 0.0
+        qmx = 0.0
+        qmy = 0.0
         for j in range(n_p):
-            pmx += p[j, 0]; pmy += p[j, 1]
-            qmx += q[j, 0]; qmy += q[j, 1]
-        pmx /= n_p; pmy /= n_p; qmx /= n_p; qmy /= n_p
+            pmx += p[j, 0]
+            pmy += p[j, 1]
+            qmx += q[j, 0]
+            qmy += q[j, 1]
+        pmx /= n_p
+        pmy /= n_p
+        qmx /= n_p
+        qmy /= n_p
         for j in range(n_p):
-            pcx = p[j, 0] - pmx; pcy = p[j, 1] - pmy
-            qcx = q[j, 0] - qmx; qcy = q[j, 1] - qmy
+            pcx = p[j, 0] - pmx
+            pcy = p[j, 1] - pmy
+            qcx = q[j, 0] - qmx
+            qcy = q[j, 1] - qmy
             H[0, 0] += W_P * pcx * qcx
             H[0, 1] += W_P * pcx * qcy
             H[1, 0] += W_P * pcy * qcx
@@ -64,8 +74,8 @@ def svd_rotation_2x2(H):
     U, S, Vt = np.linalg.svd(H)
     R = Vt.T @ U.T
     # if R[0, 0] * R[1, 1] - R[0, 1] * R[1, 0] < 0:
-        # Vt[1, 0] *= -1; Vt[1, 1] *= -1
-        # R = Vt.T @ U.T
+    # Vt[1, 0] *= -1; Vt[1, 1] *= -1
+    # R = Vt.T @ U.T
     return R, S[0]
 
 
@@ -78,9 +88,12 @@ def solve_translation_2x2(R, p, q, s_norm, s_off, t_off, W_P, W_L_M):
     for j in range(p.shape[0]):
         rx = R[0, 0] * p[j, 0] + R[0, 1] * p[j, 1]
         ry = R[1, 0] * p[j, 0] + R[1, 1] * p[j, 1]
-        bx = q[j, 0] - rx; by = q[j, 1] - ry
-        ATA[0, 0] += W_P; ATA[1, 1] += W_P
-        ATb[0] += W_P * bx; ATb[1] += W_P * by
+        bx = q[j, 0] - rx
+        by = q[j, 1] - ry
+        ATA[0, 0] += W_P
+        ATA[1, 1] += W_P
+        ATb[0] += W_P * bx
+        ATb[1] += W_P * by
 
     for j in range(s_norm.shape[0]):
         nx = R[0, 0] * s_norm[j, 0] + R[0, 1] * s_norm[j, 1]
@@ -106,20 +119,23 @@ def sign_align_normals(R, s_norm, t_norm, t_off):
         rn0 = R[0, 0] * s_norm[j, 0] + R[0, 1] * s_norm[j, 1]
         rn1 = R[1, 0] * s_norm[j, 0] + R[1, 1] * s_norm[j, 1]
         if rn0 * t_norm[j, 0] + rn1 * t_norm[j, 1] < 0:
-            t_norm_a[j, 0] *= -1; t_norm_a[j, 1] *= -1
+            t_norm_a[j, 0] *= -1
+            t_norm_a[j, 1] *= -1
             t_off_a[j] *= -1
     return t_norm_a, t_off_a
 
 
 @numba.njit(cache=True)
-def point_line_loss_2d(R, t, s_p, t_p, s_norm, t_norm, s_off, t_off,
-                       W_P, W_D, W_L_M, bidirectional):
+def point_line_loss_2d(
+    R, t, s_p, t_p, s_norm, t_norm, s_off, t_off, W_P, W_D, W_L_M, bidirectional
+):
     """Combined 2D point + line registration loss."""
     loss = 0.0
     for j in range(s_p.shape[0]):
         sx = R[0, 0] * s_p[j, 0] + R[0, 1] * s_p[j, 1] + t[0]
         sy = R[1, 0] * s_p[j, 0] + R[1, 1] * s_p[j, 1] + t[1]
-        dx = sx - t_p[j, 0]; dy = sy - t_p[j, 1]
+        dx = sx - t_p[j, 0]
+        dy = sy - t_p[j, 1]
         loss += 0.5 * W_P * (dx * dx + dy * dy)
 
     for j in range(s_norm.shape[0]):
@@ -148,8 +164,7 @@ _EMPTY_2 = np.empty((0, 2), dtype=np.float64)
 
 
 @numba.njit(cache=True)
-def register_2d_core(p, q, s_norm, s_off, t_norm, t_off,
-                     W_P, W_D, W_L_M, eps, dup_eps):
+def register_2d_core(p, q, s_norm, s_off, t_norm, t_off, W_P, W_D, W_L_M, eps, dup_eps):
     """Numba-optimized core of Registerer2D.register.
 
     Performs feasibility checks, initial rotation (with sign disambiguation
@@ -214,9 +229,18 @@ def register_2d_core(p, q, s_norm, s_off, t_norm, t_off,
             )
 
             loss = point_line_loss_2d(
-                R_cand, trans_cand, p, q,
-                s_norm, t_norm, s_off, t_off,
-                W_P, W_D, W_L_M, True,
+                R_cand,
+                trans_cand,
+                p,
+                q,
+                s_norm,
+                t_norm,
+                s_off,
+                t_off,
+                W_P,
+                W_D,
+                W_L_M,
+                True,
             )
 
             if loss < best_loss:
@@ -257,10 +281,14 @@ def register_2d_core(p, q, s_norm, s_off, t_norm, t_off,
     )
 
     # T = [[R, t], [0, 1]] ; T^-1 = [[R^T, -R^T t], [0, 1]]
-    r00 = R_final[0, 0]; r01 = R_final[0, 1]
-    r10 = R_final[1, 0]; r11 = R_final[1, 1]
-    T[0, 0] = r00; T[0, 1] = r10
-    T[1, 0] = r01; T[1, 1] = r11
+    r00 = R_final[0, 0]
+    r01 = R_final[0, 1]
+    r10 = R_final[1, 0]
+    r11 = R_final[1, 1]
+    T[0, 0] = r00
+    T[0, 1] = r10
+    T[1, 0] = r01
+    T[1, 1] = r11
     T[0, 2] = -(r00 * trans_final[0] + r10 * trans_final[1])
     T[1, 2] = -(r01 * trans_final[0] + r11 * trans_final[1])
 

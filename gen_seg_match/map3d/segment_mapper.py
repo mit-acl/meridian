@@ -356,7 +356,11 @@ class SegmentMapper:
                         continue
 
                     # if segments are very far away, don't worry about doing extra checking
-                    if np.mean(seg1.points) - np.mean(seg2.points) > 0.5 * (
+                    c1 = seg1.centroid
+                    c2 = seg2.centroid
+                    if c1 is None or c2 is None:
+                        continue
+                    if np.linalg.norm(c1 - c2) > 0.5 * (
                         np.max(seg1.extent) + np.max(seg2.extent)
                     ):
                         continue
@@ -504,7 +508,8 @@ class SegmentMapper:
                     logger.debug(f"final_cleanup failed for active seg {seg.id}: {e}")
         # Cleanup may zero out points for some segments; drop those.
         selected_segs = [
-            seg for seg in selected_segs
+            seg
+            for seg in selected_segs
             if seg.points is not None and len(seg.points) > 0
         ]
         if not selected_segs:
@@ -577,14 +582,10 @@ class SegmentMapper:
                 if occ is not None and len(occ) > 0:
                     all_occluded.append(occ)
                 total = sum(len(a) for a in all_occluded)
-                occ_final = (
-                    np.concatenate(all_occluded, axis=0) if total > 0 else None
-                )
+                occ_final = np.concatenate(all_occluded, axis=0) if total > 0 else None
                 pts = pts[mask].copy()
             else:
-                occ_final = (
-                    occ.copy() if occ is not None and len(occ) > 0 else None
-                )
+                occ_final = occ.copy() if occ is not None and len(occ) > 0 else None
                 pts = pts.copy()
 
             ds = DenseSegment(

@@ -1026,9 +1026,7 @@ def cross_view_incremental(
                 user_tf = full_t0 + user_tf
             full_t0 = max(full_t0, user_t0)
             full_tf = min(full_tf, user_tf)
-            print(
-                f"Clamped to user time_range: {full_t0:.2f} to {full_tf:.2f}"
-            )
+            print(f"Clamped to user time_range: {full_t0:.2f} to {full_tf:.2f}")
     else:
         full_t0, full_tf = None, None
 

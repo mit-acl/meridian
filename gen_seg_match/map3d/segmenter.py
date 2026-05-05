@@ -211,10 +211,7 @@ class Segmenter(SegmenterBase):
             frame_descriptor = self.get_frame_descriptor(dino_output_patches, img_bgr)
 
         dino_frame_embedding = None
-        if (
-            self.params.subtract_frame_descriptor
-            and dino_output_patches is not None
-        ):
+        if self.params.subtract_frame_descriptor and dino_output_patches is not None:
             dino_frame_embedding = self._compute_dino_frame_embedding(
                 dino_output_patches
             )

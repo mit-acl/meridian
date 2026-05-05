@@ -156,8 +156,7 @@ class CrossViewPlaceRecognition:
 
             if center is not None and max_dist_m is not None:
                 radius_mask = (
-                    np.linalg.norm(frame_pos - np.asarray(center), axis=1)
-                    <= max_dist_m
+                    np.linalg.norm(frame_pos - np.asarray(center), axis=1) <= max_dist_m
                 )
                 if not np.any(radius_mask):
                     return None

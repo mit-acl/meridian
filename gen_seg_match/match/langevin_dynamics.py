@@ -135,7 +135,9 @@ class LangevinDynamics:
                     historical_grad = direct * direct
                 else:
                     # historical_grad = alpha * historical_grad + (1-alpha) * direct**2
-                    historical_grad.mul_(alpha).addcmul_(direct, direct, value=1.0 - alpha)
+                    historical_grad.mul_(alpha).addcmul_(
+                        direct, direct, value=1.0 - alpha
+                    )
                 # adj_grad = direct / (fudge + sqrt(historical_grad))
                 adj_grad = direct.div_(historical_grad.sqrt().add_(fudge_factor))
                 theta.add_(adj_grad, alpha=stepsize)

@@ -411,11 +411,13 @@ class CrossViewMatching:
         t_dim = 0.0
 
         raw_results = []
-        for idx, (matches, score, count) in enumerate(zip(
-            all_matches,
-            match_result.scores,
-            match_result.counts,
-        )):
+        for idx, (matches, score, count) in enumerate(
+            zip(
+                all_matches,
+                match_result.scores,
+                match_result.counts,
+            )
+        ):
             t_segl0 = time.time()
             matched_ground = SegmentList(
                 [ground_segs_i.get_segment_from_id(g_id) for _, g_id in matches]
@@ -427,10 +429,14 @@ class CrossViewMatching:
 
             t_reg0 = time.time()
             try:
-                T_aerial_ground_odom_2d = self.registerer.register(matched_aerial, matched_ground).transformation
+                T_aerial_ground_odom_2d = self.registerer.register(
+                    matched_aerial, matched_ground
+                ).transformation
             except Exception as e:
                 t_reg_total += time.time() - t_reg0
-                logger.debug(f"Registration failed for idx {idx}/{len(all_matches)}: {e}")
+                logger.debug(
+                    f"Registration failed for idx {idx}/{len(all_matches)}: {e}"
+                )
                 continue
             t_reg_total += time.time() - t_reg0
 
@@ -448,7 +454,7 @@ class CrossViewMatching:
             if np.linalg.det(T_aerial_ground_hat[:2, :2]) > 0:
                 # print("skipping proper rotation")
                 continue
-            
+
             T_aerial_ground_hat[2, 3] = 0.0
 
             pose_result = PoseEstimationResult(
@@ -501,11 +507,13 @@ class CrossViewMatching:
         """Extract 3x3 SE(2) from a 4x4 SE(3) matrix (xy-plane projection)."""
         yaw = np.arctan2(T_4x4[1, 0], T_4x4[0, 0])
         c, s = np.cos(yaw), np.sin(yaw)
-        return np.array([
-            [c, -s, T_4x4[0, 3]],
-            [s,  c, T_4x4[1, 3]],
-            [0,  0,      1     ],
-        ])
+        return np.array(
+            [
+                [c, -s, T_4x4[0, 3]],
+                [s, c, T_4x4[1, 3]],
+                [0, 0, 1],
+            ]
+        )
 
     @staticmethod
     def _se2_to_se3(T_3x3: np.ndarray) -> np.ndarray:

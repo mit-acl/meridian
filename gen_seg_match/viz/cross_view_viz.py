@@ -421,9 +421,15 @@ def viz_ground_segments(
             # plotted (e.g. camera-Y points into the ground in optical
             # convention), but plotting all three keeps the viz robust to
             # convention changes.
-            x_end = origin + np.asarray(camera_pose[:2, 0]).flatten() * origin_axis_len_m
-            y_end = origin + np.asarray(camera_pose[:2, 1]).flatten() * origin_axis_len_m
-            z_end = origin + np.asarray(camera_pose[:2, 2]).flatten() * origin_axis_len_m
+            x_end = (
+                origin + np.asarray(camera_pose[:2, 0]).flatten() * origin_axis_len_m
+            )
+            y_end = (
+                origin + np.asarray(camera_pose[:2, 1]).flatten() * origin_axis_len_m
+            )
+            z_end = (
+                origin + np.asarray(camera_pose[:2, 2]).flatten() * origin_axis_len_m
+            )
             origin_endpoints = [origin, x_end, y_end, z_end]
             for axi in visible_axes:
                 axi.plot(

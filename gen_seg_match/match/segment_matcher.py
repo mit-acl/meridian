@@ -215,7 +215,9 @@ class SegmentMatcher:
             map1, map2, **dir_kwargs
         )
         end_time = time.time()
-        logger.debug(f"get_MCA_with_maps took {end_time - start_time:.3f} seconds for maps of size {len(map1)} and {len(map2)}")
+        logger.debug(
+            f"get_MCA_with_maps took {end_time - start_time:.3f} seconds for maps of size {len(map1)} and {len(map2)}"
+        )
 
         empty_result = MatchResult([np.array([])], [0.0], [1])
         if M.shape[0] == 0:

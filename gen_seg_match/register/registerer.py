@@ -21,6 +21,7 @@ from gen_seg_match.register.geometry import (
     REGISTER_SINGULAR,
 )
 
+
 class InsufficientAssociationsException(Exception):
     def __init__(self, map1_len, map2_len, n_associations=None, message=None):
         self.map1_len = map1_len
@@ -69,7 +70,8 @@ class Registerer2D:
         if correspondences is None:
             if self.params.only_use_points:
                 pairs = [
-                    (s, t) for s, t in zip(source, target)
+                    (s, t)
+                    for s, t in zip(source, target)
                     if isinstance(s, SegmentPoint)
                 ]
                 source = [s for s, _ in pairs]
@@ -84,10 +86,13 @@ class Registerer2D:
             if not isinstance(target, SegmentList):
                 target = SegmentList(target)
             if self.params.only_use_points:
-                correspondences = np.array([
-                    c for c in correspondences
-                    if isinstance(source.get_segment_from_id(c[0]), SegmentPoint)
-                ])
+                correspondences = np.array(
+                    [
+                        c
+                        for c in correspondences
+                        if isinstance(source.get_segment_from_id(c[0]), SegmentPoint)
+                    ]
+                )
             source = source.sublist_from_ids(correspondences[:, 0])
             target = target.sublist_from_ids(correspondences[:, 1])
 
@@ -125,7 +130,12 @@ class Registerer2D:
             t_off = t_off - t_norm @ c_tgt
 
         status, T = register_2d_core(
-            p, q, s_norm, s_off, t_norm, t_off,
+            p,
+            q,
+            s_norm,
+            s_off,
+            t_norm,
+            t_off,
             self.params.point_weight,
             self.params.line_direction_weight,
             self.params.line_moment_weight,
@@ -146,22 +156,30 @@ class Registerer2D:
         n_lines = s_norm.shape[0]
         if status == REGISTER_NO_ROTATION:
             raise InsufficientAssociationsException(
-                len(source), len(target), n_pts + n_lines,
+                len(source),
+                len(target),
+                n_pts + n_lines,
                 "Insufficient for rotation: need at least 1 line or 2 non-identical points.",
             )
         if status == REGISTER_NO_TRANSLATION:
             raise InsufficientAssociationsException(
-                len(source), len(target), n_pts + n_lines,
+                len(source),
+                len(target),
+                n_pts + n_lines,
                 "Insufficient for translation: need at least 1 point or 2 non-parallel lines.",
             )
         if status == REGISTER_DEGENERATE_SIGN:
             raise InsufficientAssociationsException(
-                len(source), len(target), n_lines,
+                len(source),
+                len(target),
+                n_lines,
                 "Degenerate configuration: multiple sign choices yield similar losses.",
             )
         if status == REGISTER_SINGULAR:
             raise InsufficientAssociationsException(-1, -1)
-        raise InsufficientAssociationsException(-1, -1, message=f"Unknown status {status}")
+        raise InsufficientAssociationsException(
+            -1, -1, message=f"Unknown status {status}"
+        )
 
     @staticmethod
     def _se2_distance(T1: np.ndarray, T2: np.ndarray):
