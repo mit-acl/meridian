@@ -410,6 +410,17 @@ class SegmentMapper:
         """
         Get the segment map
         """
+        # Segments still active or in nursery never hit the active->inactive
+        # transition that triggers final_cleanup. Run it now so they ship out
+        # outlier-removed and DBSCAN-pruned like the rest.
+        for seg in list(self.segments) + list(self.segment_nursery):
+            if seg.points is not None and len(seg.points) > 0:
+                try:
+                    seg.final_cleanup()
+                except Exception as e:
+                    logger.debug(
+                        f"end-of-run final_cleanup failed for seg {seg.id}: {e}"
+                    )
         segment_map = self.remove_bad_segments(
             self.segment_graveyard + self.inactive_segments + self.segments
         )
@@ -478,6 +489,24 @@ class SegmentMapper:
         seg_by_id = {seg.id: seg for seg in all_segs}
         selected_segs = [seg_by_id[sid] for sid in selected_ids if sid in seg_by_id]
 
+        if not selected_segs:
+            return
+
+        # Apply final_cleanup (statistical outlier removal + DBSCAN largest-cluster
+        # pruning) to active segments before they go into the submap. Inactive /
+        # graveyard segments already had it applied at transition time.
+        active_ids = {seg.id for seg in self.segments}
+        for seg in selected_segs:
+            if seg.id in active_ids and seg.points is not None and len(seg.points) > 0:
+                try:
+                    seg.final_cleanup()
+                except Exception as e:
+                    logger.debug(f"final_cleanup failed for active seg {seg.id}: {e}")
+        # Cleanup may zero out points for some segments; drop those.
+        selected_segs = [
+            seg for seg in selected_segs
+            if seg.points is not None and len(seg.points) > 0
+        ]
         if not selected_segs:
             return
 

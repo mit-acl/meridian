@@ -268,53 +268,68 @@ class MapSegment:
             pcd = o3d.geometry.PointCloud()
             pcd.points = o3d.utility.Vector3dVector(self.points)
             pcd_sampled = pcd.voxel_down_sample(voxel_size=self.voxel_size)
-            if self.params.outlier_removal_std is not None:
-                pcd_pruned, _ = pcd_sampled.remove_statistical_outlier(
-                    10, self.params.outlier_removal_std
-                )
-            else:
-                pcd_pruned = pcd_sampled
 
-            if pcd_pruned.is_empty():
+            if pcd_sampled.is_empty():
                 self.points = None
             else:
-                self.points = np.asarray(pcd_pruned.points)
+                self.points = np.asarray(pcd_sampled.points)
 
-            self._pcd = pcd_pruned  # memoize
+            self._pcd = pcd_sampled  # memoize
 
         self._prune_occluded_voxels()
 
     def final_cleanup(self):
-        """
-        Performs DBSCAN clustering on the points of the segment and returns the largest cluster
+        """Apply statistical-outlier removal + DBSCAN largest-cluster pruning.
 
-        Args:
-            epsilon (float, optional): Max distance between two samples to be eligible to be in same cluster. Defaults to 0.25.
-            min_points (int, optional): Number of points needed to form a cluster. Defaults to 10.
+        Called when a segment transitions to inactive, when it's about to be
+        included in a ground submap, or at end of run. Idempotent in result.
         """
+        if self.points is None or len(self.points) == 0:
+            return
+
+        pcd = o3d.geometry.PointCloud()
+        pcd.points = o3d.utility.Vector3dVector(self.points)
+        pcd_sampled = pcd.voxel_down_sample(voxel_size=self.voxel_size)
+        if self.params.outlier_removal_std is not None:
+            pcd_pruned, _ = pcd_sampled.remove_statistical_outlier(
+                10, self.params.outlier_removal_std
+            )
+        else:
+            pcd_pruned = pcd_sampled
+
+        if pcd_pruned.is_empty():
+            self.points = None
+            self.reset_memoized()
+            self._prune_occluded_voxels()
+            return
+
+        # Run DBSCAN on the outlier-cleaned cloud directly, not on the stale
+        # memoized self._pcd from the per-frame voxel-only _cleanup_points.
         epsilon = self.params.dbscan_eps
         min_points = self.params.dbscan_min_points
-        if self.points is not None:
-            # Perform DBSCAN clustering
-            labels = np.array(
-                self.pcd.cluster_dbscan(eps=epsilon, min_points=min_points)
-            )
+        labels = np.array(
+            pcd_pruned.cluster_dbscan(eps=epsilon, min_points=min_points)
+        )
 
-            # Number of clusters, ignoring noise if present
-            max_label = labels.max()
-
-            # get largest cluster
-            cluster_sizes = np.zeros(max_label + 1)
-            for i in range(max_label + 1):
-                cluster_sizes[i] = np.sum(labels == i)
-            max_cluster = np.argmax(cluster_sizes)
-
-            # Filter out any points not belonging to max cluster
-            filtered_indices = np.where(labels == max_cluster)[0]
-            self.points = self.points[filtered_indices]
-
-            self.reset_memoized()  # clear memory-intensive attributes
+        max_label = labels.max()
+        if max_label < 0:
+            # No clusters found — keep the outlier-cleaned points as-is.
+            self.points = np.asarray(pcd_pruned.points)
+            self.reset_memoized()
             self._prune_occluded_voxels()
+            return
+
+        cluster_sizes = np.zeros(max_label + 1)
+        for i in range(max_label + 1):
+            cluster_sizes[i] = np.sum(labels == i)
+        max_cluster = np.argmax(cluster_sizes)
+
+        all_pts = np.asarray(pcd_pruned.points)
+        filtered_indices = np.where(labels == max_cluster)[0]
+        self.points = all_pts[filtered_indices]
+
+        self.reset_memoized()
+        self._prune_occluded_voxels()
 
     @property
     def num_points(self):
