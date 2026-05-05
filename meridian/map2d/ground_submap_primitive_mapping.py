@@ -1,6 +1,6 @@
 import logging
 from dataclasses import dataclass
-from typing import List, Optional, Union
+from typing import List, Optional
 
 import numpy as np
 from tqdm import tqdm
@@ -19,7 +19,6 @@ from meridian.params.segment_to_primitive_params import GroundSubmapParams
 from meridian.primitive.primitive_list import PrimitiveList
 from meridian.primitive.dense_segment import DenseSegment, get_roman_ratio_feature
 
-from roman.map.map import ROMANMap
 from meridian.map3d.map import SegmentMap
 
 logger = logging.getLogger(__name__)
@@ -69,7 +68,7 @@ class GroundSubmapPrimitiveMapping:
 
     def create_submaps_from_map(
         self,
-        ground_map: Union[ROMANMap, SegmentMap],
+        ground_map: SegmentMap,
     ) -> List[Submap]:
         """Create 3D dense submaps from a ground map by spatial/temporal windowing.
 

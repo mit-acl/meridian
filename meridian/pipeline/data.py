@@ -9,8 +9,6 @@ from rasterio.crs import CRS
 from rasterio.transform import xy
 from rasterio.warp import transform as warp_transform
 
-from roman.map.map import ROMANMap
-
 from meridian.map3d.map import SegmentMap
 from meridian.map3d.align_point_cloud import AlignPointCloud
 from meridian.params.data_params import (
@@ -27,7 +25,7 @@ class CrossViewLocalizationData:
     aerial_img_origin: np.ndarray
     # Optional: required only by pipelines that consume the ground map
     # (offline cross_view_matching ground segmentation, offline localization).
-    ground_map: Union[ROMANMap, SegmentMap] = None
+    ground_map: SegmentMap = None
     gt_pose_data: PoseData = None
 
     aerial_img_scale: float = 0.01
@@ -224,18 +222,15 @@ class CrossViewLocalizationData:
         return pixel_size
 
     @staticmethod
-    def _load_ground_map(path: str) -> Union[ROMANMap, SegmentMap]:
+    def _load_ground_map(path: str) -> SegmentMap:
         import pickle
         import os
 
         with open(os.path.expanduser(path), "rb") as f:
             ground_map = pickle.load(f)
-        if isinstance(ground_map, SegmentMap):
-            return ground_map
-        elif isinstance(ground_map, ROMANMap):
-            return ground_map
-        else:
-            raise TypeError(f"Expected SegmentMap or ROMANMap, got {type(ground_map)}")
+        if not isinstance(ground_map, SegmentMap):
+            raise TypeError(f"Expected SegmentMap, got {type(ground_map)}")
+        return ground_map
 
 
 @dataclass
