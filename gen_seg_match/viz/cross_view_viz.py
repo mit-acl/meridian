@@ -55,6 +55,50 @@ def plot_seg(seg, ax, custom_color=None):
         )
 
 
+def viz_registration_alignment(
+    aerial_segments: SegmentList,
+    ground_segments: SegmentList,
+    matches: np.ndarray,
+    T_align: np.ndarray,
+):
+    """Plot inlier ground (brown, transformed by T_align) and aerial (sky-blue) segments
+    overlaid in the aerial frame so visual alignment reflects registration quality.
+
+    Match rows are [aerial_id, ground_id], matching the convention in
+    viz_cross_view_matches.
+    """
+    fig, ax = plt.subplots(figsize=(8, 8))
+
+    aerial_ids = [int(m[0]) for m in matches]
+    ground_ids = [int(m[1]) for m in matches]
+
+    inlier_aerial = SegmentList(
+        [aerial_segments.get_segment_from_id(aid) for aid in aerial_ids]
+    )
+    inlier_ground = SegmentList(
+        [ground_segments.get_segment_from_id(gid) for gid in ground_ids]
+    )
+    inlier_aerial = SegmentList([s for s in inlier_aerial if s is not None])
+    inlier_ground = SegmentList([s for s in inlier_ground if s is not None])
+
+    inlier_ground = inlier_ground.copy()
+    inlier_ground.transform(T_align)
+
+    for seg in inlier_aerial:
+        plot_seg(seg, ax, custom_color="skyblue")
+    for seg in inlier_ground:
+        plot_seg(seg, ax, custom_color="saddlebrown")
+
+    ax.set_aspect("equal")
+    ax.invert_yaxis()
+    ax.grid(True)
+    ax.set_title(
+        f"Inlier alignment ({len(inlier_aerial)} pairs): "
+        "aerial=skyblue, ground=brown (T̂)"
+    )
+    return fig, ax
+
+
 def viz_cross_view_matches(
     aerial_segments: SegmentList,
     ground_segments: SegmentList,
@@ -298,6 +342,8 @@ def viz_ground_segments(
     alpha_shape_grid_downsample: float,
     alpha_shape_max_n_pts: int = None,
     alpha_shape_ref_size_m: float = None,
+    show_origin: bool = False,
+    origin_axis_len_m: float = 5.0,
 ) -> Tuple[plt.Figure, plt.Axes]:
     # Plot just segment points (largest first so smallest draw on top)
     fig, ax = plt.subplots(3, 2, figsize=(10, 15))
@@ -362,8 +408,50 @@ def viz_ground_segments(
     ax[2, 0].set_aspect("equal")
     ax[2, 1].set_visible(False)
 
+    visible_axes = [ax[0, 0], ax[0, 1], ax[1, 0], ax[1, 1], ax[2, 0]]
+
+    origin_endpoints = []
+    if show_origin:
+        meta = getattr(flattened_submap, "metadata", None) or {}
+        camera_pose = meta.get("camera_pose")
+        if camera_pose is not None:
+            origin = np.asarray(camera_pose[:2, 3]).flatten()
+            # Project all three frame axes onto the world XY plane. Some may
+            # collapse to ~zero length depending on which pose is being
+            # plotted (e.g. camera-Y points into the ground in optical
+            # convention), but plotting all three keeps the viz robust to
+            # convention changes.
+            x_end = origin + np.asarray(camera_pose[:2, 0]).flatten() * origin_axis_len_m
+            y_end = origin + np.asarray(camera_pose[:2, 1]).flatten() * origin_axis_len_m
+            z_end = origin + np.asarray(camera_pose[:2, 2]).flatten() * origin_axis_len_m
+            origin_endpoints = [origin, x_end, y_end, z_end]
+            for axi in visible_axes:
+                axi.plot(
+                    [origin[0], x_end[0]], [origin[1], x_end[1]], "-", color="red", lw=2
+                )
+                axi.plot(
+                    [origin[0], y_end[0]],
+                    [origin[1], y_end[1]],
+                    "-",
+                    color="green",
+                    lw=2,
+                )
+                axi.plot(
+                    [origin[0], z_end[0]],
+                    [origin[1], z_end[1]],
+                    "-",
+                    color="blue",
+                    lw=2,
+                )
+                axi.plot(origin[0], origin[1], "o", color="black", markersize=4)
+
     xlim = ax[0, 0].get_xlim()
     ylim = ax[0, 0].get_ylim()
+    if origin_endpoints:
+        xs = [p[0] for p in origin_endpoints]
+        ys = [p[1] for p in origin_endpoints]
+        xlim = (min(xlim[0], *xs), max(xlim[1], *xs))
+        ylim = (min(ylim[0], *ys), max(ylim[1], *ys))
     for i in range(3):
         for j in range(2):
             if ax[i, j].get_visible():

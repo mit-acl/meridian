@@ -472,6 +472,7 @@ class CrossViewMatching:
         if len(raw_results) > 1:
             results = self.registerer.cluster_hypotheses(raw_results)
         elif len(raw_results) == 1:
+            raw_results[0][0].pose_result.count = raw_results[0][2]
             results = [raw_results[0][0]]
         else:
             results = []

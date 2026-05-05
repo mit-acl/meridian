@@ -26,7 +26,7 @@ class SegmentToPrimitiveConversionParams(ParamsBase):
     circle_point_max_area: float = 50.0
     circle_point_rad_frac_fit_err: float = 0.3
 
-    line_len_to_infinite: float = 15.0
+    line_len_to_infinite: float = np.inf
 
     line_merge_dist_thresh_m: float = 1.0
     line_merge_perp_dist_thresh_m: float = 0.5
@@ -34,6 +34,9 @@ class SegmentToPrimitiveConversionParams(ParamsBase):
     line_merge_short_thresh_m: float = 1.0
     line_merge_semantic_sim: float = 0.8
     line_split_length_m: float = np.inf
+
+    concat_nearby_descriptors: bool = False
+    concat_nearby_descriptors_dist_m: float = 5.0
 
     sparse_conversion_max_threads: int = 16
 
@@ -74,3 +77,5 @@ class GroundSubmapParams(ParamsBase):
     line_frac_near_points: float = 0.3
     line_pt_dist_check_m: float = 0.5
     dense_points_max_n: int = 5000
+
+    viz_show_sm_origin: bool = True

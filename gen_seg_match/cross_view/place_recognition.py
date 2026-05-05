@@ -73,7 +73,13 @@ class CrossViewPlaceRecognition:
         else:
             raise ValueError(f"Unknown method: {self.method}")
 
-    def ground_descriptor(self, ground_submap, submap_segments=None):
+    def ground_descriptor(
+        self,
+        ground_submap,
+        submap_segments=None,
+        center=None,
+        max_dist_m=None,
+    ):
         """Compute a descriptor for a ground submap.
 
         Args:
@@ -81,12 +87,19 @@ class CrossViewPlaceRecognition:
             submap_segments: segment list for this submap. For "semantic-gem",
                 a list of DenseSegment (time range extraction). For
                 "semantic-point-line", a SegmentList of SegmentPoint/SegmentLine.
+            center: optional 3D submap center (in odom frame). When provided
+                with ``max_dist_m``, frame descriptors captured from camera
+                positions farther than ``max_dist_m`` from ``center`` are
+                excluded.
+            max_dist_m: optional radius cap for the descriptor aggregation.
 
         Returns:
             np.ndarray descriptor, or None
         """
         if self.method in ("semantic-gem", "anyloc", "salad"):
-            return self._ground_descriptor_gem(submap_segments)
+            return self._ground_descriptor_gem(
+                submap_segments, center=center, max_dist_m=max_dist_m
+            )
         elif self.method == "semantic-point-line":
             segments = (
                 submap_segments
@@ -97,7 +110,7 @@ class CrossViewPlaceRecognition:
         else:
             raise ValueError(f"Unknown method: {self.method}")
 
-    def _ground_descriptor_gem(self, submap_segments):
+    def _ground_descriptor_gem(self, submap_segments, center=None, max_dist_m=None):
         """Extract stacked frame descriptors for a ground submap (semantic-gem).
 
         Uses cached _map_times/_map_descriptors/_map_positions from
@@ -105,6 +118,10 @@ class CrossViewPlaceRecognition:
 
         Args:
             submap_segments: list of segments with .first_seen/.last_seen
+            center: optional 3D submap center (odom frame). When given with
+                ``max_dist_m``, drops frames whose camera position is farther
+                than ``max_dist_m`` from ``center``.
+            max_dist_m: optional radius cap.
 
         Returns:
             np.ndarray of shape (N, D) or None
@@ -136,6 +153,16 @@ class CrossViewPlaceRecognition:
 
             frame_descs = self._map_descriptors[time_mask]
             frame_pos = self._map_positions[time_mask]
+
+            if center is not None and max_dist_m is not None:
+                radius_mask = (
+                    np.linalg.norm(frame_pos - np.asarray(center), axis=1)
+                    <= max_dist_m
+                )
+                if not np.any(radius_mask):
+                    return None
+                frame_descs = frame_descs[radius_mask]
+                frame_pos = frame_pos[radius_mask]
 
             stacked = []
             last_pos = None

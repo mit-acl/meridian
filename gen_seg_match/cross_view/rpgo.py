@@ -87,6 +87,7 @@ class CrossViewRPGOResult:
     success: bool
     T_utm_odom: Optional[np.ndarray] = None
     optimized_trajectory: Optional[List[np.ndarray]] = None
+    times: Optional[np.ndarray] = None
     inlier_indices: np.ndarray = field(default_factory=lambda: np.array([]))
     M: Optional[np.ndarray] = None
     C: Optional[np.ndarray] = None
@@ -119,6 +120,7 @@ def _build_clipper_data(
     candidates: List[dict],
     trajectory: List[np.ndarray],
     times: np.ndarray,
+    lc_scores: np.ndarray,
 ) -> Tuple[np.ndarray, List[np.ndarray], List[np.ndarray], List[float]]:
     """Build CLIPPER data matrix and unique pose lists from candidates.
 
@@ -126,9 +128,10 @@ def _build_clipper_data(
       D[0, k]     = aerial_idx  (int index into aerial_poses list)
       D[1, k]     = ground_idx  (int index into ground_poses list)
       D[2:18, k]  = T_i_j_hat.flatten() row-major (16 doubles)
+      D[18, k]    = lc_score in [0, 1] (per-LC quality)
 
     Returns:
-        D: 18×N data matrix
+        D: 19×N data matrix
         aerial_poses: list of unique 4×4 aerial pose matrices
         ground_poses: list of unique 4×4 ground pose matrices
         ground_distances: list of cumulative path lengths for each unique ground pose
@@ -143,9 +146,9 @@ def _build_clipper_data(
     ground_distances: List[float] = []
 
     N = len(candidates)
-    # Build D as (N, 18) row-major, then transpose to (18, N) Fortran-order
+    # Build D as (N, 19) row-major, then transpose to (19, N) Fortran-order
     # so that Eigen receives a column-major matrix (each column = one datum).
-    D_rows = np.zeros((N, 18))
+    D_rows = np.zeros((N, 19))
 
     for k, c in enumerate(candidates):
         # Deduplicate aerial poses by matrix content
@@ -168,11 +171,12 @@ def _build_clipper_data(
 
         D_rows[k, 0] = aerial_idx
         D_rows[k, 1] = ground_idx
-        D_rows[k, 2:] = c["T_i_j_hat"].flatten()  # row-major (C order)
+        D_rows[k, 2:18] = c["T_i_j_hat"].flatten()  # row-major (C order)
+        D_rows[k, 18] = lc_scores[k]
 
-    # Transpose to (18, N) Fortran-order — pybind11 passes this to Eigen as
+    # Transpose to (19, N) Fortran-order — pybind11 passes this to Eigen as
     # a column-major MatrixXd where each column is one datum.
-    D = D_rows.T  # shape (18, N), Fortran-order (C-contiguous rows → F-contiguous cols)
+    D = D_rows.T  # shape (19, N), Fortran-order (C-contiguous rows → F-contiguous cols)
     return D, aerial_poses, ground_poses, ground_distances
 
 
@@ -242,11 +246,26 @@ class CrossViewRPGO:
             success=True,
             T_utm_odom=T_utm_odom,
             optimized_trajectory=optimized_trajectory,
+            times=np.asarray(times),
             inlier_indices=inlier_indices,
             M=M,
             C=C,
             candidates=candidates,
         )
+
+    def solve_clipper_only(
+        self,
+        candidates: List[dict],
+        trajectory: List[np.ndarray],
+        times: np.ndarray,
+    ) -> Tuple[np.ndarray, Optional[np.ndarray], Optional[np.ndarray]]:
+        """Run only the outlier-rejection step (CLIPPER or GT) without PGO.
+
+        Returns (inlier_indices, M, C). M and C are None when gt_inliers is set.
+        """
+        if self.params.gt_inliers:
+            return self._gt_inlier_selection(candidates), None, None
+        return self.run_clipper_cpp(candidates, trajectory, times)
 
     def _gt_inlier_selection(self, candidates: List[dict]) -> np.ndarray:
         """Select inliers by comparing each candidate's T_i_j_hat to GT T_i_j.
@@ -333,6 +352,29 @@ class CrossViewRPGO:
         clipper.solve()
         return np.array(clipper.get_solution().nodes)
 
+    def _compute_lc_scores(self, candidates: List[dict]) -> np.ndarray:
+        """Per-LC quality score in [0, 1].
+
+        Method "frequency-ratio" normalizes each candidate's particle count by
+        the max count among candidates that share the same (ground_key,
+        aerial_key) pair: top hypothesis per pair is 1.0, runners-up scale down.
+        """
+        method = self.params.lc_score_method
+        if method == "frequency-ratio":
+            pair_max: dict = {}
+            for c in candidates:
+                key = (c["ground_key"], c["aerial_key"])
+                pair_max[key] = max(pair_max.get(key, 0), c.get("count", 1))
+            return np.array(
+                [
+                    c.get("count", 1)
+                    / max(pair_max[(c["ground_key"], c["aerial_key"])], 1)
+                    for c in candidates
+                ],
+                dtype=np.float64,
+            )
+        raise ValueError(f"Unknown lc_score_method: {method}")
+
     def run_clipper_cpp(
         self,
         candidates: List[dict],
@@ -344,8 +386,9 @@ class CrossViewRPGO:
         Returns:
             Tuple of (inlier_indices, M, C).
         """
+        lc_scores = self._compute_lc_scores(candidates)
         D, aerial_poses, ground_poses, ground_distances = _build_clipper_data(
-            candidates, trajectory, times
+            candidates, trajectory, times, lc_scores
         )
         iparams = clipperpy.invariants.LoopClosureConsistencyParams()
         iparams.rot_sigma_rad = self.params.rot_consistency_sigma_rad
@@ -358,6 +401,7 @@ class CrossViewRPGO:
         iparams.single_lc_per_ground_aerial_pair = (
             self.params.single_lc_per_ground_aerial_pair
         )
+        iparams.fuse_lc_score = self.params.fuse_lc_score
         invariant = clipperpy.invariants.LoopClosureConsistency(
             aerial_poses, ground_poses, ground_distances, iparams
         )

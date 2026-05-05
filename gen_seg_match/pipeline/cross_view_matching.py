@@ -43,6 +43,7 @@ from gen_seg_match.register.registerer import Registerer2D
 from gen_seg_match.map3d.submap import Submap
 from gen_seg_match.viz.cross_view_viz import (
     viz_cross_view_matches,
+    viz_registration_alignment,
     viz_aerial_segments,
     viz_general_segments_img,
     viz_ground_segments,
@@ -134,6 +135,7 @@ def _ground_viz_worker(
     alpha_shape_grid_downsample,
     alpha_shape_max_n_pts,
     alpha_shape_ref_size_m,
+    show_sm_origin,
 ):
     """Render ground viz for one submap. Returns PNG bytes."""
     matplotlib.use("Agg")
@@ -148,6 +150,7 @@ def _ground_viz_worker(
         alpha_shape_grid_downsample,
         alpha_shape_max_n_pts,
         alpha_shape_ref_size_m,
+        show_origin=show_sm_origin,
     )
     buf = io.BytesIO()
     fig.savefig(buf, format="png", dpi=400)
@@ -172,6 +175,7 @@ def _match_viz_worker(
     patch_size_px,
     aerial_viz_target_size_kb,
     line_width_px,
+    T_align=None,
 ):
     """Render match + pose viz for one ground-aerial pair. Returns list of (tag, bytes)."""
     matplotlib.use("Agg")
@@ -233,6 +237,30 @@ def _match_viz_worker(
             _draw_pose(crop, T_i_j_hat, (0, 0, 220))
         viz_bytes = downsample_to_target_size(crop, aerial_viz_target_size_kb)
         results.append(("pose", viz_bytes))
+
+    # Registration alignment viz: inlier ground (transformed) overlaid on aerial
+    if (
+        T_align is not None
+        and not np.any(np.isnan(T_align))
+        and associations is not None
+        and len(associations) > 0
+    ):
+        viz_registration_alignment(
+            aerial_segs_processed,
+            ground_segs_processed,
+            associations,
+            T_align,
+        )
+        fig = plt.gcf()
+        buf = io.BytesIO()
+        fig.savefig(buf, format="png", dpi=150)
+        plt.close(fig)
+        buf.seek(0)
+        img_array = cv.imdecode(
+            np.frombuffer(buf.getvalue(), dtype=np.uint8), cv.IMREAD_COLOR
+        )
+        viz_bytes = downsample_to_target_size(img_array, match_viz_target_size_kb)
+        results.append(("reg", viz_bytes))
 
     return results
 
@@ -410,6 +438,7 @@ class CrossViewMatchingPipeline:
                         conv_params.alpha_shape_grid_downsample,
                         conv_params.alpha_shape_max_n_pts,
                         conv_params.alpha_shape_ref_size_m,
+                        ground_params.viz_show_sm_origin,
                     )
                     futures[future] = k
 
@@ -473,6 +502,7 @@ class CrossViewMatchingPipeline:
                 ground_dense_dir,
                 local_to_pixel_fn=local_to_pixel_fn,
                 save_viz=save_viz,
+                T_camera_flu=T_camera_flu,
             )
         return match_result
 
@@ -486,6 +516,7 @@ class CrossViewMatchingPipeline:
         ground_dense_dir: pathlib.Path = None,
         local_to_pixel_fn=None,
         save_viz: bool = True,
+        T_camera_flu: np.ndarray = None,
     ):
         output_dir = pathlib.Path(output_dir)
         viz_output_dir = output_dir / "viz"
@@ -611,8 +642,12 @@ class CrossViewMatchingPipeline:
                             aerial_origin_m = (x1_a / px_per_m, y1_a / px_per_m)
 
                         ground_segments_all = None
+                        camera_pose = None
                         if ground_key in ground_submaps:
                             ground_segments_all = ground_submaps[ground_key].segments
+                            camera_pose = ground_submaps[ground_key].metadata.get(
+                                "camera_pose"
+                            )
 
                         # Prepare pose viz args (pre-crop aerial image)
                         aerial_img_crop = None
@@ -636,6 +671,16 @@ class CrossViewMatchingPipeline:
                                 else None
                             )
 
+                        # Build T_align so ground_segs_processed (in odom frame) can be
+                        # transformed into the aerial frame for the registration viz.
+                        # T_i_j_hat = T_aerial_ground_odom_hat @ camera_pose [@ T_camera_flu]
+                        T_align = None
+                        if T_i_j_hat_val is not None and camera_pose is not None:
+                            T_right = camera_pose
+                            if T_camera_flu is not None:
+                                T_right = T_right @ T_camera_flu
+                            T_align = T_i_j_hat_val @ np.linalg.inv(T_right)
+
                         future = executor.submit(
                             _match_viz_worker,
                             single_result.aerial_segs_processed,
@@ -654,6 +699,7 @@ class CrossViewMatchingPipeline:
                             patch_size_px,
                             self._viz_params.aerial_viz_target_size_kb,
                             line_width_px,
+                            T_align,
                         )
                         viz_futures[future] = (ground_key, aerial_key)
 
@@ -663,6 +709,8 @@ class CrossViewMatchingPipeline:
                     for tag, viz_bytes in future.result():
                         if tag == "match":
                             fname = ground_sub_dir / f"ground_{gk}_aerial_{ak}.jpg"
+                        elif tag == "reg":
+                            fname = ground_sub_dir / f"ground_{gk}_aerial_{ak}_reg.jpg"
                         else:
                             fname = ground_sub_dir / f"ground_{gk}_aerial_{ak}_pose.jpg"
                         with open(fname, "wb") as f:
@@ -938,7 +986,10 @@ if __name__ == "__main__":
         "--skip-match", action="store_true", help="Skip segment matching."
     )
     parser.add_argument(
-        "--no-viz", action="store_true", help="Skip per-match viz images."
+        "-v",
+        "--viz",
+        action="store_true",
+        help="Save per-match viz images (default: off).",
     )
     parser.add_argument(
         "--aerial",
@@ -963,7 +1014,7 @@ if __name__ == "__main__":
         args.skip_aerial,
         args.skip_ground,
         args.skip_match,
-        save_viz=not args.no_viz,
+        save_viz=args.viz,
         aerial_dir=args.aerial,
         ground_dir=args.ground,
     )

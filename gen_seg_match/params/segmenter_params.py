@@ -26,6 +26,7 @@ class SegmenterParamsBase(ParamsBase):
     dino_half: bool = False
     dinov3_path: str = "~/code/dinov3"
     dinov3_weights: str = None
+    subtract_frame_descriptor: bool = False
 
     # Shared
     triangle_ignore_masks: List[
@@ -72,7 +73,7 @@ class SegmenterParams(SegmenterParamsBase):
     # Ground-specific fields
     yolo_weights_path: str = "$ROMAN_WEIGHTS/yolov7.pt"
     erosion_size: int = 3
-    voxel_size: float = 0.05
+    voxel_size: float = 0.1
     ignore_labels: list = tuple([])
     use_keep_labels: bool = False
     keep_labels: list = tuple([])
@@ -82,14 +83,14 @@ class SegmenterParams(SegmenterParamsBase):
     yolo_imgsz: Tuple[int, int] = None
     use_point_cloud: bool = False
     depth_scale: float = 1e3
-    max_depth: float = 7.5
+    max_depth: float = 10.0
     mask_downsample_factor: int = 8
     pcd_stride: int = 4
     min_mask_pixels: int = 0
     min_mask_image_fraction: float = 0.0
     occlusion_edge_img_frac: float = 0.02
     occlusion_edge_max_img_frac: float = 0.15
-    occlusion_max_depth: float = 7.0
+    occlusion_max_depth: float = 9.0
     outlier_removal_std: float = 1.0
     outlier_removal_dbscan_eps: float = 0.5
     outlier_removal_dbscan_min_points: int = 10

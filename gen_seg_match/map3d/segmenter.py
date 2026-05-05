@@ -210,6 +210,15 @@ class Segmenter(SegmenterBase):
         ):
             frame_descriptor = self.get_frame_descriptor(dino_output_patches, img_bgr)
 
+        dino_frame_embedding = None
+        if (
+            self.params.subtract_frame_descriptor
+            and dino_output_patches is not None
+        ):
+            dino_frame_embedding = self._compute_dino_frame_embedding(
+                dino_output_patches
+            )
+
         if depth_data is not None:
             if self.params.use_point_cloud:
                 occlusion_edge_mask = self._get_border_occlusion_edge_mask(
@@ -306,7 +315,9 @@ class Segmenter(SegmenterBase):
                     and mask.shape[1] == dino_features.shape[1]
                 ), "Mask and DINO features must have the same shape."
                 semantic_descriptor = self._compute_mean_dino_descriptor(
-                    dino_features, mask
+                    dino_features,
+                    mask,
+                    dino_frame_embedding=dino_frame_embedding,
                 )
 
             new_observation = Observation(
