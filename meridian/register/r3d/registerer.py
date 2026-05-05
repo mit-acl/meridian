@@ -130,15 +130,11 @@ class Registerer:
         )
 
         if num_lines < dirs_needed:
-            raise InsufficientAssociationsException(
-                len(source), len(target), num_lines
-            )
+            raise InsufficientAssociationsException(len(source), len(target), num_lines)
 
         dir_idxs = []
         if dirs_needed > 0:
-            comb_weights = np.array(
-                [self.params.line_direction_weight] * num_lines
-            )
+            comb_weights = np.array([self.params.line_direction_weight] * num_lines)
 
             for idx_comb in combinations(range(num_lines), dirs_needed):
                 idx_comb = list(idx_comb)
@@ -174,15 +170,12 @@ class Registerer:
             best_loss, second_best_loss = float("inf"), float("inf")
             best_R = None
 
-            source_subset = (
-                source.get_points()
-                + [source.get_lines()[i] for i in dir_idxs]
-            )
+            source_subset = source.get_points() + [
+                source.get_lines()[i] for i in dir_idxs
+            ]
 
             for signs in product([-1, 1], repeat=dirs_needed):
-                target_subset_signed = [
-                    target.get_lines()[i].copy() for i in dir_idxs
-                ]
+                target_subset_signed = [target.get_lines()[i].copy() for i in dir_idxs]
 
                 for idx, segment in enumerate(target_subset_signed):
                     if isinstance(segment, LinePrimitive):
@@ -347,9 +340,8 @@ class Registerer:
             and gravity_src is not None
             and gravity_tgt is not None
         )
-        assert (
-            num_points == len(target.get_points())
-            and num_lines == len(target.get_lines())
+        assert num_points == len(target.get_points()) and num_lines == len(
+            target.get_lines()
         ), "Source and target must have the same number of points and lines."
         assert (
             num_lines + int(use_gravity) >= 2
@@ -418,9 +410,8 @@ class Registerer:
             len(source.get_points()),
             len(source.get_lines()),
         )
-        assert (
-            num_points == len(target.get_points())
-            and num_lines == len(target.get_lines())
+        assert num_points == len(target.get_points()) and num_lines == len(
+            target.get_lines()
         ), "Source and target must have the same number of points and lines."
         assert num_points + num_lines > 0, (
             "At least one correspondence is required to solve for translation."

@@ -119,4 +119,3 @@ class TestPointLineGravity:
 
         T_gt = np.linalg.inv(sample_transform)
         assert_transforms_equal(result.transformation, T_gt)
-

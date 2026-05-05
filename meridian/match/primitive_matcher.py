@@ -494,7 +494,9 @@ class PrimitiveMatcher:
             _, ax = plt.subplots()
 
         map1 = PrimitiveList([seg for seg in map1 if type(seg) is PointPrimitive])
-        map2 = PrimitiveList([seg.copy() for seg in map2 if type(seg) is PointPrimitive])
+        map2 = PrimitiveList(
+            [seg.copy() for seg in map2 if type(seg) is PointPrimitive]
+        )
 
         map2.transform(T)
 
@@ -570,14 +572,12 @@ class PrimitiveMatcher:
         A_init_lines[:, 1] += len(points2)
         A_init = np.vstack([A_init_points, A_init_lines])
 
-        map1_arrays = (
-            [self._get_seg_array(obj) for obj in points1]
-            + [self._get_seg_array(obj) for obj in lines1]
-        )
-        map2_arrays = (
-            [self._get_seg_array(obj) for obj in points2]
-            + [self._get_seg_array(obj) for obj in lines2]
-        )
+        map1_arrays = [self._get_seg_array(obj) for obj in points1] + [
+            self._get_seg_array(obj) for obj in lines1
+        ]
+        map2_arrays = [self._get_seg_array(obj) for obj in points2] + [
+            self._get_seg_array(obj) for obj in lines2
+        ]
         map1_cl, map2_cl = self._create_padded_map_arrays(map1_arrays, map2_arrays)
 
         clipper.score_pairwise_and_single_consistency(map1_cl.T, map2_cl.T, A_init)
