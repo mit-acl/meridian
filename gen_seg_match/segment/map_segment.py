@@ -115,6 +115,7 @@ class MapSegment:
         self._obb = None
         self._pcd = None
         self._aabb = None
+        self._centroid = None
         self._gaussian = None
         self._eigvals = None
         self._mask = None
@@ -342,6 +343,7 @@ class MapSegment:
         self._aabb = None
         self._obb = None
         self._pcd = None
+        self._centroid = None
         self._gaussian = None
         self._eigvals = None
         self._mask = None
@@ -351,6 +353,13 @@ class MapSegment:
         self._convex_hull = None
         self._convex_hull_last_pose = np.nan
         self.voxel_grid = dict()
+
+    @property
+    def centroid(self) -> np.ndarray:
+        """Mean of self.points along axis 0 (per-axis centroid). Memoized."""
+        if self._centroid is None and self.points is not None and len(self.points) > 0:
+            self._centroid = self.points.mean(axis=0)
+        return self._centroid
 
     def _point_to_voxel_key(self, point):
         return tuple(np.floor(point / self.voxel_size).astype(int))

@@ -356,7 +356,11 @@ class SegmentMapper:
                         continue
 
                     # if segments are very far away, don't worry about doing extra checking
-                    if np.mean(seg1.points) - np.mean(seg2.points) > 0.5 * (
+                    c1 = seg1.centroid
+                    c2 = seg2.centroid
+                    if c1 is None or c2 is None:
+                        continue
+                    if np.linalg.norm(c1 - c2) > 0.5 * (
                         np.max(seg1.extent) + np.max(seg2.extent)
                     ):
                         continue
