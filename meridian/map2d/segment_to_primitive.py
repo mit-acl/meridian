@@ -109,6 +109,38 @@ def _classify_single_segment(
             )
         ]
 
+    # Thin (essentially 1-D) clouds: skip alphashape (which would emit noisy
+    # "Singular matrix" warnings on colinear simplices and often drop the
+    # segment entirely) and emit a LinePrimitive directly via PCA. We gate on
+    # the raw minor-axis variance (in m²) so long-but-not-thin road segments
+    # still go through alphashape and can split into multiple lines.
+    if len(points) >= 2 and params.line_min_minor_axis_var_m2 > 0:
+        mean_pt = points.mean(axis=0)
+        centered = points - mean_pt
+        cov = np.cov(centered, rowvar=False)
+        eigvals, eigvecs = np.linalg.eigh(cov)
+        # eigh returns ascending order: eigvals[0] is minor-axis variance.
+        if float(eigvals[0]) < params.line_min_minor_axis_var_m2:
+            direction = eigvecs[:, 1]  # major axis
+            projections = centered @ direction
+            pt0 = mean_pt + projections.min() * direction
+            pt1 = mean_pt + projections.max() * direction
+            if not (pt_within_border(pt0) and pt_within_border(pt1)):
+                return []
+            if np.linalg.norm(pt1 - pt0) <= params.line_min_length_m:
+                return []
+            return [
+                LinePrimitive.from_endpoints(
+                    j,
+                    pt0,
+                    pt1,
+                    cos_feature=semantic_descriptor,
+                    first_seen=first_seen,
+                    last_seen=last_seen,
+                    history=[seg_id],
+                )
+            ]
+
     # Compute alpha shape
     alpha_shape = _compute_alpha_shape(
         points,
