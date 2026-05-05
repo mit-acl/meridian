@@ -25,7 +25,9 @@ logger = logging.getLogger(__name__)
 class CrossViewLocalizationData:
     aerial_img: np.ndarray
     aerial_img_origin: np.ndarray
-    ground_map: Union[ROMANMap, SegmentMap]
+    # Optional: required only by pipelines that consume the ground map
+    # (offline cross_view_matching ground segmentation, offline localization).
+    ground_map: Union[ROMANMap, SegmentMap] = None
     gt_pose_data: PoseData = None
 
     aerial_img_scale: float = 0.01
@@ -164,7 +166,11 @@ class CrossViewLocalizationData:
             PoseData.from_dict(params.gt_pose_data) if params.gt_pose_data else None
         )
 
-        ground_map = cls._load_ground_map(params.ground_map_path)
+        ground_map = (
+            cls._load_ground_map(params.ground_map_path)
+            if params.ground_map_path is not None
+            else None
+        )
 
         return cls(
             aerial_img=aerial_img,

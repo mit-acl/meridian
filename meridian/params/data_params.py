@@ -14,7 +14,10 @@ class CrossViewLocalizationDataParams(ParamsBase):
     ##################
 
     aerial_img_path: str
-    ground_map_path: str
+    # Required only for pipelines that consume the ground map (offline
+    # cross_view_matching ground segmentation, offline cross_view_localization).
+    # aerial_patch_mapping and cross_view_incremental run without it.
+    ground_map_path: str = None
     gt_pose_data: dict = None
 
     aerial_img_scale: float = None  # None = auto-detect from GeoTIFF
@@ -25,7 +28,8 @@ class CrossViewLocalizationDataParams(ParamsBase):
 
     def __post_init__(self):
         self.aerial_img_path = expandvars_recursive(self.aerial_img_path)
-        self.ground_map_path = expandvars_recursive(self.ground_map_path)
+        if self.ground_map_path is not None:
+            self.ground_map_path = expandvars_recursive(self.ground_map_path)
         if self.T_camera_flu is not None:
             self.T_camera_flu = np.array(self.T_camera_flu).reshape((4, 4))
         if self.gt_pose_data is not None:

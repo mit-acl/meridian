@@ -926,6 +926,12 @@ def cross_view_matching(
 
     # Extract ground segments
     if not skip_ground:
+        if data.ground_map is None:
+            raise ValueError(
+                "Ground segmentation is enabled but no ground map is loaded. "
+                "Set `ground_map_path` in the cross_view_localization_data params, "
+                "or pass --ground <existing_ground_dir> to skip ground segmentation."
+            )
         ground_map = data.ground_map
         ground_submaps = ground_mapping.create_submaps_from_map(ground_map)
         initial_ground_submaps = pipeline.run_ground(ground_submaps, ground_output_dir)

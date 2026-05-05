@@ -187,6 +187,12 @@ class CrossViewLocalization:
             logger.warning("No candidates passed filtering — returning None.")
             return None
 
+        if data.ground_map is None:
+            raise ValueError(
+                "Offline cross_view_localization requires a ground map for trajectory "
+                "and timestamps. Set `ground_map_path` in the "
+                "cross_view_localization_data params."
+            )
         ground_map = data.ground_map
         trajectory = ground_map.trajectory
         times = np.array(ground_map.times)
@@ -609,8 +615,13 @@ class CrossViewLocalization:
         optimized_traj = result.optimized_trajectory
         if result.times is not None:
             traj_times = np.asarray(result.times)
-        else:
+        elif data.ground_map is not None:
             traj_times = np.array(data.ground_map.times)
+        else:
+            raise ValueError(
+                "_visualize_and_report needs either result.times (incremental path) "
+                "or data.ground_map.times (offline path); both are None."
+            )
 
         # Build estimated UTM positions & yaws from optimized trajectory
         est_utm_positions = np.full((len(optimized_traj), 2), np.nan)
