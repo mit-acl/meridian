@@ -75,7 +75,9 @@ class LangevinMatcher:
         # Extract association sets from converged particles
         sorted_values = ld_solver.extract_associations(u, A)
         end_time = time.time()
-        logger.debug(f"Extracting association sets took {end_time - start_time:.3f} seconds")
+        logger.debug(
+            f"Extracting association sets took {end_time - start_time:.3f} seconds"
+        )
 
         # Build lookup for objective computation
         t_lookup0 = time.time()
@@ -109,7 +111,9 @@ class LangevinMatcher:
             results.append((assoc_matrix, obj, count))
 
         end_time = time.time()
-        logger.debug(f"Filtering and computing objectives for {len(sorted_values)} association sets took {end_time - start_time:.3f} seconds")
+        logger.debug(
+            f"Filtering and computing objectives for {len(sorted_values)} association sets took {end_time - start_time:.3f} seconds"
+        )
 
         # Sort by objective descending (best first)
         t_sort0 = time.time()
@@ -117,8 +121,8 @@ class LangevinMatcher:
         t_sort = time.time() - t_sort0
 
         logger.debug(
-            f"LM_INNER setup={t_setup*1000:.1f}ms lookup={t_lookup*1000:.1f}ms "
-            f"sort={t_sort*1000:.1f}ms n_results={len(results)} |A|={len(A_np)}"
+            f"LM_INNER setup={t_setup * 1000:.1f}ms lookup={t_lookup * 1000:.1f}ms "
+            f"sort={t_sort * 1000:.1f}ms n_results={len(results)} |A|={len(A_np)}"
         )
 
         logger.debug(

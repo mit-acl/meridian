@@ -308,9 +308,7 @@ class MapSegment:
         # memoized self._pcd from the per-frame voxel-only _cleanup_points.
         epsilon = self.params.dbscan_eps
         min_points = self.params.dbscan_min_points
-        labels = np.array(
-            pcd_pruned.cluster_dbscan(eps=epsilon, min_points=min_points)
-        )
+        labels = np.array(pcd_pruned.cluster_dbscan(eps=epsilon, min_points=min_points))
 
         max_label = labels.max()
         if max_label < 0:

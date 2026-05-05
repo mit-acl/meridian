@@ -305,7 +305,9 @@ class SegmenterBase:
             1-D torch tensor of shape (C,) on the same device.
         """
         with torch.no_grad():
-            flat = dino_output_patches.reshape(-1, dino_output_patches.shape[-1]).float()
+            flat = dino_output_patches.reshape(
+                -1, dino_output_patches.shape[-1]
+            ).float()
             mean = flat.mean(dim=0)
             mean = mean / mean.norm().clamp(min=1e-12)
         return mean

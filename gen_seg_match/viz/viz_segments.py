@@ -171,7 +171,7 @@ def viz_segments(
 
     if not offscreen:
         render3d_onscreen(geometry_list, label_list, segments.get_mean_point())
-    
+
     return geometry_list, label_list
 
 
