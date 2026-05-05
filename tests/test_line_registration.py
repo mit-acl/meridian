@@ -2,11 +2,11 @@ import pytest
 import numpy as np
 import robotdatapy as rdp
 
-from gen_seg_match.segment.segment_types import SegmentLine, SegmentPoint
-from gen_seg_match.match.segment_matcher import SegmentMatcher
-from gen_seg_match.params.segment_match_params import SegmentMatchParams
-from gen_seg_match.params import RegisterParams
-from gen_seg_match.register.r3d.registerer import Registerer
+from meridian.segment.segment_types import SegmentLine, SegmentPoint
+from meridian.match.segment_matcher import SegmentMatcher
+from meridian.params.segment_match_params import SegmentMatchParams
+from meridian.params import RegisterParams
+from meridian.register.r3d.registerer import Registerer
 
 
 @pytest.fixture

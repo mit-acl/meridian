@@ -2,7 +2,7 @@ import pytest
 import numpy as np
 import robotdatapy.transform as rdpt
 
-from gen_seg_match.segment.segment_types import SegmentLine
+from meridian.segment.segment_types import SegmentLine
 
 
 @pytest.fixture

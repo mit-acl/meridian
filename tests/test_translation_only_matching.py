@@ -16,9 +16,9 @@ clipper/src/invariants/general_segment_distance.cpp:
 import pytest
 import numpy as np
 
-from gen_seg_match.segment.segment_types import SegmentPoint, SegmentList
-from gen_seg_match.match.segment_matcher import SegmentMatcher
-from gen_seg_match.params.segment_match_params import SegmentMatchParams
+from meridian.segment.segment_types import SegmentPoint, SegmentList
+from meridian.match.segment_matcher import SegmentMatcher
+from meridian.params.segment_match_params import SegmentMatchParams
 
 SQRT_ONE_HALF = 0.70710678118
 SQRT_ONE_THIRD = 0.57735026919

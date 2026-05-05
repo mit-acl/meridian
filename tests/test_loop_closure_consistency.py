@@ -9,7 +9,7 @@ import pytest
 from scipy.spatial.transform import Rotation as Rot
 
 import clipperpy
-from gen_seg_match.cross_view.rpgo import (
+from meridian.cross_view.rpgo import (
     CrossViewRPGO,
     CrossViewRPGOParams,
     _build_clipper_data,
