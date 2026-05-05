@@ -6,7 +6,7 @@ from typing import Dict, List, Optional, Tuple
 import numpy as np
 from tqdm import tqdm
 
-from meridian.map2d.aerial_segmenter import AerialSegmenter
+from meridian.segmenter.aerial_segmenter import AerialSegmenter
 from meridian.map2d.segment_to_primitive import SegmentToPrimitiveConverter
 from meridian.map3d.submap import FrameType, Submap
 from meridian.params.segment_to_primitive_params import AerialPatchParams

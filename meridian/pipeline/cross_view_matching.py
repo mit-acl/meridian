@@ -27,13 +27,13 @@ from meridian.params import (
 from meridian.cross_view.place_recognition import CrossViewPlaceRecognition
 from meridian.pipeline.data import CrossViewLocalizationData
 from meridian.utils import expandvars_recursive
-from meridian.map2d.aerial_segmenter import AerialSegmenter
+from meridian.segmenter.aerial_segmenter import AerialSegmenter
 from meridian.map2d.segment_to_primitive import SegmentToPrimitiveConverter
 from meridian.map2d.aerial_patch_primitive_mapping import (
     AerialPatchPrimitiveMapping,
     AerialSegmentationResult,
 )
-from meridian.map2d.ground_segmenter import GroundSegmenter
+from meridian.segmenter.ground_segmenter import GroundSegmenter
 from meridian.map2d.ground_submap_primitive_mapping import (
     GroundSubmapPrimitiveMapping,
     GroundSegmentationResult,

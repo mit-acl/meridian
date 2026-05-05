@@ -22,7 +22,7 @@ from meridian.params.cross_view_params import (
 )
 from meridian.params.data_params import CrossViewLocalizationDataParams
 from meridian.params.segment_to_primitive_params import AerialPatchParams
-from meridian.map2d.aerial_segmenter import AerialSegmenter
+from meridian.segmenter.aerial_segmenter import AerialSegmenter
 from meridian.map2d.segment_to_primitive import SegmentToPrimitiveConverter
 from meridian.map2d.aerial_patch_primitive_mapping import (
     AerialPatchPrimitiveMapping,

@@ -5,7 +5,7 @@ from typing import List, Optional, Union
 import numpy as np
 from tqdm import tqdm
 
-from meridian.map2d.ground_segmenter import GroundSegmenter
+from meridian.segmenter.ground_segmenter import GroundSegmenter
 from meridian.map2d.segment_to_primitive import (
     SegmentToPrimitiveConverter,
     line_is_valid,

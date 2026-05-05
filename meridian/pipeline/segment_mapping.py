@@ -278,7 +278,7 @@ def segment_mapping(
             SegmentToPrimitiveConversionParams,
             GroundSegmenterParams,
         )
-        from meridian.map2d.ground_segmenter import GroundSegmenter
+        from meridian.segmenter.ground_segmenter import GroundSegmenter
         from meridian.map2d.segment_to_primitive import SegmentToPrimitiveConverter
         from meridian.map2d.ground_submap_primitive_mapping import (
             GroundSubmapPrimitiveMapping,

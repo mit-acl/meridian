@@ -46,7 +46,7 @@ from meridian.cross_view.rpgo import (
     CrossViewRPGO,
     pose_data_from_trajectory,
 )
-from meridian.map2d.ground_segmenter import GroundSegmenter
+from meridian.segmenter.ground_segmenter import GroundSegmenter
 from meridian.map2d.ground_submap_primitive_mapping import (
     GroundSubmapPrimitiveMapping,
 )

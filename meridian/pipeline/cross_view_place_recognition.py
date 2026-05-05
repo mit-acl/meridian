@@ -278,7 +278,7 @@ def cross_view_place_recognition(
     )
     from meridian.match.segment_matcher import SegmentMatcher
     from meridian.register.registerer import Registerer2D
-    from meridian.map2d.aerial_segmenter import AerialSegmenter
+    from meridian.segmenter.aerial_segmenter import AerialSegmenter
 
     pipeline_params = CrossViewMatchingParams.load(params)
     aerial_patch_params = AerialPatchParams.load(params)
