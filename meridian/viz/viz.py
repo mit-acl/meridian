@@ -1,12 +1,12 @@
 import robotdatapy.camera as rdpc
 import cv2 as cv
 import numpy as np
-from meridian.segment.segment_types import SegmentPoint, SegmentLine
+from meridian.primitive.primitive import PointPrimitive, LinePrimitive
 
 
 def draw_infinite_line_on_img(
     img,
-    line: SegmentLine,
+    line: LinePrimitive,
     camera_params: rdpc.CameraParams,
     color=(0, 255, 0),
     thickness=2,
@@ -36,7 +36,7 @@ def draw_infinite_line_on_img(
 
 def draw_line_on_img(
     img,
-    line: SegmentLine,
+    line: LinePrimitive,
     camera_params: rdpc.CameraParams,
     color=(0, 255, 0),
     thickness=2,
@@ -85,7 +85,7 @@ def draw_segment_types_on_img(
         (128, 0, 128),
     ]
     for i, seg in enumerate(segments):
-        if type(seg) is SegmentPoint:
+        if type(seg) is PointPrimitive:
             color = colors[i % len(colors)]
             px = rdpc.xyz_2_pixel(seg.point.reshape((3, 1)), camera_params.K).reshape(
                 -1
@@ -101,7 +101,7 @@ def draw_segment_types_on_img(
                     (255, 255, 255),
                     2,
                 )
-        elif type(seg) is SegmentLine:
+        elif type(seg) is LinePrimitive:
             color = colors[i % len(colors)]
             img = draw_line_on_img(img, seg, camera_params, color=color, thickness=3)
             if write_ids:

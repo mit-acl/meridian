@@ -53,7 +53,7 @@ from meridian.map2d.segment_to_primitive import SegmentToPrimitiveConverter
 from meridian.map3d.segment_mapper import SegmentMapper
 from meridian.segmenter.segmenter3d import Segmenter
 from meridian.map3d.submap import Submap
-from meridian.match.segment_matcher import SegmentMatcher
+from meridian.match.primitive_matcher import PrimitiveMatcher
 from meridian.params import (
     AerialPatchParams,
     CrossViewIncrementalParams,
@@ -67,7 +67,7 @@ from meridian.params import (
     RegisterParams,
     SegmentMappingDataParams,
     SegmentMappingParams,
-    SegmentMatchParams,
+    PrimitiveMatchParams,
     SegmentToPrimitiveConversionParams,
     SegmenterParams,
 )
@@ -963,8 +963,8 @@ def cross_view_incremental(
 
     pipeline_params = CrossViewMatchingParams.load(params_path, run=run)
     aerial_patch_params = AerialPatchParams.load(params_path, run=run)
-    segment_match_params = SegmentMatchParams.load(params_path, run=run)
-    segment_match_params.dim = 2
+    primitive_match_params = PrimitiveMatchParams.load(params_path, run=run)
+    primitive_match_params.dim = 2
     register_params = RegisterParams.load(params_path, run=run)
     rpgo_params = CrossViewRPGOParams.load(params_path, run=run)
     incremental_params = CrossViewIncrementalParams.load(params_path, run=run)
@@ -997,7 +997,7 @@ def cross_view_incremental(
             pipeline_params=pipeline_params,
             aerial_patch_params=aerial_patch_params,
             pixel_len_m=loc_data_params.aerial_img_scale or 0.01,
-            matcher=SegmentMatcher(segment_match_params),
+            matcher=PrimitiveMatcher(primitive_match_params),
             registerer=Registerer2D(register_params),
             place_recognition=place_recognition,
         ),
@@ -1090,7 +1090,7 @@ def cross_view_incremental(
         ground_segmenter_params,
         pipeline_params,
         aerial_patch_params,
-        segment_match_params,
+        primitive_match_params,
         register_params,
         rpgo_params,
         incremental_params,

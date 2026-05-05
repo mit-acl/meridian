@@ -1,11 +1,11 @@
-"""Flatten 3D dense submaps to 2D and convert their segments to AerialSegments."""
+"""Flatten 3D dense submaps to 2D and convert their segments to Segment2D objects."""
 
 from copy import deepcopy
 from typing import List
 
 from meridian.map3d.submap import Submap
-from meridian.segment.aerial_segment import AerialSegment
-from meridian.segment.segment_types import GeneralSegment
+from meridian.map2d.segment2d import Segment2D
+from meridian.primitive.primitive import Primitive
 from meridian.utils import clean_up_points
 
 
@@ -42,11 +42,11 @@ def flatten_3d_submap(
     return map_2d
 
 
-def submap_2d_to_aerial(submap_2d: Submap) -> List[AerialSegment]:
-    """Convert each segment in a flattened submap to an AerialSegment."""
+def submap_2d_to_aerial(submap_2d: Submap) -> List[Segment2D]:
+    """Convert each segment in a flattened submap to an Segment2D."""
     aerial_segments = []
     for seg in submap_2d.segments:
-        aerial_segment = AerialSegment(
+        aerial_segment = Segment2D(
             id=seg.id,
             center=seg.point.reshape(-1)[:2],
             area=None,
@@ -61,7 +61,7 @@ def submap_2d_to_aerial(submap_2d: Submap) -> List[AerialSegment]:
 
 
 def _cleanup_segment_points(
-    segment: GeneralSegment,
+    segment: Primitive,
     outlier_removal_std: float,
     dbscan_epsilon: float,
     dbscan_min_points: int,

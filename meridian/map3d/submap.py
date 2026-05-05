@@ -4,7 +4,7 @@ from robotdatapy.transform import transform
 import pickle
 from enum import Enum
 
-from meridian.segment.segment_types import SegmentList
+from meridian.primitive.primitive_list import PrimitiveList
 
 
 class FrameType(Enum):
@@ -20,7 +20,7 @@ class FrameType(Enum):
 class Submap:
     id: int
     time: float
-    segments: SegmentList
+    segments: PrimitiveList
     pose: np.ndarray
     segment_frame: FrameType
     gravity_dir: np.ndarray = None

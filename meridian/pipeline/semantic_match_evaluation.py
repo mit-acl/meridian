@@ -104,7 +104,7 @@ def _seg_point_2d(seg_utm):
 
 
 def _line_min_dist(line1, line2) -> float:
-    """Minimum distance between two SegmentLine objects (3-D)."""
+    """Minimum distance between two LinePrimitive objects (3-D)."""
     return line1.min_dist_to(line2)
 
 

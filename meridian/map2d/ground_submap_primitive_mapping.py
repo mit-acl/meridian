@@ -16,11 +16,8 @@ from meridian.map3d.dense3d_to_dense2d import (
 from meridian.map3d.submap import FrameType, Submap
 from meridian.params.ground_segmenter_params import GroundSegmenterParams
 from meridian.params.segment_to_primitive_params import GroundSubmapParams
-from meridian.segment.segment_types import (
-    DenseSegment,
-    SegmentList,
-    get_roman_ratio_feature,
-)
+from meridian.primitive.primitive_list import PrimitiveList
+from meridian.primitive.dense_segment import DenseSegment, get_roman_ratio_feature
 
 from roman.map.map import ROMANMap
 from meridian.map3d.map import SegmentMap
@@ -37,7 +34,7 @@ logger = logging.getLogger(__name__)
 class GroundSubmapIntermediates:
     flattened_submap: Submap = None
     aerial_segments: list = None
-    general_segments: SegmentList = None
+    general_segments: PrimitiveList = None
 
 
 @dataclass
@@ -195,7 +192,7 @@ class GroundSubmapPrimitiveMapping:
             submap = Submap(
                 id=k,
                 time=ground_map.times[idx],
-                segments=SegmentList(submap_segments),
+                segments=PrimitiveList(submap_segments),
                 pose=pose,
                 segment_frame=FrameType.CAMERA,
                 descriptor=submap_descriptor,
@@ -260,7 +257,7 @@ class GroundSubmapPrimitiveMapping:
 
         # Remove lines that are FOV border artifacts
         params = self.submap_params
-        valid_lines = SegmentList()
+        valid_lines = PrimitiveList()
         for line in sparse_general_segments.get_lines():
             parent_id = line.history[0] if line.history else None
             parent_seg = (

@@ -23,7 +23,7 @@ import matplotlib.cm as cm
 from matplotlib.colors import Normalize
 from matplotlib.cm import ScalarMappable
 
-from meridian.segment.segment_types import SegmentLine, SegmentPoint
+from meridian.primitive.primitive import LinePrimitive, PointPrimitive
 from meridian.viz.utils import color_from_seed
 
 
@@ -36,7 +36,7 @@ def _draw_segments(ax, segments, colors=None, show_ids=True):
     """Draw all segments on an axes with given per-segment colors."""
     for i, seg in enumerate(segments):
         color = colors[i] if colors is not None else NEUTRAL_COLOR
-        if isinstance(seg, SegmentLine):
+        if isinstance(seg, LinePrimitive):
             if seg.num_endpoints == 2:
                 ax.plot(
                     [seg.endpoints[0][0], seg.endpoints[1][0]],
@@ -53,7 +53,7 @@ def _draw_segments(ax, segments, colors=None, show_ids=True):
                     color=color,
                     linewidth=3,
                 )
-        elif isinstance(seg, SegmentPoint):
+        elif isinstance(seg, PointPrimitive):
             ax.plot(
                 seg.get_point()[0],
                 seg.get_point()[1],
@@ -73,7 +73,7 @@ def _draw_segments_on_image(
     """Draw segments converted from meter coords to pixel coords on an image axis."""
     for i, seg in enumerate(segments):
         color = colors[i] if colors is not None else NEUTRAL_COLOR
-        if isinstance(seg, SegmentLine):
+        if isinstance(seg, LinePrimitive):
             if seg.num_endpoints == 2:
                 pts_px = [
                     (
@@ -102,7 +102,7 @@ def _draw_segments_on_image(
                     color=color,
                     linewidth=3,
                 )
-        elif isinstance(seg, SegmentPoint):
+        elif isinstance(seg, PointPrimitive):
             pt = seg.get_point()
             x_px = (pt[0] - origin_m[0]) * px_per_m
             y_px = (pt[1] - origin_m[1]) * px_per_m
@@ -116,7 +116,7 @@ def _draw_segments_on_image(
 
 def _draw_highlight(ax, seg):
     """Draw a highlighted segment (red, thicker)."""
-    if isinstance(seg, SegmentLine):
+    if isinstance(seg, LinePrimitive):
         if seg.num_endpoints == 2:
             ax.plot(
                 [seg.endpoints[0][0], seg.endpoints[1][0]],
@@ -133,7 +133,7 @@ def _draw_highlight(ax, seg):
                 color=HIGHLIGHT_COLOR,
                 linewidth=5,
             )
-    elif isinstance(seg, SegmentPoint):
+    elif isinstance(seg, PointPrimitive):
         ax.plot(
             seg.get_point()[0],
             seg.get_point()[1],
@@ -146,7 +146,7 @@ def _draw_highlight(ax, seg):
 
 def _draw_highlight_on_image(ax, seg, px_per_m, origin_m):
     """Draw a highlighted segment on an image axis (red, thicker)."""
-    if isinstance(seg, SegmentLine):
+    if isinstance(seg, LinePrimitive):
         if seg.num_endpoints == 2:
             pts_px = [
                 (
@@ -175,7 +175,7 @@ def _draw_highlight_on_image(ax, seg, px_per_m, origin_m):
                 color=HIGHLIGHT_COLOR,
                 linewidth=5,
             )
-    elif isinstance(seg, SegmentPoint):
+    elif isinstance(seg, PointPrimitive):
         pt = seg.get_point()
         x_px = (pt[0] - origin_m[0]) * px_per_m
         y_px = (pt[1] - origin_m[1]) * px_per_m
@@ -223,7 +223,7 @@ def _find_nearest_segment(click_xy, segments):
     best_seg = None
     best_dist = np.inf
     for seg in segments:
-        if isinstance(seg, SegmentLine):
+        if isinstance(seg, LinePrimitive):
             query = np.zeros((seg.dim, 1))
             query[:2, 0] = click_pt[:2]
             closest = seg.closest_point_to_point(query).flatten()[:2]
@@ -477,7 +477,7 @@ def run(
 
 
 def _load_segments(filepath):
-    """Load a SegmentList or Submap from a pickle file and return segments."""
+    """Load a PrimitiveList or Submap from a pickle file and return segments."""
     with open(filepath, "rb") as f:
         obj = pickle.load(f)
     # If it's a Submap, extract segments

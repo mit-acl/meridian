@@ -2,7 +2,8 @@ import numpy as np
 from typing import List
 from copy import deepcopy
 
-from meridian.segment.segment_types import SegmentLine, SegmentPoint, SegmentList
+from meridian.primitive.primitive import LinePrimitive, PointPrimitive
+from meridian.primitive.primitive_list import PrimitiveList
 
 
 def _point_to_infinite_line_dist(point, line_point, line_dir):
@@ -12,7 +13,7 @@ def _point_to_infinite_line_dist(point, line_point, line_dir):
     return np.linalg.norm(v - proj)
 
 
-def merge_lines(line1: SegmentLine, line2: SegmentLine) -> SegmentLine:
+def merge_lines(line1: LinePrimitive, line2: LinePrimitive) -> LinePrimitive:
     """Merge two lines using least-squares fit of all constituent endpoints.
 
     Accumulates endpoints through successive merges so that the fitted direction
@@ -57,7 +58,7 @@ def merge_lines(line1: SegmentLine, line2: SegmentLine) -> SegmentLine:
         first_seen = line2.first_seen
     if line2.last_seen is not None and line2.last_seen > last_seen:
         last_seen = line2.last_seen
-    merged = SegmentLine.from_endpoints(
+    merged = LinePrimitive.from_endpoints(
         -1,
         ep1,
         ep2,
@@ -72,19 +73,19 @@ def merge_lines(line1: SegmentLine, line2: SegmentLine) -> SegmentLine:
 
 def merge_points(pt1, pt2):
     new_point = (pt1.get_point() + pt2.get_point()) / 2
-    return SegmentPoint(-1, new_point)
+    return PointPrimitive(-1, new_point)
 
 
 def clean_up_line_map(
-    lines: List[SegmentLine],
+    lines: List[LinePrimitive],
     max_iter: int = 1000,
     angle_tol: float = np.deg2rad(5),
     dist_tol: float = 0.5,
     perp_dist_tol: float = 0.5,
     short_line_thresh: float = None,
     semantic_sim_thresh: float = None,
-) -> SegmentList:
-    def merge_check(line1: SegmentLine, line2: SegmentLine):
+) -> PrimitiveList:
+    def merge_check(line1: LinePrimitive, line2: LinePrimitive):
         d1 = line1.direction
         d2 = line2.direction
         cross_norm = np.linalg.norm(np.cross(d1, d2))
@@ -137,15 +138,15 @@ def clean_up_line_map(
 
 
 def clean_up_point_map(
-    points: List[SegmentPoint], max_iter: int = 1000, dist_tol: float = 0.5
-) -> List[SegmentPoint]:
+    points: List[PointPrimitive], max_iter: int = 1000, dist_tol: float = 0.5
+) -> List[PointPrimitive]:
     def merge_check(pt1, pt2):
         return np.linalg.norm(pt1.get_point() - pt2.get_point()) < dist_tol
 
     return _clean_up_map(points, merge_check, merge_points, max_iter)
 
 
-def split_long_lines(lines: SegmentList, max_length: float) -> SegmentList:
+def split_long_lines(lines: PrimitiveList, max_length: float) -> PrimitiveList:
     new_lines = []
     for line in lines:
         line_length = line.get_length()
@@ -165,7 +166,7 @@ def split_long_lines(lines: SegmentList, max_length: float) -> SegmentList:
                 new_line = deepcopy(line)
                 new_line.endpoints = (seg_start, seg_end)
                 new_lines.append(new_line)
-    return SegmentList(new_lines)
+    return PrimitiveList(new_lines)
 
 
 def _clean_up_map(
@@ -173,7 +174,7 @@ def _clean_up_map(
     merge_check: callable,
     merge_objects: callable,
     max_iter: int = 1000,
-) -> SegmentList:
+) -> PrimitiveList:
     # only shallow copy the list, not the objects themselves, since we are modifying in place
     objects = list(objects)
     prev_objects = list(objects)
@@ -193,4 +194,4 @@ def _clean_up_map(
             break
         prev_objects = list(objects)
 
-    return SegmentList(objects), outer_iter + 1
+    return PrimitiveList(objects), outer_iter + 1

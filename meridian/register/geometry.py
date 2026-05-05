@@ -1,10 +1,10 @@
 import numpy as np
 import numba
-from meridian.segment.segment_types import SegmentList
+from meridian.primitive.primitive_list import PrimitiveList
 
 
-def extract_line_arrays(seg_list: SegmentList):
-    """Extract line normals (2D) and offsets from a SegmentList.
+def extract_line_arrays(seg_list: PrimitiveList):
+    """Extract line normals (2D) and offsets from a PrimitiveList.
 
     Normal = direction rotated +90°.  Offset = dot(normal, point).
 

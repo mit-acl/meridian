@@ -5,7 +5,7 @@ import numpy as np
 import torch
 
 from meridian.match.langevin_dynamics import LangevinDynamics
-from meridian.params.segment_match_params import LangevinMatcherParams
+from meridian.params.primitive_match_params import LangevinMatcherParams
 
 
 import time

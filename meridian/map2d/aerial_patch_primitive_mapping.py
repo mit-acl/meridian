@@ -10,8 +10,8 @@ from meridian.segmenter.aerial_segmenter import AerialSegmenter
 from meridian.map2d.segment_to_primitive import SegmentToPrimitiveConverter
 from meridian.map3d.submap import FrameType, Submap
 from meridian.params.segment_to_primitive_params import AerialPatchParams
-from meridian.segment.aerial_segment import AerialSegment
-from meridian.segment.segment_types import SegmentList
+from meridian.map2d.segment2d import Segment2D
+from meridian.primitive.primitive_list import PrimitiveList
 
 logger = logging.getLogger(__name__)
 
@@ -26,8 +26,8 @@ Crop = Tuple[int, int, int, int]
 @dataclass
 class AerialPatchIntermediates:
     patch_img: np.ndarray = None
-    aerial_segments: List[AerialSegment] = None
-    general_segments: SegmentList = None  # before sparsification
+    aerial_segments: List[Segment2D] = None
+    general_segments: PrimitiveList = None  # before sparsification
 
 
 @dataclass
@@ -183,7 +183,7 @@ class AerialPatchPrimitiveMapping:
                 desc="Aerial post-processing",
             )
         for j_idx, y1, i_idx, x1, crop, patch_img, sub_patch_results in post_iterator:
-            all_general_segments = SegmentList()
+            all_general_segments = PrimitiveList()
             for aerial_segments, sub_crop in sub_patch_results:
                 general_segments = self.converter.convert(
                     aerial_segments,

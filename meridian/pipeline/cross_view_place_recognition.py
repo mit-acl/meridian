@@ -271,12 +271,12 @@ def cross_view_place_recognition(
     from meridian.params import (
         CrossViewMatchingParams,
         CrossViewLocalizationDataParams,
-        SegmentMatchParams,
+        PrimitiveMatchParams,
         AerialSegmenterParams,
         AerialPatchParams,
         RegisterParams,
     )
-    from meridian.match.segment_matcher import SegmentMatcher
+    from meridian.match.primitive_matcher import PrimitiveMatcher
     from meridian.register.registerer import Registerer2D
     from meridian.segmenter.aerial_segmenter import AerialSegmenter
 
@@ -288,7 +288,7 @@ def cross_view_place_recognition(
             pipeline_params=pipeline_params,
             aerial_patch_params=aerial_patch_params,
             pixel_len_m=aerial_segmenter.params.pixel_len_m,
-            matcher=SegmentMatcher(SegmentMatchParams.load(params)),
+            matcher=PrimitiveMatcher(PrimitiveMatchParams.load(params)),
             registerer=Registerer2D(RegisterParams.load(params)),
         ),
     )

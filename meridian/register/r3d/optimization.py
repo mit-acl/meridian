@@ -5,7 +5,7 @@ import torch
 from typing import Tuple, Optional, List
 
 from meridian.register.r3d.geometry import transform_plucker_torch
-from meridian.segment.segment_types import SegmentList
+from meridian.primitive.primitive_list import PrimitiveList
 
 # def refine_transform(R_init: np.ndarray, t_init: np.ndarray,
 #                     source: PointLineCloud, target: PointLineCloud,
@@ -223,8 +223,8 @@ from meridian.segment.segment_types import SegmentList
 #     PLS: PointLineLoss,
 #     R: np.ndarray,
 #     t: np.ndarray,
-#     source: SegmentList,
-#     target: SegmentList,
+#     source: PrimitiveList,
+#     target: PrimitiveList,
 #     device: torch.device = "cpu",
 # ) -> float:
 #     """
@@ -237,9 +237,9 @@ from meridian.segment.segment_types import SegmentList
 #         Candidate 3x3 rotation matrix.
 #     t : np.ndarray
 #         Candidate 3x1 translation vector.
-#     source : SegmentList
+#     source : PrimitiveList
 #         Source point-line cloud with points (Nx3) and lines (Mx6 (d, m) Plücker coordinates).
-#     target : SegmentList
+#     target : PrimitiveList
 #         Target point-line cloud with points (Nx3) and lines (Mx6 (d, m) Plücker coordinates).
 #     device : torch.device
 #         Device to run the computation on.

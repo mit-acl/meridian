@@ -1,13 +1,8 @@
 import numpy as np
 from typing import Optional, List, Union, Iterable
 from meridian.params import RegisterParams
-from meridian.segment.segment_types import (
-    SegmentPoint,
-    GeneralSegment,
-    SegmentList,
-    SegmentLine,
-    SegmentPlane,
-)
+from meridian.primitive.primitive import PointPrimitive, Primitive, LinePrimitive
+from meridian.primitive.primitive_list import PrimitiveList
 
 # import torch
 
@@ -124,8 +119,8 @@ class PointLinePlaneLoss:
         self,
         R: np.ndarray,
         t: np.ndarray,
-        source: List[GeneralSegment],
-        target: List[GeneralSegment],
+        source: List[Primitive],
+        target: List[Primitive],
         gravity_src: Optional[np.ndarray] = None,
         gravity_tgt: Optional[np.ndarray] = None,
     ) -> float:
@@ -137,9 +132,9 @@ class PointLinePlaneLoss:
             A 3x3 rotation matrix.
         t : np.ndarray
             A 3x1 translation vector.
-        source : List[GeneralSegment]
+        source : List[Primitive]
             List of source segments (points, lines, planes).
-        target : List[GeneralSegment]
+        target : List[Primitive]
             List of target segments (points, lines, planes).
         gravity_src : Optional[np.ndarray]
             Gravity direction in source frame.
@@ -150,12 +145,11 @@ class PointLinePlaneLoss:
         loss : float
             The computed loss value.
         """
-        source = SegmentList(source)
-        target = SegmentList(target)
+        source = PrimitiveList(source)
+        target = PrimitiveList(target)
 
         num_points = len(source.get_points())
         num_lines = len(source.get_lines())
-        num_planes = len(source.get_planes())
         use_gravity = (
             self.params.use_gravity
             and gravity_src is not None
@@ -170,12 +164,6 @@ class PointLinePlaneLoss:
             source.get_lines().moments,
         )  # (M, 3), (M, 3)
         t_dirs, t_mom = target.get_lines().directions, target.get_lines().moments
-
-        s_norm, s_off = (
-            source.get_planes().normals,
-            source.get_planes().offsets,
-        )  # (O, 3), (O, 1)
-        t_norm, t_off = target.get_planes().normals, target.get_planes().offsets
 
         loss = 0.0
 
@@ -216,35 +204,6 @@ class PointLinePlaneLoss:
                 0.5
                 * self.params.line_moment_weight
                 * np.sum((s_mom_transformed - t_mom) ** 2)
-            )
-
-        # -----------------------
-        # Plane correspondences
-        # -----------------------
-        if num_planes > 0:
-            # n' = R @ n
-            s_norm_transformed = (R @ s_norm.T).T
-            # c' = c + n' * t
-            s_off_transformed = s_off + np.sum(
-                s_norm_transformed * t.ravel(), axis=1, keepdims=True
-            )
-
-            # Plane normal loss
-            normal_cosine_sim = np.sum(s_norm_transformed * t_norm, axis=1)
-
-            if self.bidirectional:
-                # also aligns offsets for consistency
-                reverse_mask = normal_cosine_sim < 0
-                normal_cosine_sim[reverse_mask] *= -1
-                s_off_transformed[reverse_mask] *= -1
-
-            loss += self.params.plane_normal_weight * np.sum(-normal_cosine_sim)
-
-            # Plane offset loss
-            loss += (
-                0.5
-                * self.params.plane_offset_weight
-                * np.sum((s_off_transformed - t_off) ** 2)
             )
 
         # -----------------------

@@ -3,14 +3,12 @@ from dataclasses import dataclass
 import clipperpy
 from robotdatapy import transform as transform
 from typing import Tuple, List
-import pickle
-import open3d as o3d
 from copy import deepcopy
 
 from meridian.viz.utils import color_from_seed
 
 
-class GeneralSegment:
+class Primitive:
     id: int
     point: np.ndarray
     ratio_feature: np.ndarray = None  # optional ratio feature vector
@@ -84,7 +82,7 @@ class GeneralSegment:
 
 
 @dataclass
-class SegmentPoint(GeneralSegment):
+class PointPrimitive(Primitive):
     id: int
     point: np.ndarray
     ratio_feature: np.ndarray = None  # optional ratio feature vector
@@ -102,7 +100,7 @@ class SegmentPoint(GeneralSegment):
 
     def __str__(self):
         return (
-            f"SegmentPoint(id={self.id}, point={self.point.reshape(-1)}, "
+            f"PointPrimitive(id={self.id}, point={self.point.reshape(-1)}, "
             + f"ratio_feature_dim={self.ratio_feature_dim}, "
             + f"cos_feature_dim={self.cos_feature_dim}, "
             + f"first_seen={self.first_seen}, last_seen={self.last_seen})"
@@ -133,7 +131,7 @@ class SegmentPoint(GeneralSegment):
             if self.dense_points is not None:
                 new_dense_points = np.zeros((dim, self.dense_points.shape[1]))
                 new_dense_points[: self.dim, :] = self.dense_points
-        return SegmentPoint(
+        return PointPrimitive(
             self.id,
             new_point,
             self._copy_optional_array(self.ratio_feature),
@@ -150,7 +148,7 @@ class SegmentPoint(GeneralSegment):
         return self
 
     def copy(self):
-        return SegmentPoint(
+        return PointPrimitive(
             self.id,
             self.point.copy(),
             self._copy_optional_array(self.ratio_feature),
@@ -163,7 +161,7 @@ class SegmentPoint(GeneralSegment):
 
 
 @dataclass
-class SegmentLine(GeneralSegment):
+class LinePrimitive(Primitive):
     id: int
     point: np.ndarray
     direction: np.ndarray = None
@@ -180,7 +178,7 @@ class SegmentLine(GeneralSegment):
 
     def __post_init__(self):
         if self.direction is None:
-            raise ValueError("Missing required field 'direction' for SegmentLine")
+            raise ValueError("Missing required field 'direction' for LinePrimitive")
         if self.cos_feature is not None:
             self.cos_feature /= np.linalg.norm(self.cos_feature)
         self.point = self._reshape_vector(self.point)
@@ -194,7 +192,7 @@ class SegmentLine(GeneralSegment):
 
     def __str__(self):
         return (
-            f"SegmentLine(id={self.id}, point={self.point}, direction={self.direction}, "
+            f"LinePrimitive(id={self.id}, point={self.point}, direction={self.direction}, "
             + f"num_endpoints={self.num_endpoints}, "
             + f"ratio_feature_dim={self.ratio_feature_dim}, "
             + f"cos_feature_dim={self.cos_feature_dim}, "
@@ -273,7 +271,7 @@ class SegmentLine(GeneralSegment):
             if self.dense_points is not None:
                 new_dense_points = np.zeros((dim, self.dense_points.shape[1]))
                 new_dense_points[: self.dim, :] = self.dense_points
-        return SegmentLine(
+        return LinePrimitive(
             self.id,
             new_point,
             new_direction,
@@ -309,7 +307,7 @@ class SegmentLine(GeneralSegment):
         return self
 
     def copy(self):
-        return SegmentLine(
+        return LinePrimitive(
             self.id,
             self.point.copy(),
             self.direction.copy(),
@@ -331,16 +329,13 @@ class SegmentLine(GeneralSegment):
         else:
             return np.inf
 
-    def is_parallel_to(self, other: "SegmentLine", tol: float = 1e-3) -> bool:
+    def is_parallel_to(self, other: "LinePrimitive", tol: float = 1e-3) -> bool:
         assert self.dim == other.dim, "Lines must be in the same dimension"
         cross_product = np.cross(self.get_direction(), other.get_direction())
         return np.linalg.norm(cross_product) < tol
 
     def has_point_on_line(self, point: np.ndarray, tol: float = 1e-3) -> bool:
         assert self.dim == point.shape[0], "Point must be in the same dimension as line"
-        # point_vec = point - self.get_point()
-        # cross_product = np.cross(self.get_direction(), point_vec)
-        # on_infinite_line = np.linalg.norm(cross_product) < tol
         closest_point_on_infinite = self.closest_point_to_point(
             point, use_infinite_line=True
         )
@@ -366,14 +361,14 @@ class SegmentLine(GeneralSegment):
             dot_product = np.dot(self.get_direction(), point_to_ep0)
             return dot_product >= 0
 
-    def angle_between(self, other: "SegmentLine") -> float:
+    def angle_between(self, other: "LinePrimitive") -> float:
         """Returns the angle in radians between two lines."""
         assert self.dim == other.dim, "Lines must be in the same dimension"
         dot_product = np.dot(self.get_direction(), other.get_direction())
         angle = np.arccos(np.clip(dot_product, -1.0, 1.0))
         return angle
 
-    def closest_points(self, other: "SegmentLine") -> np.ndarray:
+    def closest_points(self, other: "LinePrimitive") -> np.ndarray:
         if self.is_parallel_to(other):
             raise ParallelLinesException(self, other)
 
@@ -460,7 +455,7 @@ class SegmentLine(GeneralSegment):
         closest_pt = self.closest_point_to_point(point, use_infinite_line)
         return np.linalg.norm(closest_pt - point)
 
-    def min_dist_to(self, other: "SegmentLine") -> float:
+    def min_dist_to(self, other: "LinePrimitive") -> float:
         """Returns the minimum distance between two line segments."""
         if self.is_parallel_to(other):
             if min(self.num_endpoints, other.num_endpoints) == 0:
@@ -492,365 +487,9 @@ class SegmentLine(GeneralSegment):
         return self.direction
 
 
-@dataclass
-class SegmentPlane(GeneralSegment):
-    id: int
-    point: np.ndarray
-    normal: np.ndarray = None  # required normal vector
-    cos_feature: np.ndarray = None  # optional cosine feature vector
-    ratio_feature: np.ndarray = None  # optional ratio feature vector
-    first_seen: float = None  # optional timestamp of first observation
-    last_seen: float = None  # optional timestamp of last observation
-    dense_points: np.ndarray = None  # optional dense point cloud
-    history: List[int] = None  # optional list of past segment ids
-
-    def __post_init__(self):
-        if self.normal is None:
-            raise ValueError("Missing required field 'normal' for SegmentPlane")
-        if self.cos_feature is not None:
-            self.cos_feature /= np.linalg.norm(self.cos_feature)
-        self.point = self._reshape_vector(self.point)
-        self.normal = self._reshape_vector(self.normal)
-        self._normalize_normal()
-        super().__post_init__()
-
-    def to_array(self, include_ratio=True, include_cos=True) -> np.ndarray:
-        features = self._to_array_features(include_ratio, include_cos)
-
-        return np.concatenate(
-            [
-                [clipperpy.invariants.GeneralSegmentDistance.PLANE.value],
-                self.get_point(),
-                self.get_normal(),
-                features,
-            ]
-        )
-
-    def transform(self, T: np.ndarray):
-        self.point = transform.transform(T, self.point)
-        self.normal = (T[0:3, 0:3] @ self.normal.reshape((3, 1))).flatten()
-        self.normal /= np.linalg.norm(self.normal)
-        if self.dense_points is not None:
-            self.dense_points = transform.transform(T, self.dense_points)
-        return self
-
-    def copy(self) -> "SegmentPlane":
-        return SegmentPlane(
-            self.id,
-            self.point.copy(),
-            self.normal.copy(),
-            self._copy_optional_array(self.ratio_feature),
-            self._copy_optional_array(self.cos_feature),
-            first_seen=self.first_seen,
-            last_seen=self.last_seen,
-            dense_points=self._copy_optional_array(self.dense_points),
-            history=deepcopy(self.history),
-        )
-
-    def get_normal(self) -> np.ndarray:
-        return self.normal
-
-    def _normalize_normal(self):
-        normalized_normal = self.normal / np.linalg.norm(self.normal)
-        if np.dot(self.normal, normalized_normal) < 0:
-            normalized_normal = -normalized_normal
-        self.normal = normalized_normal
-        return self.normal
-
-
 class ParallelLinesException(Exception):
-    def __init__(self, line1: SegmentLine, line2: SegmentLine):
+    def __init__(self, line1: LinePrimitive, line2: LinePrimitive):
         self.line1 = line1
         self.line2 = line2
         message = f"Parallel lines detected: {line1} and {line2}"
         super().__init__(message)
-
-
-def get_roman_ratio_feature(roman_segment) -> np.ndarray:
-    """Pack ROMAN segment volume/linearity/planarity/scattering into a 4-vector."""
-    try:
-        volume = roman_segment.volume
-    except Exception:
-        volume = 0.0
-    return np.array(
-        [
-            volume,
-            roman_segment.linearity,
-            roman_segment.planarity,
-            roman_segment.scattering,
-        ]
-    )
-
-
-@dataclass
-class DenseSegment(GeneralSegment):
-    id: int
-    dense_points: np.ndarray
-    ratio_feature: np.ndarray = None  # optional ratio feature vector
-    cos_feature: np.ndarray = None  # optional cosine feature vector
-    first_seen: float = None  # optional timestamp of first observation
-    last_seen: float = None  # optional timestamp of last observation
-    history: List[int] = None  # optional list of past segment ids
-    occluded_points: np.ndarray = None  # optional occlusion points
-
-    _gaussian: np.ndarray = None
-    _pcd: o3d.geometry.PointCloud = None
-    _eigvals: np.ndarray = None
-
-    @property
-    def points(self) -> np.ndarray:
-        return self.dense_points
-
-    @property
-    def pcd(self):
-        if self._pcd is None:
-            self._pcd = o3d.geometry.PointCloud()
-            self._pcd.points = o3d.utility.Vector3dVector(self.points)
-        return self._pcd
-
-    @property
-    def gaussian(self):
-        if self._gaussian is None:
-            self._gaussian = self.pcd.compute_mean_and_covariance()
-        return self._gaussian
-
-    @property
-    def normalized_eigenvalues(self):
-        """Compute the normalized eigenvalues of the covariance matrix
-        as a np array [e1, e2, e3]
-        e1 >= e2 >= e3 so that the sum is one
-        """
-        if self._eigvals is None:
-            _, C = self.gaussian
-            _, eigvals, _ = np.linalg.svd(C)  # svd return in descending order
-            self._eigvals = eigvals / eigvals.sum()
-        return self._eigvals
-
-    @property
-    def num_points(self) -> int:
-        return self.dense_points.shape[1]
-
-    @property
-    def semantic_descriptor(self) -> np.ndarray:
-        return self.cos_feature
-
-    @property
-    def linearity(self):
-        """Large if similar to a 1D line (Weinmann et al. ISPRS 2014)
-
-        Args:
-            e (np.ndarray): normalized eigenvalues of this point cloud
-        """
-        e = self.normalized_eigenvalues
-        return (e[0] - e[1]) / e[0]
-
-    @property
-    def planarity(self):
-        """Large if similar to a 2D plane (Weinmann et al. ISPRS 2014)
-        Args:
-            e (np.ndarray): normalized eigenvalues of this point cloud
-        """
-        e = self.normalized_eigenvalues
-        return (e[1] - e[2]) / e[0]
-
-    @property
-    def scattering(self):
-        """Large if this object is 3D, i.e., neither a line nor a plane (Weinmann et al. ISPRS 2014)
-
-        Args:
-            e (np.ndarray): normalized eigenvalues of this point cloud
-        """
-        e = self.normalized_eigenvalues
-        return e[2] / e[0]
-
-    @classmethod
-    def from_observation(cls, observation):
-        return cls(
-            id=0,
-            dense_points=transform.transform(observation.pose, observation.point_cloud),
-            first_seen=observation.time,
-            last_seen=observation.time,
-            cos_feature=observation.semantic_descriptor,
-            occluded_points=transform.transform(
-                observation.pose, observation.occluded_points
-            ),
-            history=[observation.id],
-        )
-
-    def __post_init__(self):
-        if self.cos_feature is not None:
-            self.cos_feature /= np.linalg.norm(self.cos_feature)
-        super().__post_init__()
-
-    def transform(self, T):
-        self.dense_points = transform.transform(T, self.dense_points)
-        if self.occluded_points is not None:
-            self.occluded_points = transform.transform(T, self.occluded_points)
-        return self
-
-    def copy(self):
-        return DenseSegment(
-            self.id,
-            self.dense_points.copy(),
-            self._copy_optional_array(self.ratio_feature),
-            self._copy_optional_array(self.cos_feature),
-            first_seen=self.first_seen,
-            last_seen=self.last_seen,
-            occluded_points=self._copy_optional_array(self.occluded_points),
-            history=deepcopy(self.history),
-        )
-
-
-class SegmentList(List[GeneralSegment]):
-    """A list of GeneralSegment objects with some helper functions."""
-
-    def __add__(self, other: "SegmentList") -> "SegmentList":
-        return SegmentList(super().__add__(other))
-
-    @classmethod
-    def load(cls, filepath: str) -> "SegmentList":
-        """Loads a segment list from a pickle file."""
-        with open(filepath, "rb") as f:
-            segment_list = pickle.load(f)
-        return segment_list
-
-    def save(self, filepath: str):
-        """Saves the segment list to a pickle file."""
-        with open(filepath, "wb") as f:
-            pickle.dump(self, f)
-
-    @property
-    def first_seen(self) -> float:
-        return min(seg.first_seen for seg in self)
-
-    @property
-    def last_seen(self) -> float:
-        return max(seg.last_seen for seg in self)
-
-    @property
-    def ids(self) -> List[int]:
-        return [seg.id for seg in self]
-
-    def get_points(self) -> "PointList":
-        return PointList([seg for seg in self if type(seg) is SegmentPoint])
-
-    def get_lines(self) -> "LineList":
-        return LineList([seg for seg in self if type(seg) is SegmentLine])
-
-    def get_planes(self) -> "PlaneList":
-        return PlaneList([seg for seg in self if type(seg) is SegmentPlane])
-
-    def type_ordered(self) -> "SegmentList":
-        cache = self.__dict__.get("_type_ordered_cache")
-        if cache is None or cache[0] != len(self):
-            points = self.get_points()
-            lines = self.get_lines()
-            planes = self.get_planes()
-            ordered = SegmentList(points + lines + planes)
-            ids = np.fromiter(
-                (s.id for s in ordered), dtype=np.int64, count=len(ordered)
-            )
-            self.__dict__["_type_ordered_cache"] = (len(self), ordered, ids)
-            return ordered
-        return cache[1]
-
-    def type_ordered_ids(self) -> np.ndarray:
-        self.type_ordered()
-        return self.__dict__["_type_ordered_cache"][2]
-
-    def get_type_ordered_idx(self, idx) -> GeneralSegment:
-        return self.type_ordered()[idx]
-
-    def _id_index(self) -> dict:
-        cache = self.__dict__.get("_id_index_cache")
-        if cache is None or cache[0] != len(self):
-            index = {seg.id: seg for seg in self}
-            self.__dict__["_id_index_cache"] = (len(self), index)
-            return index
-        return cache[1]
-
-    def get_segment_from_id(self, id) -> GeneralSegment:
-        return self._id_index().get(id)
-
-    def sublist_from_ids(self, ids: List[int]) -> "SegmentList":
-        index = self._id_index()
-        return SegmentList([index[id_i] for id_i in ids if id_i in index])
-
-    def has_id(self, id) -> bool:
-        return id in self._id_index()
-
-    def transform(self, T: np.ndarray) -> "SegmentList":
-        for seg in self:
-            seg.transform(T)
-        return self
-
-    def copy(self) -> "SegmentList":
-        return SegmentList([seg.copy() for seg in self])
-
-    def get_mean_point(self) -> np.ndarray:
-        all_points = np.array([seg.get_point() for seg in self])
-        return np.mean(all_points, axis=0)
-
-    def reindex(self):
-        for new_id, seg in enumerate(self):
-            seg.id = new_id
-        return self
-
-    def to_dim(self, dim: int) -> "SegmentList":
-        return SegmentList([seg.to_dim(dim) for seg in self])
-
-    @property
-    def dim(self) -> int:
-        if len(self) == 0:
-            return 0
-        dim = self[0].dim
-        for seg in self:
-            if seg.dim != dim:
-                return None
-        return dim
-
-
-class PointList(SegmentList[SegmentPoint]):
-    def __post_init__(self):
-        for seg in self:
-            assert type(seg) == SegmentPoint, (
-                "All segments must be of type SegmentPoint"
-            )
-
-    @property
-    def points(self) -> np.ndarray:
-        return np.array([seg.point for seg in self]).reshape(len(self), self.dim)
-
-
-class LineList(SegmentList[SegmentLine]):
-    def __post_init__(self):
-        for seg in self:
-            assert type(seg) == SegmentLine, "All segments must be of type SegmentLine"
-
-    @property
-    def directions(self) -> np.ndarray:
-        return np.array([seg.direction for seg in self]).reshape(len(self), self.dim)
-
-    @property
-    def moments(self) -> np.ndarray:
-        return np.array([np.cross(seg.point, seg.direction) for seg in self]).reshape(
-            len(self), self.dim
-        )
-
-
-class PlaneList(SegmentList[SegmentPlane]):
-    def __post_init__(self):
-        for seg in self:
-            assert type(seg) == SegmentPlane, (
-                "All segments must be of type SegmentPlane"
-            )
-
-    @property
-    def normals(self) -> np.ndarray:
-        return np.array([seg.normal for seg in self]).reshape(len(self), self.dim)
-
-    @property
-    def offsets(self) -> np.ndarray:
-        return np.array([np.dot(seg.normal, seg.point) for seg in self]).reshape(
-            len(self), 1
-        )

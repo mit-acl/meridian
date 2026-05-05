@@ -854,20 +854,20 @@ def cross_view_localization(
     ground_submaps = None
     if rpgo_params.rerun_match_with_known_rot:
         from meridian.params import (
-            SegmentMatchParams,
+            PrimitiveMatchParams,
             CrossViewMatchingParams,
             CrossViewPlaceRecognitionParams,
             AerialPatchParams,
             RegisterParams,
         )
         from meridian.cross_view.place_recognition import CrossViewPlaceRecognition
-        from meridian.match.segment_matcher import SegmentMatcher
+        from meridian.match.primitive_matcher import PrimitiveMatcher
         from meridian.register.registerer import Registerer2D
 
         pipeline_params = CrossViewMatchingParams.load(params)
         aerial_patch_params = AerialPatchParams.load(params)
-        segment_match_params = SegmentMatchParams.load(params)
-        segment_match_params.dim = 2
+        primitive_match_params = PrimitiveMatchParams.load(params)
+        primitive_match_params.dim = 2
 
         try:
             pr_params = CrossViewPlaceRecognitionParams.load(params)
@@ -881,7 +881,7 @@ def cross_view_localization(
             pipeline_params=pipeline_params,
             aerial_patch_params=aerial_patch_params,
             pixel_len_m=data.aerial_img_scale,
-            matcher=SegmentMatcher(segment_match_params),
+            matcher=PrimitiveMatcher(primitive_match_params),
             registerer=Registerer2D(RegisterParams.load(params)),
             place_recognition=place_recognition,
         )
@@ -991,20 +991,20 @@ if __name__ == "__main__":
     ground_submaps = None
     if rpgo_params.rerun_match_with_known_rot:
         from meridian.params import (
-            SegmentMatchParams,
+            PrimitiveMatchParams,
             CrossViewMatchingParams,
             CrossViewPlaceRecognitionParams,
             AerialPatchParams,
             RegisterParams,
         )
         from meridian.cross_view.place_recognition import CrossViewPlaceRecognition
-        from meridian.match.segment_matcher import SegmentMatcher
+        from meridian.match.primitive_matcher import PrimitiveMatcher
         from meridian.register.registerer import Registerer2D
 
         pipeline_params = CrossViewMatchingParams.load(args.params)
         aerial_patch_params = AerialPatchParams.load(args.params)
-        segment_match_params = SegmentMatchParams.load(args.params)
-        segment_match_params.dim = 2
+        primitive_match_params = PrimitiveMatchParams.load(args.params)
+        primitive_match_params.dim = 2
 
         try:
             pr_params = CrossViewPlaceRecognitionParams.load(args.params)
@@ -1018,7 +1018,7 @@ if __name__ == "__main__":
             pipeline_params=pipeline_params,
             aerial_patch_params=aerial_patch_params,
             pixel_len_m=data.aerial_img_scale,
-            matcher=SegmentMatcher(segment_match_params),
+            matcher=PrimitiveMatcher(primitive_match_params),
             registerer=Registerer2D(RegisterParams.load(args.params)),
             place_recognition=place_recognition,
         )

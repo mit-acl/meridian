@@ -9,8 +9,9 @@ from functools import cached_property
 
 from roman.viz import visualize_segment_on_img
 
-from meridian.segment.aerial_segment import AerialSegment
-from meridian.segment.segment_types import SegmentList, SegmentLine, SegmentPoint
+from meridian.map2d.segment2d import Segment2D
+from meridian.primitive.primitive import LinePrimitive, PointPrimitive
+from meridian.primitive.primitive_list import PrimitiveList
 
 # TODO: Figure out how to encode the height of the line
 LINE_CAMERA_HEIGHT_OFFSET = 0.5
@@ -26,8 +27,8 @@ class AssociationVizParams:
     aerial_img: np.ndarray
     ground_img_data: ImgData
     ground_pose_data: PoseData
-    matched_aerial_segments: SegmentList
-    matched_ground_segments: SegmentList
+    matched_aerial_segments: PrimitiveList
+    matched_ground_segments: PrimitiveList
     output_path: str
     aerial_img_pixel_scale: float = 0.01
     aerial_img_crop: Tuple[int, int, int, int] = (0, 0, -1, -1)
@@ -141,7 +142,7 @@ class AssociationViz:
         aerial_outlines = []
         # get segment outlines in aerial image
         for seg in self.params.matched_aerial_segments:
-            if type(seg) is AerialSegment:
+            if type(seg) is Segment2D:
                 convex_hull = seg.convex_hull_pixels(
                     img_pixel_scale=self.params.cropped_img_pixel_scale,
                     img_origin_m=self.params.aerial_crop_origin_m,
@@ -154,7 +155,7 @@ class AssociationViz:
                     seg.viz_color[::-1],
                     self.params.line_width,
                 )
-            elif type(seg) is SegmentLine:
+            elif type(seg) is LinePrimitive:
                 if seg.num_endpoints == 2:
                     points = (
                         (
@@ -188,7 +189,7 @@ class AssociationViz:
                     tuple(seg.color_from_id(order="bgr")),
                     self.params.line_width,
                 )
-            elif isinstance(seg, SegmentPoint):
+            elif isinstance(seg, PointPrimitive):
                 point = (
                     (
                         (seg.point.flatten()[:2] - self.params.aerial_crop_origin_m)
@@ -245,7 +246,7 @@ class AssociationViz:
                     ground_outlines[i] = ground_outlines[i].astype(np.int32)
                 if seg.first_seen - self.params.time_buffer <= t <= seg.last_seen:
                     # if True:
-                    if isinstance(seg, SegmentLine):
+                    if isinstance(seg, LinePrimitive):
                         endpt3d = (np.zeros((3,)), np.zeros((3,)))
                         for ii in [0, 1]:
                             endpt3d[ii][0:2] = seg.endpoints[ii][0:2]
@@ -270,7 +271,7 @@ class AssociationViz:
                             seg.color_from_id(order="bgr"),
                             self.params.line_width,
                         )
-                    elif isinstance(seg, SegmentPoint):
+                    elif isinstance(seg, PointPrimitive):
                         pt = self.get_point_on_img(
                             np.concatenate([seg.point.flatten(), [seg.height]]),
                             ground_pose_t,
@@ -367,7 +368,7 @@ class AssociationViz:
         if point3d_cam_1[2] <= 0 and point3d_cam_2[2] <= 0:  # behind camera
             return None
 
-        closest_line_point = SegmentLine.from_endpoints(
+        closest_line_point = LinePrimitive.from_endpoints(
             -1, point3d_cam_1, point3d_cam_2
         ).closest_point_to_point(np.array([0.0, 0.0, 0.0]))
         if np.linalg.norm(closest_line_point) > self.params.min_segment_dist:

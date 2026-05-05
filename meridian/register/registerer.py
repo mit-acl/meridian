@@ -5,11 +5,8 @@ from dataclasses import dataclass
 
 logger = logging.getLogger(__name__)
 
-from meridian.segment.segment_types import (
-    SegmentPoint,
-    GeneralSegment,
-    SegmentList,
-)
+from meridian.primitive.primitive import PointPrimitive, Primitive
+from meridian.primitive.primitive_list import PrimitiveList
 from meridian.params import RegisterParams
 from meridian.register.geometry import (
     extract_line_arrays,
@@ -34,8 +31,8 @@ class InsufficientAssociationsException(Exception):
 
 @dataclass
 class RegistrationInput:
-    source: List[GeneralSegment]
-    target: List[GeneralSegment]
+    source: List[Primitive]
+    target: List[Primitive]
     correspondences: np.ndarray = None
 
 
@@ -51,8 +48,8 @@ class Registerer2D:
 
     def register(
         self,
-        source: List[GeneralSegment],
-        target: List[GeneralSegment],
+        source: List[Primitive],
+        target: List[Primitive],
         correspondences: np.ndarray = None,
     ):
         """
@@ -72,25 +69,25 @@ class Registerer2D:
                 pairs = [
                     (s, t)
                     for s, t in zip(source, target)
-                    if isinstance(s, SegmentPoint)
+                    if isinstance(s, PointPrimitive)
                 ]
                 source = [s for s, _ in pairs]
                 target = [t for _, t in pairs]
-            if not isinstance(source, SegmentList):
-                source = SegmentList(source)
-            if not isinstance(target, SegmentList):
-                target = SegmentList(target)
+            if not isinstance(source, PrimitiveList):
+                source = PrimitiveList(source)
+            if not isinstance(target, PrimitiveList):
+                target = PrimitiveList(target)
         else:
-            if not isinstance(source, SegmentList):
-                source = SegmentList(source)
-            if not isinstance(target, SegmentList):
-                target = SegmentList(target)
+            if not isinstance(source, PrimitiveList):
+                source = PrimitiveList(source)
+            if not isinstance(target, PrimitiveList):
+                target = PrimitiveList(target)
             if self.params.only_use_points:
                 correspondences = np.array(
                     [
                         c
                         for c in correspondences
-                        if isinstance(source.get_segment_from_id(c[0]), SegmentPoint)
+                        if isinstance(source.get_segment_from_id(c[0]), PointPrimitive)
                     ]
                 )
             source = source.sublist_from_ids(correspondences[:, 0])

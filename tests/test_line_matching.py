@@ -2,28 +2,28 @@ import pytest
 import numpy as np
 import robotdatapy.transform as rdpt
 
-from meridian.segment.segment_types import SegmentLine
-from meridian.match.segment_matcher import SegmentMatcher
-from meridian.params.segment_match_params import SegmentMatchParams
+from meridian.primitive.primitive import LinePrimitive
+from meridian.match.primitive_matcher import PrimitiveMatcher
+from meridian.params.primitive_match_params import PrimitiveMatchParams
 
 
 @pytest.fixture
 def three_line_segments():
-    linea1 = SegmentLine(
+    linea1 = LinePrimitive(
         id=1,
         point=np.array([0.0, 0.0, 0.0]),
         direction=np.array([1.0, 0.0, 0.0]),
         cos_feature=np.array([0.5, 0.5, 0.0, 0.0, 0.0, 0.0]),
     )
 
-    linea2 = SegmentLine(
+    linea2 = LinePrimitive(
         id=2,
         point=np.array([0.0, 0.0, 0.0]),
         direction=np.array([1.0, 0.0, 1.0]),
         cos_feature=np.array([0.5, 0.0, 0.5, 0.0, 0.0, 0.0]),
     )
 
-    linea3 = SegmentLine(
+    linea3 = LinePrimitive(
         id=3,
         point=np.array([2.0, 0.0, 1.0]),
         direction=np.array([0.0, 1.0, 0.0]),
@@ -52,7 +52,7 @@ def three_line_segments():
 
 @pytest.fixture
 def default_matcher_params():
-    return SegmentMatchParams(
+    return PrimitiveMatchParams(
         dim=3,
         ratio_feature_dim=0,
         cos_feature_dim=0,
@@ -76,7 +76,7 @@ def default_matcher_params():
 
 def test_line_distance_1(default_matcher_params, three_line_segments):
     linesa, linesb = three_line_segments
-    matcher = SegmentMatcher(default_matcher_params)
+    matcher = PrimitiveMatcher(default_matcher_params)
     M, C, A = matcher.get_MCA(linesa, linesb)
     assert M.shape == (9, 9)
 
@@ -110,7 +110,7 @@ def test_line_distance_with_semantics_1(default_matcher_params, three_line_segme
     linesa, linesb = three_line_segments
     params = default_matcher_params
     params.cos_feature_dim = 6
-    matcher = SegmentMatcher(params)
+    matcher = PrimitiveMatcher(params)
     M, C, A = matcher.get_MCA(linesa, linesa)
     assert M.shape == (9, 9)
     # correct matches are (0a, 0a), (1a, 1a), (2a, 2a)

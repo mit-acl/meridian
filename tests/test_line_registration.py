@@ -2,30 +2,30 @@ import pytest
 import numpy as np
 import robotdatapy as rdp
 
-from meridian.segment.segment_types import SegmentLine, SegmentPoint
-from meridian.match.segment_matcher import SegmentMatcher
-from meridian.params.segment_match_params import SegmentMatchParams
+from meridian.primitive.primitive import LinePrimitive, PointPrimitive
+from meridian.match.primitive_matcher import PrimitiveMatcher
+from meridian.params.primitive_match_params import PrimitiveMatchParams
 from meridian.params import RegisterParams
 from meridian.register.r3d.registerer import Registerer
 
 
 @pytest.fixture
 def three_line_segments():
-    linea1 = SegmentLine(
+    linea1 = LinePrimitive(
         id=1,
         point=np.array([-1.0, 0.0, 0.0]),
         direction=np.array([1.0, 0.0, 0.0]),
         cos_feature=np.array([0.5, 0.5, 0.0, 0.0, 0.0, 0.0]),
     )
 
-    linea2 = SegmentLine(
+    linea2 = LinePrimitive(
         id=2,
         point=np.array([0.0, 0.0, 0.0]),
         direction=np.array([1.0, 0.0, 1.0]),
         cos_feature=np.array([0.5, 0.0, 0.5, 0.0, 0.0, 0.0]),
     )
 
-    linea3 = SegmentLine(
+    linea3 = LinePrimitive(
         id=3,
         point=np.array([2.0, 0.0, 1.0]),
         direction=np.array([0.0, 1.0, 0.0]),
@@ -54,7 +54,7 @@ def three_line_segments():
 
 @pytest.fixture
 def default_matcher_params():
-    return SegmentMatchParams(
+    return PrimitiveMatchParams(
         dim=3,
         ratio_feature_dim=0,
         cos_feature_dim=6,
@@ -84,8 +84,8 @@ def default_register_params():
 def test_point_registration_1(default_register_params, three_line_segments):
     """Test registration with points only"""
     linesa, linesb = three_line_segments
-    pointsa = [SegmentPoint(id=line.id, point=line.point) for line in linesa]
-    pointsb = [SegmentPoint(id=line.id, point=line.point) for line in linesb]
+    pointsa = [PointPrimitive(id=line.id, point=line.point) for line in linesa]
+    pointsb = [PointPrimitive(id=line.id, point=line.point) for line in linesb]
     registerer = Registerer(default_register_params)
     correspondences = np.array([[1, 1], [2, 2], [3, 3]])
     T_pointsa_pointsb_est = registerer.register(
@@ -124,7 +124,7 @@ def test_line_registration_2(
 ):
     """Test registration with UNKNOWN correspondences"""
     linesa, linesb = three_line_segments
-    matcher = SegmentMatcher(default_matcher_params)
+    matcher = PrimitiveMatcher(default_matcher_params)
     registerer = Registerer(default_register_params)
     correspondences = matcher.match(linesa, linesb).association_array
     T_linesa_linesb_est = registerer.register(
