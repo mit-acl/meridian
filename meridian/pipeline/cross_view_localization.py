@@ -828,6 +828,29 @@ class CrossViewLocalization:
 # ---------------------------------------------------------------------------
 
 
+def _maybe_resolve_ground_map_path(data_params, ground_dir):
+    """Auto-derive `ground_map_path` from `--ground X` when not set in YAML.
+
+    Convention (matches `cross_view_incremental` output layout): segment_map.pkl
+    sits at the parent of the ground-segments dir, i.e. `<ground_dir>/../segment_map.pkl`.
+    Also tries `<ground_dir>/segment_map.pkl` as a fallback. Mutates data_params
+    in place if a candidate is found; otherwise leaves it None and the
+    consumer's clear-error path runs.
+    """
+    if data_params.ground_map_path is not None or ground_dir is None:
+        return
+    candidates = [
+        os.path.join(ground_dir, "..", "segment_map.pkl"),
+        os.path.join(ground_dir, "segment_map.pkl"),
+    ]
+    for cand in candidates:
+        cand = os.path.normpath(cand)
+        if os.path.isfile(cand):
+            data_params.ground_map_path = cand
+            logger.info("Auto-derived ground_map_path from --ground: %s", cand)
+            return
+
+
 def cross_view_localization(
     params,
     output_dir,
@@ -852,6 +875,7 @@ def cross_view_localization(
 
     rpgo_params = CrossViewRPGOParams.load(params)
     data_params = CrossViewLocalizationDataParams.load(params)
+    _maybe_resolve_ground_map_path(data_params, ground_dir)
     data = CrossViewLocalizationData.from_params(data_params)
 
     # Save localization params (merges with matching params already in params.txt)
@@ -994,6 +1018,7 @@ if __name__ == "__main__":
     match_output_dir = os.path.join(args.output, "match")
     rpgo_params = CrossViewRPGOParams.load(args.params)
     data_params = CrossViewLocalizationDataParams.load(args.params)
+    _maybe_resolve_ground_map_path(data_params, args.ground)
     data = CrossViewLocalizationData.from_params(data_params)
 
     # Build pipeline + load submaps for rerun if enabled

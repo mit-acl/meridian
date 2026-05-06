@@ -145,6 +145,14 @@ class AlignPointCloud:
             points_camera_frame (np.ndarray): (n, 3) array containing 3D point cloud in the frame of the camera (Z forward, Y down)
             points_2d (np.ndarray): (n, 2) array containing 2D projected points in (u, v) coordinates, in same order
         """
+        # Drop NaN/inf entries before casting to int. cv.projectPoints can
+        # produce non-finite values for points at/behind the camera (z<=0) or
+        # otherwise degenerate; np.round(...).astype(int) on NaN/inf raises
+        # RuntimeWarning ("invalid value encountered in cast").
+        finite = np.isfinite(points_2d).all(axis=1)
+        points_camera_frame = points_camera_frame[finite]
+        points_2d = points_2d[finite]
+
         points_2d = np.round(points_2d).astype(int)
         inside_frame = (
             (points_2d[:, 0] >= 0)

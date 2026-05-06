@@ -12,6 +12,29 @@ import yaml
 logger = logging.getLogger(__name__)
 
 
+_ALPHASHAPE_FILTER_INSTALLED = False
+
+
+def suppress_alphashape_singular_warnings():
+    """Install a root-logger filter that drops alphashape's noisy
+    'Singular matrix. Likely caused by all points lying in an N-1 space.'
+    message. The library catches the underlying LinAlgError on every colinear
+    Delaunay simplex; the warning is informational only and floods the console
+    when many segments are processed. Idempotent (filter installed at most once
+    per process).
+    """
+    global _ALPHASHAPE_FILTER_INSTALLED
+    if _ALPHASHAPE_FILTER_INSTALLED:
+        return
+
+    class _Filter(logging.Filter):
+        def filter(self, record):
+            return "Singular matrix. Likely caused by" not in record.getMessage()
+
+    logging.getLogger().addFilter(_Filter())
+    _ALPHASHAPE_FILTER_INSTALLED = True
+
+
 def _yaml_represent_numpy(dumper, data):
     if isinstance(data, np.floating):
         if np.isinf(data):

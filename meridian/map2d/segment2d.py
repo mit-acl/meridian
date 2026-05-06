@@ -7,7 +7,12 @@ import open3d as o3d
 import alphashape
 from typing import Dict, Optional
 
+from meridian.utils import suppress_alphashape_singular_warnings
 from meridian.viz.utils import color_from_seed
+
+# Drop the noisy "Singular matrix. Likely caused by all points lying in an
+# N-1 space." warnings that alphashape emits per colinear Delaunay simplex.
+suppress_alphashape_singular_warnings()
 
 
 def _grid_downsample_2d(points: np.ndarray, voxel_size: float) -> np.ndarray:
