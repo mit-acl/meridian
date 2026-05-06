@@ -14,8 +14,13 @@ from meridian.params.segment_to_primitive_params import (
 from meridian.map2d.segment2d import Segment2D, _grid_downsample_2d
 from meridian.primitive.primitive import LinePrimitive, PointPrimitive
 from meridian.primitive.primitive_list import PrimitiveList
+from meridian.utils import suppress_alphashape_singular_warnings
 
 logger = logging.getLogger(__name__)
+
+# Drop the noisy "Singular matrix. Likely caused by all points lying in an
+# N-1 space." warnings that alphashape emits per colinear Delaunay simplex.
+suppress_alphashape_singular_warnings()
 
 Crop = Tuple[int, int, int, int]
 
