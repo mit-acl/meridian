@@ -114,10 +114,13 @@ class CrossViewIncremental:
     _match_details_per_submap: Dict[str, Dict[str, list]] = field(
         default_factory=dict, init=False
     )
-    _last_T_utm_odom: Optional[np.ndarray] = field(default=None, init=False)
     _last_optimized_trajectory: Optional[List[np.ndarray]] = field(
         default=None, init=False
     )
+    # Camera-frame anchors for propagating future poses consistently with the
+    # most recent PGO. Future T_utm_camera(t) = T_utm_lastopt @ inv(T_odom_lastopt) @ T_odom_cam(t).
+    _T_utm_lastopt: Optional[np.ndarray] = field(default=None, init=False)
+    _T_odom_lastopt: Optional[np.ndarray] = field(default=None, init=False)
     _optimized_pose_data: Optional[object] = field(default=None, init=False)
     _instant_pose_history: List[Tuple[float, np.ndarray]] = field(
         default_factory=list, init=False
@@ -386,11 +389,30 @@ class CrossViewIncremental:
             )
         self._timing["pgo"].append(time.time() - t_pgo_start)
 
-        self._last_T_utm_odom = T_utm_odom
         self._last_optimized_trajectory = optimized_trajectory
+        self._set_lastopt_anchors(optimized_trajectory)
         self._optimized_pose_data = self._build_camera_pose_data(
             optimized_trajectory, np.array(self.mapper.times_history)
         )
+
+    def _set_lastopt_anchors(self, optimized_trajectory: List[np.ndarray]):
+        """Capture the camera-frame T_utm and T_odom poses at the most recent
+        PGO step. Used by `_record_instantaneous_pose` to propagate future
+        poses consistently with PGO via:
+            T_utm_cam(t) = T_utm_lastopt @ inv(T_odom_lastopt) @ T_odom_cam(t).
+        `optimized_trajectory` is in body frame (T_utm_body); convert back to
+        camera frame so the chain composes directly with `pose_cam`.
+        """
+        if not optimized_trajectory:
+            return
+        idx = len(optimized_trajectory) - 1
+        if self.data.T_camera_flu is not None:
+            T_camera_flu_inv = np.linalg.inv(self.data.T_camera_flu)
+            self._T_utm_lastopt = optimized_trajectory[idx] @ T_camera_flu_inv
+        else:
+            self._T_utm_lastopt = optimized_trajectory[idx]
+        # poses_cam_history is already in camera frame (T_odom_camera).
+        self._T_odom_lastopt = self.mapper.poses_cam_history[idx]
 
     # ------------------------------------------------------------------
     # PRE -> POST attempt (gated; may be retried)
@@ -401,9 +423,9 @@ class CrossViewIncremental:
         trajectory state was committed; False otherwise (caller stays in PRE).
 
         Invariant: must not mutate self._candidates, self._results_per_submap,
-        self._match_details_per_submap, self._last_T_utm_odom,
-        self._last_optimized_trajectory, or self._optimized_pose_data until
-        gate #2 passes.
+        self._match_details_per_submap, self._last_optimized_trajectory,
+        self._T_utm_lastopt, self._T_odom_lastopt, or self._optimized_pose_data
+        until gate #2 passes.
         """
         wc_start = time.time()
         gate2_thresh = self.incremental_params.rot_constrained_consistent_lc_thresh
@@ -520,8 +542,8 @@ class CrossViewIncremental:
         self._candidates = rerun_candidates
         self._results_per_submap = dict(rerun_result.results)
         self._match_details_per_submap = dict(rerun_result.match_details)
-        self._last_T_utm_odom = T_utm_odom
         self._last_optimized_trajectory = optimized_trajectory
+        self._set_lastopt_anchors(optimized_trajectory)
         self._optimized_pose_data = self._build_camera_pose_data(
             optimized_trajectory, np.array(self.mapper.times_history)
         )
@@ -553,8 +575,19 @@ class CrossViewIncremental:
         return pose_data_from_trajectory(cam_traj, times)
 
     def _record_instantaneous_pose(self, t: float, pose_cam: np.ndarray):
-        if self._state == "POST" and self._last_T_utm_odom is not None:
-            T_utm_camera = self._last_T_utm_odom @ pose_cam
+        # Propagate the last PGO estimate forward via odom-frame relative motion:
+        # T_utm_camera(t) = T_utm_lastopt @ inv(T_odom_lastopt) @ T_odom_cam(t).
+        # This keeps the live causal pose consistent with the most recent PGO
+        # output instead of using the rigid frame-align T_utm_odom (which throws
+        # away the per-pose deformation PGO produced).
+        if (
+            self._state == "POST"
+            and self._T_utm_lastopt is not None
+            and self._T_odom_lastopt is not None
+        ):
+            T_utm_camera = (
+                self._T_utm_lastopt @ np.linalg.inv(self._T_odom_lastopt) @ pose_cam
+            )
             if self.data.T_camera_flu is not None:
                 T_utm_body = T_utm_camera @ self.data.T_camera_flu
             else:
