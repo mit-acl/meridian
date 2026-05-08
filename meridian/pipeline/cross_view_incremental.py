@@ -385,7 +385,7 @@ class CrossViewIncremental:
         # continues and tries again on the next ground submap. Skipped when
         # `objective` is None (e.g., GT-inliers path) so a missing measurement
         # doesn't silently freeze updates.
-        drop = self.rpgo_params.allowable_outlier_lc_obj_drop
+        drop = self.incremental_params.allowable_outlier_lc_obj_drop
         if (
             drop is not None
             and self._last_lc_out_rej_obj is not None
@@ -638,7 +638,7 @@ class CrossViewIncremental:
         """Trip `_early_terminate` when the live translation error exceeds
         `early_termination_err_m`. No-op if the threshold is None or no GT is
         available."""
-        thresh = self.rpgo_params.early_termination_err_m
+        thresh = self.incremental_params.early_termination_err_m
         if thresh is None or self.data.gt_pose_data is None:
             return
         try:
