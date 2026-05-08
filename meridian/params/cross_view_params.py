@@ -142,6 +142,10 @@ class CrossViewRPGOParams(ParamsBase):
     gt_inliers_rot_err_deg: float = 5.0
     gt_inliers_trans_err_m: float = 1.0
 
+    # initialize pose only with n submap registrations - this gaurds the
+    # loop closure rejection from growing too large
+    outlier_rejection_max_num_lcs: Optional[int] = 100_000
+
     @property
     def rot_consistency_sigma_rad(self) -> float:
         return np.deg2rad(self.rot_consistency_sigma_deg)

@@ -383,9 +383,67 @@ class CrossViewRPGO:
     ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
         """Run CLIPPER using the C++ LoopClosureConsistency invariant.
 
+        When `len(candidates) > params.outlier_rejection_max_num_lcs` (and the
+        threshold is set / positive), the candidate list is split into the
+        smallest number of chunks such that each chunk has fewer candidates than
+        the threshold; CLIPPER runs on each chunk independently, the inliers are
+        pooled, and a final CLIPPER pass runs on the pool. This trades a small
+        amount of recall for a memory-bounded run.
+
         Returns:
-            Tuple of (inlier_indices, M, C).
+            Tuple of (inlier_indices, M, C). `inlier_indices` indexes into the
+            original `candidates` list. In the chunked path, M and C come from
+            the final pool-only pass, so their dimensions equal the pool size.
         """
+        n = len(candidates)
+        max_n = self.params.outlier_rejection_max_num_lcs
+        if max_n is None or max_n <= 0 or n <= max_n:
+            return self._run_clipper_cpp_single(candidates, trajectory, times)
+
+        n_chunks = (n // max_n) + 1
+        logger.info(
+            f"Chunked outlier rejection: {n} candidates > max={max_n}, "
+            f"splitting into {n_chunks} chunks."
+        )
+
+        # Even-as-possible split into n_chunks groups of indices.
+        chunks = np.array_split(np.arange(n), n_chunks)
+
+        pooled_orig_idx: List[int] = []
+        for ci, chunk_idx in enumerate(chunks):
+            chunk_candidates = [candidates[i] for i in chunk_idx]
+            sub_inliers, _, _ = self._run_clipper_cpp_single(
+                chunk_candidates, trajectory, times
+            )
+            for j in sub_inliers:
+                pooled_orig_idx.append(int(chunk_idx[j]))
+            logger.info(
+                f"  chunk {ci + 1}/{n_chunks}: {len(chunk_candidates)} candidates "
+                f"-> {len(sub_inliers)} inliers"
+            )
+
+        # Final pass over the pooled inliers.
+        pooled_candidates = [candidates[i] for i in pooled_orig_idx]
+        final_sub_inliers, M, C = self._run_clipper_cpp_single(
+            pooled_candidates, trajectory, times
+        )
+        final_orig_idx = np.array(
+            [pooled_orig_idx[j] for j in final_sub_inliers], dtype=np.int64
+        )
+        logger.info(
+            f"  final pass: {len(pooled_candidates)} pooled candidates "
+            f"-> {len(final_orig_idx)} inliers"
+        )
+        return final_orig_idx, M, C
+
+    def _run_clipper_cpp_single(
+        self,
+        candidates: List[dict],
+        trajectory: List[np.ndarray],
+        times: np.ndarray,
+    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """Single-pass CLIPPER over the given candidates. See `run_clipper_cpp`
+        for the chunked wrapper."""
         lc_scores = self._compute_lc_scores(candidates)
         D, aerial_poses, ground_poses, ground_distances = _build_clipper_data(
             candidates, trajectory, times, lc_scores
