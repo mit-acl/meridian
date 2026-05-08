@@ -608,10 +608,18 @@ class CrossViewLocalization:
         data: CrossViewLocalizationData,
         output_dir: pathlib.Path,
         viz_params: CrossViewVisualizationParams = None,
+        name_prefix: Optional[str] = None,
     ):
-        """Plot full trajectory on aerial image and compute error metrics."""
+        """Plot full trajectory on aerial image and compute error metrics.
+
+        When `name_prefix` is None, writes `output_dir/trajectory.png` and
+        `output_dir/results.txt` (default). Otherwise writes
+        `output_dir/<name_prefix>.png` and `output_dir/<name_prefix>.txt`.
+        """
         if viz_params is None:
             viz_params = CrossViewVisualizationParams()
+        png_name = "trajectory.png" if name_prefix is None else f"{name_prefix}.png"
+        txt_name = "results.txt" if name_prefix is None else f"{name_prefix}.txt"
         optimized_traj = result.optimized_trajectory
         if result.times is not None:
             traj_times = np.asarray(result.times)
@@ -776,13 +784,17 @@ class CrossViewLocalization:
 
         ax.legend()
         ax.set_title("Cross-View Localization")
-        fig.savefig(output_dir / "trajectory.png", dpi=200, bbox_inches="tight")
+        fig.savefig(output_dir / png_name, dpi=200, bbox_inches="tight")
         plt.close(fig)
 
         # Compute error metrics
         results_lines = []
         results_lines.append(f"Number of candidates: {len(candidates)}")
         results_lines.append(f"Number of inliers: {len(inlier_indices)}")
+        if result.objective_value is not None:
+            results_lines.append(
+                f"Outlier optimization objective value: {result.objective_value:.4f}"
+            )
         results_lines.append(f"T_utm_odom:\n{result.T_utm_odom}")
 
         if gt_utm_positions is not None:
@@ -819,7 +831,7 @@ class CrossViewLocalization:
 
         results_str = "\n".join(results_lines)
         print(results_str)
-        with open(output_dir / "results.txt", "w") as f:
+        with open(output_dir / txt_name, "w") as f:
             f.write(results_str + "\n")
 
 

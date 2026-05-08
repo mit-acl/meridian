@@ -107,6 +107,7 @@ class CrossViewIncremental:
 
     # State
     _state: str = field(default="PRE", init=False)
+    _submap_viz: bool = field(default=False, init=False)
     _submap_count: int = field(default=0, init=False)
     _candidates: List[dict] = field(default_factory=list, init=False)
     _results_per_submap: Dict[str, object] = field(default_factory=dict, init=False)
@@ -279,7 +280,7 @@ class CrossViewIncremental:
         t_or_start = time.time()
         rpgo = CrossViewRPGO(params=self.rpgo_params)
         try:
-            inlier_indices, _, _ = rpgo.solve_clipper_only(
+            inlier_indices, *_ = rpgo.solve_clipper_only(
                 self._candidates,
                 self.mapper.poses_cam_history,
                 np.array(self.mapper.times_history),
@@ -303,6 +304,52 @@ class CrossViewIncremental:
                     self._state = "POST"
         else:
             self._run_post_pgo(inlier_indices)
+
+        self._emit_submap_viz(ground_key)
+
+    def _emit_submap_viz(self, ground_key: str):
+        """Debug-only: per-ground-submap trajectory + results snapshot.
+
+        Forces a full `rpgo.solve()` (CLIPPER + PGO/frame_align) over the
+        current candidate pool so a meaningful trajectory.png can be drawn,
+        even in PRE state. Intentionally heavyweight; gated on `--viz`.
+        """
+        if not self._submap_viz:
+            return
+        viz_dir = pathlib.Path(self.output_dir) / "incremental" / "viz"
+        viz_dir.mkdir(parents=True, exist_ok=True)
+        name_prefix = f"ground_{ground_key}"
+
+        rpgo = CrossViewRPGO(params=self.rpgo_params)
+        result = None
+        try:
+            result = rpgo.solve(
+                self._candidates,
+                self.mapper.poses_cam_history,
+                np.array(self.mapper.times_history),
+                self.data.T_camera_flu,
+            )
+        except Exception as e:
+            logger.debug(f"submap viz: solve failed for {ground_key}: {e}")
+
+        if result is None or not result.success:
+            stub = [
+                f"Number of candidates: {len(self._candidates)}",
+                "Number of inliers: 0",
+                "T_utm_odom: (no successful solve at this submap)",
+                f"State: {self._state}",
+            ]
+            with open(viz_dir / f"{name_prefix}.txt", "w") as f:
+                f.write("\n".join(stub) + "\n")
+            return
+
+        CrossViewLocalization._visualize_and_report(
+            result,
+            self.data,
+            viz_dir,
+            self.viz_params,
+            name_prefix=name_prefix,
+        )
 
     def _min_assoc_for_state(self) -> int:
         if (
@@ -430,7 +477,7 @@ class CrossViewIncremental:
         # Step 5: CLIPPER on rerun candidates (still local, no commit yet).
         t_or_start = time.time()
         try:
-            rerun_inliers, _, _ = rpgo.solve_clipper_only(
+            rerun_inliers, *_ = rpgo.solve_clipper_only(
                 rerun_candidates,
                 self.mapper.poses_cam_history,
                 np.array(self.mapper.times_history),
@@ -520,14 +567,14 @@ class CrossViewIncremental:
     # End-of-run output
     # ------------------------------------------------------------------
 
-    def write_outputs(self, save_viz: bool = True):
+    def write_outputs(self):
         out = pathlib.Path(self.output_dir)
         out.mkdir(parents=True, exist_ok=True)
 
         self._write_mapping_outputs()
         self._write_match_heatmaps()
         self._write_incremental_outputs()
-        self._write_localization_outputs(save_viz=save_viz)
+        self._write_localization_outputs()
 
     def _write_mapping_outputs(self):
         """Mirror of segment_mapping.py end-of-run mapping outputs."""
@@ -898,7 +945,7 @@ class CrossViewIncremental:
             f.write("\n".join(lines) + "\n")
         print("\n".join(lines))
 
-    def _write_localization_outputs(self, save_viz: bool = True):
+    def _write_localization_outputs(self):
         out = pathlib.Path(self.output_dir) / "localization"
         out.mkdir(parents=True, exist_ok=True)
         if not self._candidates:
@@ -940,7 +987,7 @@ def cross_view_incremental(
     output_dir: str,
     aerial_dir: str,
     run: str = None,
-    save_viz: bool = True,
+    submap_viz: bool = False,
 ):
     if not aerial_dir:
         raise ValueError(
@@ -1079,6 +1126,7 @@ def cross_view_incremental(
         output_dir=output_dir,
     )
     pipeline._params_path = params_path
+    pipeline._submap_viz = submap_viz
 
     # Save params + commit hash (mirror cross_view_matching).
     all_params = [
@@ -1131,7 +1179,7 @@ def cross_view_incremental(
     print(f"Pipeline took {wall_time:.2f}s")
 
     print("Writing outputs...")
-    pipeline.write_outputs(save_viz=save_viz)
+    pipeline.write_outputs()
     print("Done.")
 
 
@@ -1147,9 +1195,10 @@ if __name__ == "__main__":
     )
     parser.add_argument("-r", "--run", type=str, default=None)
     parser.add_argument(
-        "--no-viz",
+        "-v",
+        "--viz",
         action="store_true",
-        help="Skip per-pair match visualizations (heatmaps still rendered).",
+        help="Save per-ground-submap trajectory/results viz to incremental/viz/.",
     )
     parser.add_argument(
         "-d",
@@ -1171,5 +1220,5 @@ if __name__ == "__main__":
         args.output,
         aerial_dir=args.aerial,
         run=args.run,
-        save_viz=not args.no_viz,
+        submap_viz=args.viz,
     )
