@@ -146,6 +146,17 @@ class CrossViewRPGOParams(ParamsBase):
     # loop closure rejection from growing too large
     outlier_rejection_max_num_lcs: Optional[int] = 100_000
 
+    # POST-state guard: if the loop-closure outlier-rejection objective
+    # (u^T M u / u^T u) drops by more than this versus the last accepted POST
+    # objective, reject the new solve and keep the previous lastopt anchors.
+    # Pipeline continues to the next ground submap. None = disabled.
+    allowable_outlier_lc_obj_drop: Optional[float] = None
+
+    # Abort the incremental run when the live instantaneous translation error
+    # (vs data.gt_pose_data) exceeds this many meters. Saves whatever outputs
+    # exist and exits. Only active when gt_pose_data is set. None = disabled.
+    early_termination_err_m: Optional[float] = None
+
     @property
     def rot_consistency_sigma_rad(self) -> float:
         return np.deg2rad(self.rot_consistency_sigma_deg)
@@ -169,3 +180,5 @@ class CrossViewIncrementalParams(ParamsBase):
 
     consistent_loop_closure_thresh: int = 3
     rot_constrained_consistent_lc_thresh: int = 8
+    allowable_outlier_lc_obj_drop: float = 2.0
+    early_termination_err_m: float = 20.0

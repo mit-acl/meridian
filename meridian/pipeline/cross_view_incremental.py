@@ -121,6 +121,12 @@ class CrossViewIncremental:
     # most recent PGO. Future T_utm_camera(t) = T_utm_lastopt @ inv(T_odom_lastopt) @ T_odom_cam(t).
     _T_utm_lastopt: Optional[np.ndarray] = field(default=None, init=False)
     _T_odom_lastopt: Optional[np.ndarray] = field(default=None, init=False)
+    # Most recent accepted CLIPPER outlier-rejection objective (for the
+    # `allowable_outlier_lc_obj_drop` guard). None until first POST commit.
+    _last_lc_out_rej_obj: Optional[float] = field(default=None, init=False)
+    # Set by `_record_instantaneous_pose` when the live error exceeds the
+    # `early_termination_err_m` threshold. Causes the per-frame loop to break.
+    _early_terminate: bool = field(default=False, init=False)
     _optimized_pose_data: Optional[object] = field(default=None, init=False)
     _instant_pose_history: List[Tuple[float, np.ndarray]] = field(
         default_factory=list, init=False
@@ -166,6 +172,8 @@ class CrossViewIncremental:
 
         t_loop_start = time.time()
         for t in tqdm.tqdm(times, desc="Incremental cross-view"):
+            if self._early_terminate:
+                break
             t_data_start = time.time()
             try:
                 img_t = data.img_data.nearest_time(t)
@@ -283,7 +291,7 @@ class CrossViewIncremental:
         t_or_start = time.time()
         rpgo = CrossViewRPGO(params=self.rpgo_params)
         try:
-            inlier_indices, *_ = rpgo.solve_clipper_only(
+            inlier_indices, _M, _C, lc_obj = rpgo.solve_clipper_only(
                 self._candidates,
                 self.mapper.poses_cam_history,
                 np.array(self.mapper.times_history),
@@ -291,6 +299,7 @@ class CrossViewIncremental:
         except Exception as e:
             logger.warning(f"CLIPPER failed (state={self._state}): {e}")
             inlier_indices = np.array([], dtype=int)
+            lc_obj = None
         self._timing["outlier_rej"].append(time.time() - t_or_start)
 
         n_inliers = len(inlier_indices)
@@ -306,7 +315,7 @@ class CrossViewIncremental:
                 if self._attempt_global_localization():
                     self._state = "POST"
         else:
-            self._run_post_pgo(inlier_indices)
+            self._run_post_pgo(inlier_indices, lc_obj)
 
         self._emit_submap_viz(ground_key)
 
@@ -366,9 +375,30 @@ class CrossViewIncremental:
     # POST PGO
     # ------------------------------------------------------------------
 
-    def _run_post_pgo(self, inlier_indices: np.ndarray):
+    def _run_post_pgo(self, inlier_indices: np.ndarray, objective: Optional[float]):
         if len(inlier_indices) == 0:
             return
+
+        # Guard against degenerate re-solves: if the new outlier-rejection
+        # objective dropped meaningfully versus the last accepted POST step,
+        # skip this update and keep the previous lastopt anchors. The pipeline
+        # continues and tries again on the next ground submap. Skipped when
+        # `objective` is None (e.g., GT-inliers path) so a missing measurement
+        # doesn't silently freeze updates.
+        drop = self.rpgo_params.allowable_outlier_lc_obj_drop
+        if (
+            drop is not None
+            and self._last_lc_out_rej_obj is not None
+            and objective is not None
+            and objective < self._last_lc_out_rej_obj - drop
+        ):
+            logger.info(
+                f"POST PGO update rejected: objective {objective:.4f} dropped > "
+                f"{drop} below previous {self._last_lc_out_rej_obj:.4f}; "
+                "keeping previous lastopt anchors."
+            )
+            return
+
         rpgo = CrossViewRPGO(params=self.rpgo_params)
         t_pgo_start = time.time()
         T_utm_odom = rpgo._frame_align(self._candidates, inlier_indices)
@@ -394,6 +424,8 @@ class CrossViewIncremental:
         self._optimized_pose_data = self._build_camera_pose_data(
             optimized_trajectory, np.array(self.mapper.times_history)
         )
+        if objective is not None:
+            self._last_lc_out_rej_obj = objective
 
     def _set_lastopt_anchors(self, optimized_trajectory: List[np.ndarray]):
         """Capture the camera-frame T_utm and T_odom poses at the most recent
@@ -498,8 +530,9 @@ class CrossViewIncremental:
 
         # Step 5: CLIPPER on rerun candidates (still local, no commit yet).
         t_or_start = time.time()
+        rerun_lc_obj: Optional[float] = None
         try:
-            rerun_inliers, *_ = rpgo.solve_clipper_only(
+            rerun_inliers, _M, _C, rerun_lc_obj = rpgo.solve_clipper_only(
                 rerun_candidates,
                 self.mapper.poses_cam_history,
                 np.array(self.mapper.times_history),
@@ -547,6 +580,10 @@ class CrossViewIncremental:
         self._optimized_pose_data = self._build_camera_pose_data(
             optimized_trajectory, np.array(self.mapper.times_history)
         )
+        # Seed the drop-guard baseline so the first POST step has something
+        # to compare against.
+        if rerun_lc_obj is not None:
+            self._last_lc_out_rej_obj = rerun_lc_obj
 
         self._global_loc_frame_idx = len(self._instant_pose_history)
         self._global_loc_wall_time = time.time() - wc_start
@@ -593,8 +630,34 @@ class CrossViewIncremental:
             else:
                 T_utm_body = T_utm_camera
             self._instant_pose_history.append((t, T_utm_body))
+            self._maybe_early_terminate(t, T_utm_body)
         else:
             self._instant_pose_history.append((t, np.full((4, 4), np.nan)))
+
+    def _maybe_early_terminate(self, t: float, T_utm_body: np.ndarray):
+        """Trip `_early_terminate` when the live translation error exceeds
+        `early_termination_err_m`. No-op if the threshold is None or no GT is
+        available."""
+        thresh = self.rpgo_params.early_termination_err_m
+        if thresh is None or self.data.gt_pose_data is None:
+            return
+        try:
+            gt_pose = self.data.gt_pose_data.pose(t)
+        except Exception:
+            return
+        gt_body = (
+            gt_pose @ self.data.T_camera_flu
+            if self.data.T_camera_flu is not None
+            else gt_pose
+        )
+        err_m = float(np.linalg.norm(T_utm_body[:2, 3] - gt_body[:2, 3]))
+        if err_m > thresh:
+            logger.warning(
+                f"Early termination: instantaneous error {err_m:.2f} m > "
+                f"threshold {thresh} m at t={t:.2f}. "
+                "Saving outputs and exiting."
+            )
+            self._early_terminate = True
 
     # ------------------------------------------------------------------
     # End-of-run output
@@ -1197,6 +1260,8 @@ def cross_view_incremental(
         chunk_start = init_time_range[1]
         chunk_idx += 1
         while chunk_start < full_tf:
+            if pipeline._early_terminate:
+                break
             chunk_end = min(chunk_start + mapping_data_params.max_time, full_tf)
             print(
                 f"Running chunk {chunk_idx} ({chunk_start:.2f} to {chunk_end:.2f})..."
