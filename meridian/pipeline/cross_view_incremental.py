@@ -1151,7 +1151,20 @@ if __name__ == "__main__":
         action="store_true",
         help="Skip per-pair match visualizations (heatmaps still rendered).",
     )
+    parser.add_argument(
+        "-d",
+        "--debug",
+        action="store_true",
+        help="Enable INFO-level logging.",
+    )
     args = parser.parse_args()
+
+    if args.debug:
+        import logging
+
+        logging.basicConfig(
+            level=logging.INFO, format="%(levelname)s:%(name)s:%(message)s"
+        )
 
     cross_view_incremental(
         args.params,

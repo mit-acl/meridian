@@ -1001,7 +1001,18 @@ if __name__ == "__main__":
         default=None,
         help="Path to existing ground directory (skips ground segmentation).",
     )
+    parser.add_argument(
+        "-d",
+        "--debug",
+        action="store_true",
+        help="Enable INFO-level logging.",
+    )
     args = parser.parse_args()
+
+    if args.debug:
+        logging.basicConfig(
+            level=logging.INFO, format="%(levelname)s:%(name)s:%(message)s"
+        )
 
     if not args.skip_matching:
         cross_view_matching(

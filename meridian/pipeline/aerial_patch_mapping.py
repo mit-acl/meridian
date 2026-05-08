@@ -175,6 +175,19 @@ if __name__ == "__main__":
         required=True,
         help="Output directory.",
     )
+    parser.add_argument(
+        "-d",
+        "--debug",
+        action="store_true",
+        help="Enable INFO-level logging.",
+    )
     args = parser.parse_args()
+
+    if args.debug:
+        import logging
+
+        logging.basicConfig(
+            level=logging.INFO, format="%(levelname)s:%(name)s:%(message)s"
+        )
 
     aerial_patch_mapping(args.params, args.output)

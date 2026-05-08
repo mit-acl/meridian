@@ -1008,7 +1008,20 @@ if __name__ == "__main__":
         default=None,
         help="Path to existing ground directory (skips ground segmentation).",
     )
+    parser.add_argument(
+        "-d",
+        "--debug",
+        action="store_true",
+        help="Enable INFO-level logging.",
+    )
     args = parser.parse_args()
+
+    if args.debug:
+        import logging
+
+        logging.basicConfig(
+            level=logging.INFO, format="%(levelname)s:%(name)s:%(message)s"
+        )
 
     if not os.path.isdir(args.output):
         os.mkdir(expandvars_recursive(args.output))
