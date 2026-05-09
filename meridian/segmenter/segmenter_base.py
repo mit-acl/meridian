@@ -74,7 +74,21 @@ class SegmenterBase:
             sam = sam_model_registry["vit_l"](checkpoint=self.params.weights_path)
             sam.to(self.params.device)
             sam.eval()
-            self.model = SamAutomaticMaskGenerator(sam)
+            # Pass through any SAM "automatic everything" knobs the params
+            # expose (see AerialSegmenterParams.sam_*). Unset (None) values
+            # keep SAM's defaults.
+            sam_kwargs = {}
+            for sam_key, attr in (
+                ("points_per_side", "sam_points_per_side"),
+                ("pred_iou_thresh", "sam_pred_iou_thresh"),
+                ("stability_score_thresh", "sam_stability_score_thresh"),
+                ("crop_n_layers", "sam_crop_n_layers"),
+                ("min_mask_region_area", "sam_min_mask_region_area"),
+            ):
+                v = getattr(self.params, attr, None)
+                if v is not None:
+                    sam_kwargs[sam_key] = v
+            self.model = SamAutomaticMaskGenerator(sam, **sam_kwargs)
         else:
             raise ValueError(
                 f"Unsupported segmenter model type: {self.params.model_type}"
