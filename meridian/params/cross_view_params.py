@@ -174,9 +174,14 @@ class CrossViewIncrementalParams(ParamsBase):
     # (u^T M u / u^T u) drops by more than this versus the last accepted POST
     # objective, reject the new solve and keep the previous lastopt anchors.
     # Pipeline continues to the next ground submap.
-    allowable_outlier_lc_obj_drop: float = 2.0
+    allowable_outlier_lc_obj_drop: float = np.inf
 
     # Abort the incremental run when the live instantaneous translation error
     # (vs data.gt_pose_data) exceeds this many meters. Saves whatever outputs
     # exist and exits. Only active when gt_pose_data is set.
     early_termination_err_m: float = 20.0
+
+    # If True, once we have accepted a loop closure as an inlier in the
+    # post-global-localization mode, then all other corresponding submap
+    # potential loop closures are removed from the outlier rejection processing
+    commit_accepted_inliers: bool = True

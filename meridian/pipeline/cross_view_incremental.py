@@ -254,10 +254,18 @@ class CrossViewIncremental:
                 gt_trajectory=self.data.gt_pose_data,
             )
         else:
+            # Propagate the last-accepted PGO forward via odom over the full
+            # mapper history so the matcher's reference trajectory reflects
+            # where the camera *currently is*, not just where it was at the
+            # last accepted PGO. Without this, queries beyond `times[-1]` of
+            # `_optimized_pose_data` clamp to the last optimized pose, which
+            # mis-anchors aerial-patch selection — especially after the drop
+            # guard rejects updates and `_optimized_pose_data` goes stale.
+            propagated_ref = self._build_propagated_reference_pose_data()
             match_result = self.algorithm.cross_view_match_max_intersection(
                 self.aerial_submaps,
                 ground_submaps,
-                reference_trajectory=self._optimized_pose_data,
+                reference_trajectory=propagated_ref or self._optimized_pose_data,
                 T_camera_flu=self.data.T_camera_flu,
                 translation_only=True,
                 show_progress=False,
@@ -426,6 +434,56 @@ class CrossViewIncremental:
         )
         if objective is not None:
             self._last_lc_out_rej_obj = objective
+        self._commit_accepted_inliers(inlier_indices)
+
+    def _commit_accepted_inliers(self, inlier_indices: np.ndarray):
+        """When `commit_accepted_inliers` is enabled, remove non-inlier
+        candidates that share a ground_key with any accepted inlier. Locks the
+        chosen aerial hypothesis per submap so subsequent CLIPPER runs cannot
+        drift into a different inlier basin for an already-resolved submap.
+        """
+        if not self.incremental_params.commit_accepted_inliers:
+            return
+        if len(inlier_indices) == 0:
+            return
+        inlier_set = {int(i) for i in inlier_indices}
+        committed_ground_keys = {self._candidates[i]["ground_key"] for i in inlier_set}
+        if not committed_ground_keys:
+            return
+        pruned = [
+            c
+            for i, c in enumerate(self._candidates)
+            if i in inlier_set or c["ground_key"] not in committed_ground_keys
+        ]
+        n_removed = len(self._candidates) - len(pruned)
+        if n_removed:
+            logger.info(
+                f"commit_accepted_inliers: pruned {n_removed} alternative "
+                f"hypotheses across {len(committed_ground_keys)} committed "
+                f"submaps; candidate pool {len(self._candidates)} -> {len(pruned)}"
+            )
+        self._candidates = pruned
+
+    def _build_propagated_reference_pose_data(self):
+        """Build a camera-frame PoseData covering the full
+        `mapper.poses_cam_history` by propagating the last-accepted PGO
+        anchors forward via odom:
+            T_utm_camera(t) = _T_utm_lastopt @ inv(_T_odom_lastopt) @ pose_cam(t).
+        Used as the matcher's `reference_trajectory` so aerial-patch selection
+        tracks the live camera pose instead of clamping to the last accepted
+        PGO frame. Returns None if anchors are not yet set.
+        """
+        if self._T_utm_lastopt is None or self._T_odom_lastopt is None:
+            return None
+        if not self.mapper.poses_cam_history:
+            return None
+        T_odom_lastopt_inv = np.linalg.inv(self._T_odom_lastopt)
+        cam_traj = [
+            self._T_utm_lastopt @ T_odom_lastopt_inv @ pose_cam
+            for pose_cam in self.mapper.poses_cam_history
+        ]
+        times = np.array(self.mapper.times_history)
+        return pose_data_from_trajectory(cam_traj, times)
 
     def _set_lastopt_anchors(self, optimized_trajectory: List[np.ndarray]):
         """Capture the camera-frame T_utm and T_odom poses at the most recent
@@ -584,6 +642,7 @@ class CrossViewIncremental:
         # to compare against.
         if rerun_lc_obj is not None:
             self._last_lc_out_rej_obj = rerun_lc_obj
+        self._commit_accepted_inliers(rerun_inliers)
 
         self._global_loc_frame_idx = len(self._instant_pose_history)
         self._global_loc_wall_time = time.time() - wc_start
