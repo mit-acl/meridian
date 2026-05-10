@@ -5,6 +5,8 @@ import numpy as np
 
 from meridian.params.params_base import ParamsBase
 
+# TODO: need to get rid of a bunch of these duplicate params with segment_to_primitive_params.py
+
 
 @dataclass
 class CrossViewMatchingParams(ParamsBase):
