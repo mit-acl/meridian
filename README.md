@@ -5,3 +5,6 @@
 ## Install
 
 Clone this repo and `pip install .`
+
+## Acknowledgements
+This research is supported by ARL DCIST under Cooperative Agreement Number W911NF-17-2-0181 and DSTA.
