@@ -22,6 +22,12 @@ from meridian.map3d.map_segment import MapSegment
 from meridian.map3d.observation import Observation
 from meridian.map3d.global_nearest_neighbor import global_nearest_neighbor
 from meridian.params.segment_mapping_params import SegmentMappingParams
+from meridian.map3d.submap import FrameType, Submap
+from meridian.primitive.primitive_list import PrimitiveList
+from meridian.primitive.dense_segment import (
+    DenseSegment,
+    get_roman_ratio_feature,
+)
 
 import logging
 
@@ -123,10 +129,19 @@ class SegmentMapper:
                 continue
             try:
                 seg.final_cleanup()
-                self.inactive_segments.append(seg)
+            except Exception:  # too few points to form clusters
                 self.segments.remove(seg)
-            except:  # too few points to form clusters
+                continue
+            # final_cleanup can also succeed but null the points (statistical
+            # outlier removal flags everything, or DBSCAN keeps no cluster).
+            # Drop those instead of moving to inactive — anything kept must
+            # have a usable point cloud since merge/IoU/voxel-grid lookups
+            # below will crash on an empty segment.
+            if seg.points is None or len(seg.points) == 0:
                 self.segments.remove(seg)
+                continue
+            self.inactive_segments.append(seg)
+            self.segments.remove(seg)
 
         # handle moving inactive segments to graveyard
         to_rm = [
@@ -445,13 +460,6 @@ class SegmentMapper:
         if self._ground_submap_mapping is None:
             return
 
-        from meridian.map3d.submap import FrameType, Submap
-        from meridian.primitive.primitive_list import PrimitiveList
-        from meridian.primitive.dense_segment import (
-            DenseSegment,
-            get_roman_ratio_feature,
-        )
-
         all_segs = self.segments + self.inactive_segments + self.segment_graveyard
         current_ids = {seg.id for seg in all_segs}
 
@@ -509,7 +517,17 @@ class SegmentMapper:
                     seg.final_cleanup()
                 except Exception as e:
                     logger.debug(f"final_cleanup failed for active seg {seg.id}: {e}")
-        # Cleanup may zero out points for some segments; drop those.
+        # Cleanup may zero out points for some segments; drop those from the
+        # submap AND from self.segments so the next frame's global_nearest_neighbor
+        # doesn't try to compute IoU on a zero-point segment (which raises in
+        # MapSegment.get_voxel_grid).
+        emptied_ids = {
+            seg.id
+            for seg in selected_segs
+            if seg.id in active_ids and (seg.points is None or len(seg.points) == 0)
+        }
+        if emptied_ids:
+            self.segments = [s for s in self.segments if s.id not in emptied_ids]
         selected_segs = [
             seg
             for seg in selected_segs

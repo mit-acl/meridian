@@ -5,6 +5,8 @@ import numpy as np
 
 from meridian.params.params_base import ParamsBase
 
+# TODO: need to get rid of a bunch of these duplicate params with segment_to_primitive_params.py
+
 
 @dataclass
 class CrossViewMatchingParams(ParamsBase):
@@ -142,6 +144,10 @@ class CrossViewRPGOParams(ParamsBase):
     gt_inliers_rot_err_deg: float = 5.0
     gt_inliers_trans_err_m: float = 1.0
 
+    # initialize pose only with n submap registrations - this gaurds the
+    # loop closure rejection from growing too large
+    outlier_rejection_max_num_lcs: Optional[int] = 100_000
+
     @property
     def rot_consistency_sigma_rad(self) -> float:
         return np.deg2rad(self.rot_consistency_sigma_deg)
@@ -165,3 +171,19 @@ class CrossViewIncrementalParams(ParamsBase):
 
     consistent_loop_closure_thresh: int = 3
     rot_constrained_consistent_lc_thresh: int = 8
+
+    # POST-state guard: if the loop-closure outlier-rejection objective
+    # (u^T M u / u^T u) drops by more than this versus the last accepted POST
+    # objective, reject the new solve and keep the previous lastopt anchors.
+    # Pipeline continues to the next ground submap.
+    allowable_outlier_lc_obj_drop: float = np.inf
+
+    # Abort the incremental run when the live instantaneous translation error
+    # (vs data.gt_pose_data) exceeds this many meters. Saves whatever outputs
+    # exist and exits. Only active when gt_pose_data is set.
+    early_termination_err_m: float = 20.0
+
+    # If True, once we have accepted a loop closure as an inlier in the
+    # post-global-localization mode, then all other corresponding submap
+    # potential loop closures are removed from the outlier rejection processing
+    commit_accepted_inliers: bool = True

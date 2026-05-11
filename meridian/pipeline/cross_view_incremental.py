@@ -107,16 +107,26 @@ class CrossViewIncremental:
 
     # State
     _state: str = field(default="PRE", init=False)
+    _submap_viz: bool = field(default=False, init=False)
     _submap_count: int = field(default=0, init=False)
     _candidates: List[dict] = field(default_factory=list, init=False)
     _results_per_submap: Dict[str, object] = field(default_factory=dict, init=False)
     _match_details_per_submap: Dict[str, Dict[str, list]] = field(
         default_factory=dict, init=False
     )
-    _last_T_utm_odom: Optional[np.ndarray] = field(default=None, init=False)
     _last_optimized_trajectory: Optional[List[np.ndarray]] = field(
         default=None, init=False
     )
+    # Camera-frame anchors for propagating future poses consistently with the
+    # most recent PGO. Future T_utm_camera(t) = T_utm_lastopt @ inv(T_odom_lastopt) @ T_odom_cam(t).
+    _T_utm_lastopt: Optional[np.ndarray] = field(default=None, init=False)
+    _T_odom_lastopt: Optional[np.ndarray] = field(default=None, init=False)
+    # Most recent accepted CLIPPER outlier-rejection objective (for the
+    # `allowable_outlier_lc_obj_drop` guard). None until first POST commit.
+    _last_lc_out_rej_obj: Optional[float] = field(default=None, init=False)
+    # Set by `_record_instantaneous_pose` when the live error exceeds the
+    # `early_termination_err_m` threshold. Causes the per-frame loop to break.
+    _early_terminate: bool = field(default=False, init=False)
     _optimized_pose_data: Optional[object] = field(default=None, init=False)
     _instant_pose_history: List[Tuple[float, np.ndarray]] = field(
         default_factory=list, init=False
@@ -162,6 +172,8 @@ class CrossViewIncremental:
 
         t_loop_start = time.time()
         for t in tqdm.tqdm(times, desc="Incremental cross-view"):
+            if self._early_terminate:
+                break
             t_data_start = time.time()
             try:
                 img_t = data.img_data.nearest_time(t)
@@ -242,10 +254,18 @@ class CrossViewIncremental:
                 gt_trajectory=self.data.gt_pose_data,
             )
         else:
+            # Propagate the last-accepted PGO forward via odom over the full
+            # mapper history so the matcher's reference trajectory reflects
+            # where the camera *currently is*, not just where it was at the
+            # last accepted PGO. Without this, queries beyond `times[-1]` of
+            # `_optimized_pose_data` clamp to the last optimized pose, which
+            # mis-anchors aerial-patch selection — especially after the drop
+            # guard rejects updates and `_optimized_pose_data` goes stale.
+            propagated_ref = self._build_propagated_reference_pose_data()
             match_result = self.algorithm.cross_view_match_max_intersection(
                 self.aerial_submaps,
                 ground_submaps,
-                reference_trajectory=self._optimized_pose_data,
+                reference_trajectory=propagated_ref or self._optimized_pose_data,
                 T_camera_flu=self.data.T_camera_flu,
                 translation_only=True,
                 show_progress=False,
@@ -279,7 +299,7 @@ class CrossViewIncremental:
         t_or_start = time.time()
         rpgo = CrossViewRPGO(params=self.rpgo_params)
         try:
-            inlier_indices, _, _ = rpgo.solve_clipper_only(
+            inlier_indices, _M, _C, lc_obj = rpgo.solve_clipper_only(
                 self._candidates,
                 self.mapper.poses_cam_history,
                 np.array(self.mapper.times_history),
@@ -287,6 +307,7 @@ class CrossViewIncremental:
         except Exception as e:
             logger.warning(f"CLIPPER failed (state={self._state}): {e}")
             inlier_indices = np.array([], dtype=int)
+            lc_obj = None
         self._timing["outlier_rej"].append(time.time() - t_or_start)
 
         n_inliers = len(inlier_indices)
@@ -302,7 +323,53 @@ class CrossViewIncremental:
                 if self._attempt_global_localization():
                     self._state = "POST"
         else:
-            self._run_post_pgo(inlier_indices)
+            self._run_post_pgo(inlier_indices, lc_obj)
+
+        self._emit_submap_viz(ground_key)
+
+    def _emit_submap_viz(self, ground_key: str):
+        """Debug-only: per-ground-submap trajectory + results snapshot.
+
+        Forces a full `rpgo.solve()` (CLIPPER + PGO/frame_align) over the
+        current candidate pool so a meaningful trajectory.png can be drawn,
+        even in PRE state. Intentionally heavyweight; gated on `--viz`.
+        """
+        if not self._submap_viz:
+            return
+        viz_dir = pathlib.Path(self.output_dir) / "incremental" / "viz"
+        viz_dir.mkdir(parents=True, exist_ok=True)
+        name_prefix = f"ground_{ground_key}"
+
+        rpgo = CrossViewRPGO(params=self.rpgo_params)
+        result = None
+        try:
+            result = rpgo.solve(
+                self._candidates,
+                self.mapper.poses_cam_history,
+                np.array(self.mapper.times_history),
+                self.data.T_camera_flu,
+            )
+        except Exception as e:
+            logger.debug(f"submap viz: solve failed for {ground_key}: {e}")
+
+        if result is None or not result.success:
+            stub = [
+                f"Number of candidates: {len(self._candidates)}",
+                "Number of inliers: 0",
+                "T_utm_odom: (no successful solve at this submap)",
+                f"State: {self._state}",
+            ]
+            with open(viz_dir / f"{name_prefix}.txt", "w") as f:
+                f.write("\n".join(stub) + "\n")
+            return
+
+        CrossViewLocalization._visualize_and_report(
+            result,
+            self.data,
+            viz_dir,
+            self.viz_params,
+            name_prefix=name_prefix,
+        )
 
     def _min_assoc_for_state(self) -> int:
         if (
@@ -316,9 +383,30 @@ class CrossViewIncremental:
     # POST PGO
     # ------------------------------------------------------------------
 
-    def _run_post_pgo(self, inlier_indices: np.ndarray):
+    def _run_post_pgo(self, inlier_indices: np.ndarray, objective: Optional[float]):
         if len(inlier_indices) == 0:
             return
+
+        # Guard against degenerate re-solves: if the new outlier-rejection
+        # objective dropped meaningfully versus the last accepted POST step,
+        # skip this update and keep the previous lastopt anchors. The pipeline
+        # continues and tries again on the next ground submap. Skipped when
+        # `objective` is None (e.g., GT-inliers path) so a missing measurement
+        # doesn't silently freeze updates.
+        drop = self.incremental_params.allowable_outlier_lc_obj_drop
+        if (
+            drop is not None
+            and self._last_lc_out_rej_obj is not None
+            and objective is not None
+            and objective < self._last_lc_out_rej_obj - drop
+        ):
+            logger.info(
+                f"POST PGO update rejected: objective {objective:.4f} dropped > "
+                f"{drop} below previous {self._last_lc_out_rej_obj:.4f}; "
+                "keeping previous lastopt anchors."
+            )
+            return
+
         rpgo = CrossViewRPGO(params=self.rpgo_params)
         t_pgo_start = time.time()
         T_utm_odom = rpgo._frame_align(self._candidates, inlier_indices)
@@ -339,11 +427,82 @@ class CrossViewIncremental:
             )
         self._timing["pgo"].append(time.time() - t_pgo_start)
 
-        self._last_T_utm_odom = T_utm_odom
         self._last_optimized_trajectory = optimized_trajectory
+        self._set_lastopt_anchors(optimized_trajectory)
         self._optimized_pose_data = self._build_camera_pose_data(
             optimized_trajectory, np.array(self.mapper.times_history)
         )
+        if objective is not None:
+            self._last_lc_out_rej_obj = objective
+        self._commit_accepted_inliers(inlier_indices)
+
+    def _commit_accepted_inliers(self, inlier_indices: np.ndarray):
+        """When `commit_accepted_inliers` is enabled, remove non-inlier
+        candidates that share a ground_key with any accepted inlier. Locks the
+        chosen aerial hypothesis per submap so subsequent CLIPPER runs cannot
+        drift into a different inlier basin for an already-resolved submap.
+        """
+        if not self.incremental_params.commit_accepted_inliers:
+            return
+        if len(inlier_indices) == 0:
+            return
+        inlier_set = {int(i) for i in inlier_indices}
+        committed_ground_keys = {self._candidates[i]["ground_key"] for i in inlier_set}
+        if not committed_ground_keys:
+            return
+        pruned = [
+            c
+            for i, c in enumerate(self._candidates)
+            if i in inlier_set or c["ground_key"] not in committed_ground_keys
+        ]
+        n_removed = len(self._candidates) - len(pruned)
+        if n_removed:
+            logger.info(
+                f"commit_accepted_inliers: pruned {n_removed} alternative "
+                f"hypotheses across {len(committed_ground_keys)} committed "
+                f"submaps; candidate pool {len(self._candidates)} -> {len(pruned)}"
+            )
+        self._candidates = pruned
+
+    def _build_propagated_reference_pose_data(self):
+        """Build a camera-frame PoseData covering the full
+        `mapper.poses_cam_history` by propagating the last-accepted PGO
+        anchors forward via odom:
+            T_utm_camera(t) = _T_utm_lastopt @ inv(_T_odom_lastopt) @ pose_cam(t).
+        Used as the matcher's `reference_trajectory` so aerial-patch selection
+        tracks the live camera pose instead of clamping to the last accepted
+        PGO frame. Returns None if anchors are not yet set.
+        """
+        if self._T_utm_lastopt is None or self._T_odom_lastopt is None:
+            return None
+        if not self.mapper.poses_cam_history:
+            return None
+        T_odom_lastopt_inv = np.linalg.inv(self._T_odom_lastopt)
+        cam_traj = [
+            self._T_utm_lastopt @ T_odom_lastopt_inv @ pose_cam
+            for pose_cam in self.mapper.poses_cam_history
+        ]
+        times = np.array(self.mapper.times_history)
+        return pose_data_from_trajectory(cam_traj, times)
+
+    def _set_lastopt_anchors(self, optimized_trajectory: List[np.ndarray]):
+        """Capture the camera-frame T_utm and T_odom poses at the most recent
+        PGO step. Used by `_record_instantaneous_pose` to propagate future
+        poses consistently with PGO via:
+            T_utm_cam(t) = T_utm_lastopt @ inv(T_odom_lastopt) @ T_odom_cam(t).
+        `optimized_trajectory` is in body frame (T_utm_body); convert back to
+        camera frame so the chain composes directly with `pose_cam`.
+        """
+        if not optimized_trajectory:
+            return
+        idx = len(optimized_trajectory) - 1
+        if self.data.T_camera_flu is not None:
+            T_camera_flu_inv = np.linalg.inv(self.data.T_camera_flu)
+            self._T_utm_lastopt = optimized_trajectory[idx] @ T_camera_flu_inv
+        else:
+            self._T_utm_lastopt = optimized_trajectory[idx]
+        # poses_cam_history is already in camera frame (T_odom_camera).
+        self._T_odom_lastopt = self.mapper.poses_cam_history[idx]
 
     # ------------------------------------------------------------------
     # PRE -> POST attempt (gated; may be retried)
@@ -354,9 +513,9 @@ class CrossViewIncremental:
         trajectory state was committed; False otherwise (caller stays in PRE).
 
         Invariant: must not mutate self._candidates, self._results_per_submap,
-        self._match_details_per_submap, self._last_T_utm_odom,
-        self._last_optimized_trajectory, or self._optimized_pose_data until
-        gate #2 passes.
+        self._match_details_per_submap, self._last_optimized_trajectory,
+        self._T_utm_lastopt, self._T_odom_lastopt, or self._optimized_pose_data
+        until gate #2 passes.
         """
         wc_start = time.time()
         gate2_thresh = self.incremental_params.rot_constrained_consistent_lc_thresh
@@ -429,8 +588,9 @@ class CrossViewIncremental:
 
         # Step 5: CLIPPER on rerun candidates (still local, no commit yet).
         t_or_start = time.time()
+        rerun_lc_obj: Optional[float] = None
         try:
-            rerun_inliers, _, _ = rpgo.solve_clipper_only(
+            rerun_inliers, _M, _C, rerun_lc_obj = rpgo.solve_clipper_only(
                 rerun_candidates,
                 self.mapper.poses_cam_history,
                 np.array(self.mapper.times_history),
@@ -473,11 +633,16 @@ class CrossViewIncremental:
         self._candidates = rerun_candidates
         self._results_per_submap = dict(rerun_result.results)
         self._match_details_per_submap = dict(rerun_result.match_details)
-        self._last_T_utm_odom = T_utm_odom
         self._last_optimized_trajectory = optimized_trajectory
+        self._set_lastopt_anchors(optimized_trajectory)
         self._optimized_pose_data = self._build_camera_pose_data(
             optimized_trajectory, np.array(self.mapper.times_history)
         )
+        # Seed the drop-guard baseline so the first POST step has something
+        # to compare against.
+        if rerun_lc_obj is not None:
+            self._last_lc_out_rej_obj = rerun_lc_obj
+        self._commit_accepted_inliers(rerun_inliers)
 
         self._global_loc_frame_idx = len(self._instant_pose_history)
         self._global_loc_wall_time = time.time() - wc_start
@@ -506,28 +671,65 @@ class CrossViewIncremental:
         return pose_data_from_trajectory(cam_traj, times)
 
     def _record_instantaneous_pose(self, t: float, pose_cam: np.ndarray):
-        if self._state == "POST" and self._last_T_utm_odom is not None:
-            T_utm_camera = self._last_T_utm_odom @ pose_cam
+        # Propagate the last PGO estimate forward via odom-frame relative motion:
+        # T_utm_camera(t) = T_utm_lastopt @ inv(T_odom_lastopt) @ T_odom_cam(t).
+        # This keeps the live causal pose consistent with the most recent PGO
+        # output instead of using the rigid frame-align T_utm_odom (which throws
+        # away the per-pose deformation PGO produced).
+        if (
+            self._state == "POST"
+            and self._T_utm_lastopt is not None
+            and self._T_odom_lastopt is not None
+        ):
+            T_utm_camera = (
+                self._T_utm_lastopt @ np.linalg.inv(self._T_odom_lastopt) @ pose_cam
+            )
             if self.data.T_camera_flu is not None:
                 T_utm_body = T_utm_camera @ self.data.T_camera_flu
             else:
                 T_utm_body = T_utm_camera
             self._instant_pose_history.append((t, T_utm_body))
+            self._maybe_early_terminate(t, T_utm_body)
         else:
             self._instant_pose_history.append((t, np.full((4, 4), np.nan)))
+
+    def _maybe_early_terminate(self, t: float, T_utm_body: np.ndarray):
+        """Trip `_early_terminate` when the live translation error exceeds
+        `early_termination_err_m`. No-op if the threshold is None or no GT is
+        available."""
+        thresh = self.incremental_params.early_termination_err_m
+        if thresh is None or self.data.gt_pose_data is None:
+            return
+        try:
+            gt_pose = self.data.gt_pose_data.pose(t)
+        except Exception:
+            return
+        gt_body = (
+            gt_pose @ self.data.T_camera_flu
+            if self.data.T_camera_flu is not None
+            else gt_pose
+        )
+        err_m = float(np.linalg.norm(T_utm_body[:2, 3] - gt_body[:2, 3]))
+        if err_m > thresh:
+            logger.warning(
+                f"Early termination: instantaneous error {err_m:.2f} m > "
+                f"threshold {thresh} m at t={t:.2f}. "
+                "Saving outputs and exiting."
+            )
+            self._early_terminate = True
 
     # ------------------------------------------------------------------
     # End-of-run output
     # ------------------------------------------------------------------
 
-    def write_outputs(self, save_viz: bool = True):
+    def write_outputs(self):
         out = pathlib.Path(self.output_dir)
         out.mkdir(parents=True, exist_ok=True)
 
         self._write_mapping_outputs()
         self._write_match_heatmaps()
         self._write_incremental_outputs()
-        self._write_localization_outputs(save_viz=save_viz)
+        self._write_localization_outputs()
 
     def _write_mapping_outputs(self):
         """Mirror of segment_mapping.py end-of-run mapping outputs."""
@@ -898,7 +1100,7 @@ class CrossViewIncremental:
             f.write("\n".join(lines) + "\n")
         print("\n".join(lines))
 
-    def _write_localization_outputs(self, save_viz: bool = True):
+    def _write_localization_outputs(self):
         out = pathlib.Path(self.output_dir) / "localization"
         out.mkdir(parents=True, exist_ok=True)
         if not self._candidates:
@@ -940,7 +1142,7 @@ def cross_view_incremental(
     output_dir: str,
     aerial_dir: str,
     run: str = None,
-    save_viz: bool = True,
+    submap_viz: bool = False,
 ):
     if not aerial_dir:
         raise ValueError(
@@ -1079,6 +1281,7 @@ def cross_view_incremental(
         output_dir=output_dir,
     )
     pipeline._params_path = params_path
+    pipeline._submap_viz = submap_viz
 
     # Save params + commit hash (mirror cross_view_matching).
     all_params = [
@@ -1116,6 +1319,8 @@ def cross_view_incremental(
         chunk_start = init_time_range[1]
         chunk_idx += 1
         while chunk_start < full_tf:
+            if pipeline._early_terminate:
+                break
             chunk_end = min(chunk_start + mapping_data_params.max_time, full_tf)
             print(
                 f"Running chunk {chunk_idx} ({chunk_start:.2f} to {chunk_end:.2f})..."
@@ -1131,7 +1336,7 @@ def cross_view_incremental(
     print(f"Pipeline took {wall_time:.2f}s")
 
     print("Writing outputs...")
-    pipeline.write_outputs(save_viz=save_viz)
+    pipeline.write_outputs()
     print("Done.")
 
 
@@ -1147,16 +1352,30 @@ if __name__ == "__main__":
     )
     parser.add_argument("-r", "--run", type=str, default=None)
     parser.add_argument(
-        "--no-viz",
+        "-v",
+        "--viz",
         action="store_true",
-        help="Skip per-pair match visualizations (heatmaps still rendered).",
+        help="Save per-ground-submap trajectory/results viz to incremental/viz/.",
+    )
+    parser.add_argument(
+        "-d",
+        "--debug",
+        action="store_true",
+        help="Enable INFO-level logging.",
     )
     args = parser.parse_args()
+
+    if args.debug:
+        import logging
+
+        logging.basicConfig(
+            level=logging.INFO, format="%(levelname)s:%(name)s:%(message)s"
+        )
 
     cross_view_incremental(
         args.params,
         args.output,
         aerial_dir=args.aerial,
         run=args.run,
-        save_viz=not args.no_viz,
+        submap_viz=args.viz,
     )

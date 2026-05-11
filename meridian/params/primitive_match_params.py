@@ -31,7 +31,7 @@ class LangevinMatcherParams(ParamsBase):
 @dataclass
 class PrimitiveMatchParams(ParamsBase):
     """
-    PrimitiveMatchParams: dataclass for segment matching parameters.
+    PrimitiveMatchParams: dataclass for primitive matching parameters.
 
     Args:
         dim (int = 3): dimension of points (2 or 3).
@@ -63,7 +63,7 @@ class PrimitiveMatchParams(ParamsBase):
     """
 
     # class attribute
-    params_key: ClassVar[str] = "segment_match"
+    params_key: ClassVar[str] = "primitive_match"
 
     # Parameters
     dim: int = 3
