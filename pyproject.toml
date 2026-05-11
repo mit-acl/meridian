@@ -6,12 +6,20 @@ build-backend = "hatchling.build"
 name = "meridian"
 version = "0.0.2"
 dependencies = [
-    "numpy",
+    "numpy<2",
     "alphashape",
     "trimesh",
     "manifold3d",
     "rasterio<1.5",
     "circle-fit",
+    "segment-anything",
+    "einops",
+    "fast-pytorch-kmeans",
+    "open3d",
+    "transformers",
+    "numba",
+    "yolov7-package",
+    "robotdatapy"
     # for dinov3
     #"torchmetrics",
     #"termcolor",

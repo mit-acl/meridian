@@ -10,6 +10,21 @@ from transformers import AutoImageProcessor, AutoModel
 
 from meridian.params.segmenter_params import SegmenterParamsBase
 
+# Patch torch.load to disable weights_only loading for torch>2.4. FastSAM's
+# checkpoints contain pickled ultralytics classes that the new default
+# (weights_only=True, introduced in PyTorch 2.6) refuses to unpickle.
+_torch_version = torch.__version__.split(".")
+if int(_torch_version[0]) > 2 or (
+    int(_torch_version[0]) == 2 and int(_torch_version[1]) > 4
+):
+    _real_torch_load = torch.load
+
+    def _torch_load_no_weights_only(*args, **kwargs):
+        kwargs["weights_only"] = False
+        return _real_torch_load(*args, **kwargs)
+
+    torch.load = _torch_load_no_weights_only
+
 
 class SegmenterBase:
     """Base class for ground and aerial segmenters.
