@@ -13,7 +13,7 @@ class SegmenterParamsBase(ParamsBase):
 
     # Segmentation model
     model_type: str = "fastsam"
-    weights_path: str = "$ROMAN_WEIGHTS/FastSAM-x.pt"
+    weights_path: str = "$MERIDIAN_WEIGHTS/FastSAM-x.pt"
     imgsz: Tuple[int, int] = (1024, 1024)
     conf: float = 0.2
     iou: float = 0.9
@@ -71,7 +71,7 @@ class SegmenterParams(SegmenterParamsBase):
     params_key: ClassVar[str] = "segmenter"
 
     # Ground-specific fields
-    yolo_weights_path: str = "$ROMAN_WEIGHTS/yolov7.pt"
+    yolo_weights_path: str = "$MERIDIAN_WEIGHTS/yolov7.pt"
     erosion_size: int = 3
     voxel_size: float = 0.1
     ignore_labels: list = tuple([])
@@ -109,7 +109,7 @@ class AerialSegmenterParams(SegmenterParamsBase):
 
     # Override base defaults for aerial
     model_type: str = "segment_anything"
-    weights_path: str = "$ROMAN_WEIGHTS/sam_vit_l_0b3195.pth"
+    weights_path: str = "$MERIDIAN_WEIGHTS/sam_vit_l_0b3195.pth"
     conf: float = 0.1
     iou: float = 0.1
     imgsz: tuple = (1024, 1024)
