@@ -586,31 +586,43 @@ class PrimitiveMatcher:
     def _knn_filter_associations(self, segs1, segs2, k):
         """Return putative associations filtered by k-nearest cos_feature neighbors.
 
-        Bidirectional: for each seg in segs1, find k nearest in segs2 by cosine
-        similarity, and vice versa. Returns union of both directions.
+        Direction is controlled by ``self.params.knn_direction``:
+
+        - ``None``: bidirectional — for each seg in segs1 find k nearest in segs2
+          AND for each seg in segs2 find k nearest in segs1. Returns the union.
+        - ``"1to2"``: only segs1 → segs2 (for each seg in segs1, find k nearest
+          in segs2).
+        - ``"2to1"``: only segs2 → segs1 (for each seg in segs2, find k nearest
+          in segs1).
         """
+        direction = self.params.knn_direction
+        if direction not in (None, "1to2", "2to1"):
+            raise ValueError(
+                f"Invalid knn_direction {direction!r}; expected None, '1to2', or '2to1'."
+            )
+
         feats1 = np.array([seg.cos_feature.flatten() for seg in segs1])
         feats2 = np.array([seg.cos_feature.flatten() for seg in segs2])
 
         pairs = set()
 
-        # segs1 -> segs2
-        k1 = min(k, len(segs2))
-        nn1 = NearestNeighbors(n_neighbors=k1, metric="cosine", algorithm="brute")
-        nn1.fit(feats2)
-        indices1 = nn1.kneighbors(feats1, return_distance=False)
-        for i, neighbors in enumerate(indices1):
-            for j in neighbors:
-                pairs.add((i, j))
+        if direction in (None, "1to2"):
+            k1 = min(k, len(segs2))
+            nn1 = NearestNeighbors(n_neighbors=k1, metric="cosine", algorithm="brute")
+            nn1.fit(feats2)
+            indices1 = nn1.kneighbors(feats1, return_distance=False)
+            for i, neighbors in enumerate(indices1):
+                for j in neighbors:
+                    pairs.add((i, j))
 
-        # segs2 -> segs1
-        k2 = min(k, len(segs1))
-        nn2 = NearestNeighbors(n_neighbors=k2, metric="cosine", algorithm="brute")
-        nn2.fit(feats1)
-        indices2 = nn2.kneighbors(feats2, return_distance=False)
-        for j, neighbors in enumerate(indices2):
-            for i in neighbors:
-                pairs.add((i, j))
+        if direction in (None, "2to1"):
+            k2 = min(k, len(segs1))
+            nn2 = NearestNeighbors(n_neighbors=k2, metric="cosine", algorithm="brute")
+            nn2.fit(feats1)
+            indices2 = nn2.kneighbors(feats2, return_distance=False)
+            for j, neighbors in enumerate(indices2):
+                for i in neighbors:
+                    pairs.add((i, j))
 
         if len(pairs) == 0:
             return np.zeros((0, 2), dtype=np.int32)
