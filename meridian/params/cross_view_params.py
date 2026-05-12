@@ -132,8 +132,8 @@ class CrossViewRPGOParams(ParamsBase):
     optimization_method: str = "pgo"  # "frame_align" or "pgo"
 
     # PGO noise parameters
-    odom_trans_sigma_m: float = 0.1
-    odom_rot_sigma_deg: float = 0.5
+    odom_trans_sigma_m: float = 0.01
+    odom_rot_sigma_deg: float = 0.01
     prior_trans_sigma_m: float = 2.0
     prior_rot_sigma_deg: float = 5.0
 
