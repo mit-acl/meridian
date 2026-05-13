@@ -25,6 +25,26 @@ if int(_torch_version[0]) > 2 or (
 
     torch.load = _torch_load_no_weights_only
 
+# Patch FastSAM's postprocess for a shape-mismatch bug at fastsam/predict.py:34.
+# When more than one detection has IoU > 0.9 with the full-image box, the line
+# ``full_box[0][4] = p[0][critical_iou_index][:,4]`` tries to assign a (K,)
+# tensor into a scalar slot and raises a RuntimeError. ``bbox_iou`` is only
+# referenced from this one site, so clamping it to at most one match is enough.
+import fastsam.predict as _fastsam_predict  # noqa: E402
+import fastsam.utils as _fastsam_utils  # noqa: E402
+
+_real_bbox_iou = _fastsam_utils.bbox_iou
+
+
+def _bbox_iou_single_match(*args, **kwargs):
+    result = _real_bbox_iou(*args, **kwargs)
+    if isinstance(result, torch.Tensor) and result.dim() == 1 and result.numel() > 1:
+        return result[:1]
+    return result
+
+
+_fastsam_predict.bbox_iou = _bbox_iou_single_match
+
 
 class SegmenterBase:
     """Base class for ground and aerial segmenters.
