@@ -47,7 +47,7 @@ class CrossViewMatchingParams(ParamsBase):
     max_intersection_patches_per_ground_sm: int = 4
     aerial_min_dist_to_border_m: float = 0.5
 
-    match_min_len_m: float = 4.0
+    match_min_len_m: float = 2.0
 
     ground_submap_dist_m: float = 20.0
     ground_submap_rad_m: float = 40.0
@@ -123,7 +123,7 @@ class CrossViewRPGOParams(ParamsBase):
     added_rot_noise_deg_per_m: float = 0.02
     single_lc_per_ground_sm: bool = True
     single_lc_per_ground_aerial_pair: bool = True
-    fuse_lc_score: bool = True
+    fuse_lc_score: bool = False
     lc_score_method: str = "frequency-ratio"
     min_num_associations: int = 3
     min_num_associations_rerun: Optional[int] = None
