@@ -39,9 +39,9 @@ class CrossViewMatchingParams(ParamsBase):
     line_merge_semantic_sim: float = 0.8
     line_split_length_m: float = np.inf
 
-    aerial_img_patch_side_len_m: float = 40.0
+    aerial_img_patch_side_len_m: float = 60.0
     aerial_img_segmentation_side_len_m: float = (
-        None  # None -> same as aerial_img_patch_side_len_m
+        40.0  # None -> same as aerial_img_patch_side_len_m
     )
     aerial_img_patch_overlap: float = 0.5
     max_intersection_patches_per_ground_sm: int = 4
@@ -123,7 +123,7 @@ class CrossViewRPGOParams(ParamsBase):
     added_rot_noise_deg_per_m: float = 0.02
     single_lc_per_ground_sm: bool = True
     single_lc_per_ground_aerial_pair: bool = True
-    fuse_lc_score: bool = False
+    fuse_lc_score: bool = True
     lc_score_method: str = "frequency-ratio"
     min_num_associations: int = 3
     min_num_associations_rerun: Optional[int] = None
