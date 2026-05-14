@@ -4,7 +4,7 @@ import os
 import pathlib
 import pickle
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 import cv2 as cv
 import matplotlib.pyplot as plt
@@ -139,6 +139,48 @@ def build_candidates_from_match_result(
     return candidates
 
 
+def _count_submaps_with_below_threshold_match(
+    match_results_per_submap: Dict[str, PoseEstimationResultMatrix],
+    match_trans_err_m: float,
+    match_rot_err_deg: float,
+) -> Tuple[int, int]:
+    """Count ground submaps that have any cell whose primary hypothesis is
+    below both the translation and rotation error thresholds (vs GT).
+    Returns (k, n). Cells with NaN errors are treated as fails.
+    """
+    rot_thresh = np.deg2rad(match_rot_err_deg)
+    n = len(match_results_per_submap)
+    k = 0
+    for matrix in match_results_per_submap.values():
+        tr = matrix.translation_error_m
+        rt = matrix.rotation_error_rad
+        with np.errstate(invalid="ignore"):
+            if np.any((tr < match_trans_err_m) & (rt < rot_thresh)):
+                k += 1
+    return k, n
+
+
+def _load_match_results_per_submap(
+    match_output_dir: pathlib.Path,
+) -> Dict[str, PoseEstimationResultMatrix]:
+    """Glob ground_*_results_matrix.pkl.npz files from match_output_dir/segments
+    and return {ground_key: PoseEstimationResultMatrix}. Returns {} if the
+    directory is missing or contains no matching files.
+    """
+    segments_dir = pathlib.Path(match_output_dir) / "segments"
+    out: Dict[str, PoseEstimationResultMatrix] = {}
+    if not segments_dir.is_dir():
+        return out
+    for result_file in sorted(segments_dir.glob("ground_*_results_matrix.pkl.npz")):
+        stem = result_file.name
+        ground_key = stem.replace("ground_", "").replace("_results_matrix.pkl.npz", "")
+        try:
+            out[ground_key] = PoseEstimationResultMatrix.load(str(result_file))
+        except Exception as e:
+            logger.debug(f"Skipping unreadable match results file {result_file}: {e}")
+    return out
+
+
 # ---------------------------------------------------------------------------
 # CrossViewLocalization pipeline
 # ---------------------------------------------------------------------------
@@ -162,6 +204,8 @@ class CrossViewLocalization:
         aerial_img: np.ndarray = None,
         main_output_dir: str = None,
         save_viz: bool = True,
+        match_trans_err_m: Optional[float] = None,
+        match_rot_err_deg: Optional[float] = None,
     ) -> Optional[CrossViewRPGOResult]:
         """Run the full localization pipeline.
 
@@ -209,7 +253,18 @@ class CrossViewLocalization:
             return None
 
         self._save_results(result, output_dir)
-        self._visualize_and_report(result, data, output_dir, self.viz_params)
+        initial_match_results = _load_match_results_per_submap(
+            pathlib.Path(match_output_dir)
+        )
+        self._visualize_and_report(
+            result,
+            data,
+            output_dir,
+            self.viz_params,
+            match_results_per_submap=initial_match_results or None,
+            match_trans_err_m=match_trans_err_m,
+            match_rot_err_deg=match_rot_err_deg,
+        )
 
         # --- Rerun with known rotation ---
         if (
@@ -337,7 +392,13 @@ class CrossViewLocalization:
 
         self._save_results(rerun_result, rerun_output_dir)
         self._visualize_and_report(
-            rerun_result, data, rerun_output_dir, self.viz_params
+            rerun_result,
+            data,
+            rerun_output_dir,
+            self.viz_params,
+            match_results_per_submap=match_result.results,
+            match_trans_err_m=pipeline.algorithm.pipeline_params.match_trans_err_m,
+            match_rot_err_deg=pipeline.algorithm.pipeline_params.match_rot_err_deg,
         )
 
         logger.info(
@@ -609,12 +670,24 @@ class CrossViewLocalization:
         output_dir: pathlib.Path,
         viz_params: CrossViewVisualizationParams = None,
         name_prefix: Optional[str] = None,
+        *,
+        match_results_per_submap: Optional[
+            Dict[str, PoseEstimationResultMatrix]
+        ] = None,
+        match_trans_err_m: Optional[float] = None,
+        match_rot_err_deg: Optional[float] = None,
     ):
         """Plot full trajectory on aerial image and compute error metrics.
 
         When `name_prefix` is None, writes `output_dir/trajectory.png` and
         `output_dir/results.txt` (default). Otherwise writes
         `output_dir/<name_prefix>.png` and `output_dir/<name_prefix>.txt`.
+
+        When `match_results_per_submap`, `match_trans_err_m`, and
+        `match_rot_err_deg` are all provided, the report appends a
+        "Submaps with sub-threshold match" line counting how many ground
+        submaps have any cell whose primary hypothesis is below both
+        thresholds vs ground truth.
         """
         if viz_params is None:
             viz_params = CrossViewVisualizationParams()
@@ -797,6 +870,19 @@ class CrossViewLocalization:
             )
         results_lines.append(f"T_utm_odom:\n{result.T_utm_odom}")
 
+        if (
+            match_results_per_submap is not None
+            and match_trans_err_m is not None
+            and match_rot_err_deg is not None
+        ):
+            k, n = _count_submaps_with_below_threshold_match(
+                match_results_per_submap, match_trans_err_m, match_rot_err_deg
+            )
+            results_lines.append(
+                f"Submaps with sub-threshold match "
+                f"({match_trans_err_m:.1f}m / {match_rot_err_deg:.1f}deg): {k} / {n}"
+            )
+
         if gt_utm_positions is not None:
             valid = ~np.any(np.isnan(gt_utm_positions), axis=1)
             if np.any(valid):
@@ -890,6 +976,12 @@ def cross_view_localization(
     _maybe_resolve_ground_map_path(data_params, ground_dir)
     data = CrossViewLocalizationData.from_params(data_params)
 
+    from meridian.params import CrossViewMatchingParams as _CVMatchParams
+
+    _matching_params = _CVMatchParams.load(params)
+    match_trans_err_m = _matching_params.match_trans_err_m
+    match_rot_err_deg = _matching_params.match_rot_err_deg
+
     # Save localization params (merges with matching params already in params.txt)
     from meridian.utils import save_params
 
@@ -955,6 +1047,8 @@ def cross_view_localization(
         aerial_img=data.aerial_img,
         main_output_dir=output_dir,
         save_viz=save_viz,
+        match_trans_err_m=match_trans_err_m,
+        match_rot_err_deg=match_rot_err_deg,
     )
     return result
 

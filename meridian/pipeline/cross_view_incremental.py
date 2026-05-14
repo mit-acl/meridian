@@ -320,7 +320,7 @@ class CrossViewIncremental:
             if n_inliers >= self.incremental_params.consistent_loop_closure_thresh:
                 if self._gate1_first_submap_count is None:
                     self._gate1_first_submap_count = len(self.mapper.submaps_2d)
-                if self._attempt_global_localization():
+                if self._attempt_global_localization(ground_key):
                     self._state = "POST"
         else:
             self._run_post_pgo(inlier_indices, lc_obj)
@@ -369,6 +369,71 @@ class CrossViewIncremental:
             viz_dir,
             self.viz_params,
             name_prefix=name_prefix,
+            match_results_per_submap=dict(self._results_per_submap),
+            match_trans_err_m=self.algorithm.pipeline_params.match_trans_err_m,
+            match_rot_err_deg=self.algorithm.pipeline_params.match_rot_err_deg,
+        )
+
+    def _emit_rerun_viz(
+        self,
+        ground_key: str,
+        rerun_result,
+        rerun_candidates: List[dict],
+        rerun_inliers: np.ndarray,
+        rerun_lc_obj: Optional[float],
+        T_utm_odom_local: Optional[np.ndarray],
+        optimized_trajectory_local: Optional[List[np.ndarray]],
+    ):
+        """Debug-only: per-rerun trajectory + results snapshot for the gate-2
+        rerun. Gated on `self._submap_viz`. Writes ground_<key>_rerun.{png,txt}
+        when the rerun produced inliers (any number), and a stub .txt when it
+        did not.
+        """
+        if not self._submap_viz:
+            return
+        viz_dir = pathlib.Path(self.output_dir) / "incremental" / "viz"
+        viz_dir.mkdir(parents=True, exist_ok=True)
+        name_prefix = f"ground_{ground_key}_rerun"
+
+        if optimized_trajectory_local is None:
+            obj_line = (
+                f"Outlier optimization objective value: {rerun_lc_obj:.4f}"
+                if rerun_lc_obj is not None
+                else "Outlier optimization objective value: (n/a)"
+            )
+            stub = [
+                f"Number of candidates: {len(rerun_candidates)}",
+                f"Number of inliers: {len(rerun_inliers)}",
+                obj_line,
+                "T_utm_odom: (rerun trajectory unavailable)",
+                f"State at rerun: {self._state}",
+            ]
+            with open(viz_dir / f"{name_prefix}.txt", "w") as f:
+                f.write("\n".join(stub) + "\n")
+            return
+
+        from meridian.cross_view.rpgo import CrossViewRPGOResult
+
+        viz_result = CrossViewRPGOResult(
+            success=True,
+            T_utm_odom=T_utm_odom_local,
+            optimized_trajectory=optimized_trajectory_local,
+            times=np.array(self.mapper.times_history),
+            inlier_indices=rerun_inliers,
+            M=None,
+            C=None,
+            objective_value=rerun_lc_obj,
+            candidates=rerun_candidates,
+        )
+        CrossViewLocalization._visualize_and_report(
+            viz_result,
+            self.data,
+            viz_dir,
+            self.viz_params,
+            name_prefix=name_prefix,
+            match_results_per_submap=dict(rerun_result.results),
+            match_trans_err_m=self.algorithm.pipeline_params.match_trans_err_m,
+            match_rot_err_deg=self.algorithm.pipeline_params.match_rot_err_deg,
         )
 
     def _min_assoc_for_state(self) -> int:
@@ -508,9 +573,12 @@ class CrossViewIncremental:
     # PRE -> POST attempt (gated; may be retried)
     # ------------------------------------------------------------------
 
-    def _attempt_global_localization(self) -> bool:
+    def _attempt_global_localization(self, ground_key: str) -> bool:
         """Attempt global localization. Returns True iff both gates pass and
         trajectory state was committed; False otherwise (caller stays in PRE).
+
+        `ground_key` identifies the submap whose CLIPPER pass just crossed
+        gate-1; used to name the diagnostic rerun viz.
 
         Invariant: must not mutate self._candidates, self._results_per_submap,
         self._match_details_per_submap, self._last_optimized_trajectory,
@@ -600,6 +668,49 @@ class CrossViewIncremental:
             rerun_inliers = np.array([], dtype=int)
         self._timing["outlier_rej"].append(time.time() - t_or_start)
 
+        # Compute the rerun's frame_align + PGO trajectory now (local only;
+        # no self.* mutation). Used for the diagnostic rerun viz regardless
+        # of whether gate-2 passes, and reused at commit time if it does.
+        T_utm_odom_local: Optional[np.ndarray] = None
+        optimized_trajectory_local: Optional[List[np.ndarray]] = None
+        if len(rerun_inliers) > 0:
+            t_pgo_start = time.time()
+            try:
+                T_utm_odom_local = rpgo._frame_align(rerun_candidates, rerun_inliers)
+                if self.rpgo_params.optimization_method == "pgo":
+                    optimized_trajectory_local = rpgo._pgo(
+                        rerun_candidates,
+                        rerun_inliers,
+                        self.mapper.poses_cam_history,
+                        np.array(self.mapper.times_history),
+                        self.data.T_camera_flu,
+                        T_utm_odom_local,
+                    )
+                else:
+                    optimized_trajectory_local = rpgo._apply_rigid_transform(
+                        T_utm_odom_local,
+                        self.mapper.poses_cam_history,
+                        self.data.T_camera_flu,
+                    )
+            except Exception as e:
+                logger.warning(f"[global-loc] rerun frame_align/PGO failed: {e}")
+                T_utm_odom_local = None
+                optimized_trajectory_local = None
+            self._timing["pgo"].append(time.time() - t_pgo_start)
+
+        # Emit the diagnostic rerun viz (gated on --viz; no-op otherwise).
+        # Emitted whether gate-2 passes or fails so the user can inspect the
+        # rerun trajectory and per-submap matches in both cases.
+        self._emit_rerun_viz(
+            ground_key,
+            rerun_result,
+            rerun_candidates,
+            rerun_inliers,
+            rerun_lc_obj,
+            T_utm_odom_local,
+            optimized_trajectory_local,
+        )
+
         # Step 6: gate #2 check.
         if len(rerun_inliers) < gate2_thresh:
             logger.warning(
@@ -610,25 +721,19 @@ class CrossViewIncremental:
             self._failed_attempt_count += 1
             return False
 
-        # Step 7: commit (gate #2 passed).
-        t_pgo_start = time.time()
-        T_utm_odom = rpgo._frame_align(rerun_candidates, rerun_inliers)
-        if self.rpgo_params.optimization_method == "pgo":
-            optimized_trajectory = rpgo._pgo(
-                rerun_candidates,
-                rerun_inliers,
-                self.mapper.poses_cam_history,
-                np.array(self.mapper.times_history),
-                self.data.T_camera_flu,
-                T_utm_odom,
+        # Step 7: commit (gate #2 passed). Reuse the trajectory computed
+        # above — gate-2 pass implies len(rerun_inliers) > 0, so both locals
+        # are non-None unless the frame_align/PGO itself raised. In that rare
+        # case, abort the commit rather than re-running here.
+        if T_utm_odom_local is None or optimized_trajectory_local is None:
+            logger.warning(
+                "[global-loc] gate-2 passed but rerun PGO failed earlier; "
+                "aborting commit and staying in PRE."
             )
-        else:
-            optimized_trajectory = rpgo._apply_rigid_transform(
-                T_utm_odom,
-                self.mapper.poses_cam_history,
-                self.data.T_camera_flu,
-            )
-        self._timing["pgo"].append(time.time() - t_pgo_start)
+            self._failed_attempt_count += 1
+            return False
+        T_utm_odom = T_utm_odom_local
+        optimized_trajectory = optimized_trajectory_local
 
         self._candidates = rerun_candidates
         self._results_per_submap = dict(rerun_result.results)
@@ -1122,7 +1227,15 @@ class CrossViewIncremental:
             return
         CrossViewLocalization._save_results(result, out)
         CrossViewLocalization._visualize_and_report(
-            result, self.data, out, self.viz_params
+            result,
+            self.data,
+            out,
+            self.viz_params,
+            match_results_per_submap=dict(self._results_per_submap)
+            if self._results_per_submap
+            else None,
+            match_trans_err_m=self.algorithm.pipeline_params.match_trans_err_m,
+            match_rot_err_deg=self.algorithm.pipeline_params.match_rot_err_deg,
         )
 
     # ------------------------------------------------------------------
