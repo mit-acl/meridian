@@ -56,9 +56,9 @@ class AerialPatchParams(ParamsBase):
     params_key: ClassVar[str] = "aerial_patch"
     fallback_params_key: ClassVar[str] = "cross_view_matching"
 
-    aerial_img_patch_side_len_m: float = 40.0
+    aerial_img_patch_side_len_m: float = 60.0
     aerial_img_segmentation_side_len_m: float = (
-        None  # None -> same as aerial_img_patch_side_len_m
+        40.0  # None -> same as aerial_img_patch_side_len_m
     )
     aerial_img_patch_overlap: float = 0.5
     aerial_min_dist_to_border_m: float = 0.5
