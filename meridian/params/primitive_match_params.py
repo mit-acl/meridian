@@ -86,7 +86,10 @@ class PrimitiveMatchParams(ParamsBase):
     xy_dir_constrained_2d: bool = False
     rot_unc_ang_rad: float = np.deg2rad(20.0)
     point_noise_from_angle: bool = True
-    k_nearest_neighbors: int = 10  # None = all-to-all
+    k_nearest_neighbors: int = 20  # None = all-to-all
+    knn_direction: str = (
+        "2to1"  # None | "1to2" | "2to1". None = bidirectional (union of both).
+    )
 
     solver: str = "langevin"  # "clipper" or "langevin"
     langevin_params: LangevinMatcherParams = None

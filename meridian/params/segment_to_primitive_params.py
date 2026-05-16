@@ -56,9 +56,9 @@ class AerialPatchParams(ParamsBase):
     params_key: ClassVar[str] = "aerial_patch"
     fallback_params_key: ClassVar[str] = "cross_view_matching"
 
-    aerial_img_patch_side_len_m: float = 40.0
+    aerial_img_patch_side_len_m: float = 60.0
     aerial_img_segmentation_side_len_m: float = (
-        None  # None -> same as aerial_img_patch_side_len_m
+        40.0  # None -> same as aerial_img_patch_side_len_m
     )
     aerial_img_patch_overlap: float = 0.5
     aerial_min_dist_to_border_m: float = 0.5
@@ -75,8 +75,8 @@ class GroundSubmapParams(ParamsBase):
     occluded_radius_thresh_m: float = 0.5
     occluded_grid_voxel_size_m: float = 0.25
     line_occlusion_num_samples: int = 10
-    line_occlusion_req_non_occluded: float = 0.3
-    line_frac_near_points: float = 0.3
+    line_occlusion_req_non_occluded: float = 0.1
+    line_frac_near_points: float = 0.1
     line_pt_dist_check_m: float = 0.5
     dense_points_max_n: int = 5000
 

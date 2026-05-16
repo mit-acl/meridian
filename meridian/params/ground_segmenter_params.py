@@ -13,5 +13,5 @@ class GroundSegmenterParams(ParamsBase):
     ##################
     voxel_size: float = 0.1
     outlier_removal_std: float = 1.0
-    dbscan_epsilon: float = 0.25
+    dbscan_epsilon: float = 1.0
     dbscan_min_points: int = 10
