@@ -64,8 +64,8 @@ class CrossViewRPGOParams(ParamsBase):
     rot_consistency_eps_deg: float = 5.0
     trans_consistency_sigma_m: float = 2.0
     trans_consistency_eps_m: float = 2.0
-    added_trans_noise_m_per_m: float = 0.02
-    added_rot_noise_deg_per_m: float = 0.02
+    added_trans_noise_m_per_m: float = 0.05
+    added_rot_noise_deg_per_m: float = 0.05
     single_lc_per_ground_sm: bool = True
     single_lc_per_ground_aerial_pair: bool = True
     fuse_lc_score: bool = True
@@ -77,8 +77,8 @@ class CrossViewRPGOParams(ParamsBase):
     optimization_method: str = "pgo"  # "frame_align" or "pgo"
 
     # PGO noise parameters
-    odom_trans_sigma_m: float = 0.01
-    odom_rot_sigma_deg: float = 0.01
+    odom_trans_sigma_m: float = 0.05
+    odom_rot_sigma_deg: float = 0.05
     prior_trans_sigma_m: float = 2.0
     prior_rot_sigma_deg: float = 5.0
 

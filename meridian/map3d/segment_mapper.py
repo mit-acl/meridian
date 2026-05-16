@@ -550,6 +550,30 @@ class SegmentMapper:
         if submap_time < self._last_submap_time:
             submap_time = self._last_submap_time
 
+        # Path-length gate: skip submaps whose center is too close (along the
+        # trajectory) to the previous submap's center. `_last_submap_time` is
+        # -inf for the first submap, so this no-ops on first creation.
+        if np.isfinite(self._last_submap_time):
+            times_arr_full = np.array(self.times_history)
+            mask = (times_arr_full >= self._last_submap_time) & (
+                times_arr_full <= submap_time
+            )
+            sel = np.where(mask)[0]
+            if len(sel) >= 2:
+                positions = np.array([self.poses_cam_history[i][:3, 3] for i in sel])
+                path_len = float(
+                    np.sum(np.linalg.norm(np.diff(positions, axis=0), axis=1))
+                )
+            else:
+                path_len = 0.0
+            if path_len < self.params.sm2d_consec_min_path_len:
+                logger.info(
+                    f"Skipping 2D submap at t={submap_time:.2f}: path length "
+                    f"{path_len:.2f}m < {self.params.sm2d_consec_min_path_len}m"
+                )
+                self._seg_ids_not_in_sm = []
+                return
+
         # Find nearest pose to submap time
         times_arr = np.array(self.times_history)
         nearest_idx = int(np.argmin(np.abs(times_arr - submap_time)))
