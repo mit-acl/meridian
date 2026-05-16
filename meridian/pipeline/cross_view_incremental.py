@@ -1250,6 +1250,17 @@ class CrossViewIncremental:
 # ---------------------------------------------------------------------------
 
 
+def _chunk_is_empty(data) -> bool:
+    if data.img_data is None or len(data.img_data.times) == 0:
+        return True
+    other = data.point_cloud_data if data.use_point_cloud else data.depth_data
+    if other is None or len(other.times) == 0:
+        return True
+    if data.camera_pose_data is None or len(data.camera_pose_data.times) == 0:
+        return True
+    return False
+
+
 def cross_view_incremental(
     params_path: str,
     output_dir: str,
@@ -1421,13 +1432,19 @@ def cross_view_incremental(
     wc_t0 = time.time()
     if mapping_data_params.max_time is None or full_t0 is None:
         print("Running incremental pipeline (no chunking)...")
-        pipeline.run(init_data)
+        if _chunk_is_empty(init_data):
+            print("No data in time range; nothing to run.")
+        else:
+            pipeline.run(init_data)
     else:
         chunk_idx = 0
         print(
             f"Running chunk {chunk_idx} ({full_t0:.2f} to {init_time_range[1]:.2f})..."
         )
-        pipeline.run(init_data)
+        if _chunk_is_empty(init_data):
+            print(f"Chunk {chunk_idx} has no data in one or more topics; skipping.")
+        else:
+            pipeline.run(init_data)
         del init_data
         chunk_start = init_time_range[1]
         chunk_idx += 1
@@ -1441,7 +1458,10 @@ def cross_view_incremental(
             data = SegmentMappingData.from_params(
                 mapping_data_params, time_range=(chunk_start, chunk_end)
             )
-            pipeline.run(data)
+            if _chunk_is_empty(data):
+                print(f"Chunk {chunk_idx} has no data in one or more topics; skipping.")
+            else:
+                pipeline.run(data)
             del data
             chunk_start = chunk_end
             chunk_idx += 1
