@@ -114,8 +114,8 @@ class CrossViewRPGOParams(ParamsBase):
 class CrossViewIncrementalParams(ParamsBase):
     params_key: ClassVar[str] = "cross_view_incremental"
 
-    consistent_loop_closure_thresh: int = 3
-    rot_constrained_consistent_lc_thresh: int = 8
+    consistent_loop_closure_thresh: int = 1
+    rot_constrained_consistent_lc_thresh: int = 6
 
     # POST-state guard: if the loop-closure outlier-rejection objective
     # (u^T M u / u^T u) drops by more than this versus the last accepted POST
