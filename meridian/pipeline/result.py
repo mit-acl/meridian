@@ -34,11 +34,24 @@ class PoseEstimationResult:
             return np.nan
         return np.linalg.norm((self.T_i_j - self.T_i_j_hat)[:3, 3])
 
+    @staticmethod
+    def _yaw_from_matrix(T: np.ndarray) -> float:
+        """Extract yaw angle from a 4x4 transform, ignoring pitch/roll and
+        any z-axis reflection (improper rotation from aerial-ground flip)."""
+        return float(np.arctan2(T[1, 0], T[0, 0]))
+
     @property
     def rotation_error_rad(self):
         if self.T_error is None:
             return np.nan
-        return Rot.from_matrix(self.T_error[:3, :3]).magnitude()
+        # Compare only yaw: both T_i_j and T_i_j_hat live in an SE(2)
+        # registration space, but may carry residual pitch/roll from 3D
+        # camera extrinsics.  Full SO(3) magnitude would include that
+        # irrelevant pitch/roll as rotation error.
+        yaw_gt = self._yaw_from_matrix(self.T_i_j)
+        yaw_hat = self._yaw_from_matrix(self.T_i_j_hat)
+        diff = yaw_gt - yaw_hat
+        return float(abs(np.arctan2(np.sin(diff), np.cos(diff))))
 
     @property
     def gt_distance_m(self):

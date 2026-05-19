@@ -297,8 +297,13 @@ class CrossViewRPGO:
             if T_i_j is None or np.any(np.isnan(T_i_j)):
                 continue
             trans_err = np.linalg.norm((T_i_j - T_i_j_hat)[:3, 3])
-            T_error = np.linalg.inv(T_i_j_hat) @ T_i_j
-            rot_err = Rot.from_matrix(T_error[:3, :3]).magnitude()
+            # Compare only yaw — both transforms live in SE(2) but may
+            # carry residual pitch/roll from 3D camera extrinsics.
+            yaw_gt = float(np.arctan2(T_i_j[1, 0], T_i_j[0, 0]))
+            yaw_hat = float(np.arctan2(T_i_j_hat[1, 0], T_i_j_hat[0, 0]))
+            rot_err = abs(
+                np.arctan2(np.sin(yaw_gt - yaw_hat), np.cos(yaw_gt - yaw_hat))
+            )
             if rot_err < rot_thresh and trans_err < trans_thresh:
                 inlier_indices.append(i)
         logger.info(
