@@ -14,7 +14,7 @@ class LandmarkPoseEstimationParams(ParamsBase):
     increment_sec: float = 1.0
     show_confirmation: bool = True
     aerial_display_downsample: int = 4
-    method: str = "frame_align"  # "frame_align" or "pgo"
+    method: str = "pgo"  # "frame_align" or "pgo"
 
     # PGO noise params
     odometry_rot_sig_deg: float = 0.5

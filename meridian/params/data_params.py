@@ -67,6 +67,8 @@ class LandmarkPoseEstimationDataParams(ParamsBase):
     depth_scale: float = 1e-3
 
     def __post_init__(self):
+        self.aerial_img_path = expandvars_recursive(self.aerial_img_path)
+
         if self.img_data is None:
             self.img_data = {}
         else:
