@@ -132,3 +132,8 @@ class CrossViewIncrementalParams(ParamsBase):
     # post-global-localization mode, then all other corresponding submap
     # potential loop closures are removed from the outlier rejection processing
     commit_accepted_inliers: bool = True
+
+    # If > 0, then the most recent n loop closures will not be committed to.
+    # In other words, all hypotheses will remain for the n most recent lcs,
+    # until newer loop closure distributions have been acquired.
+    delay_most_recent_lc_commit_num: int = 0
