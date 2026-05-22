@@ -550,6 +550,19 @@ class SegmentMapper:
         if submap_time < self._last_submap_time:
             submap_time = self._last_submap_time
 
+        # Time gate: skip submaps whose center is within `sm2d_consec_min_time_s`
+        # of the previous submap's center. `_last_submap_time` is -inf for the
+        # first submap, so this no-ops on first creation.
+        if np.isfinite(self._last_submap_time):
+            dt_since_last = submap_time - self._last_submap_time
+            if dt_since_last < self.params.sm2d_consec_min_time_s:
+                logger.info(
+                    f"Skipping 2D submap at t={submap_time:.2f}: time since last "
+                    f"{dt_since_last:.2f}s < {self.params.sm2d_consec_min_time_s}s"
+                )
+                self._seg_ids_not_in_sm = []
+                return
+
         # Path-length gate: skip submaps whose center is too close (along the
         # trajectory) to the previous submap's center. `_last_submap_time` is
         # -inf for the first submap, so this no-ops on first creation.

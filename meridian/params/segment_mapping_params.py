@@ -47,8 +47,9 @@ class SegmentMappingParams(ParamsBase):
     # 2D ground submap creation params
     inc_submaps_2d: bool = True
     sm2d_num_segments: int = 120
-    sm2d_num_new_segments: int = 40
+    sm2d_num_new_segments: int = 20
     sm2d_consec_min_path_len: float = 20.0
+    sm2d_consec_min_time_s: float = 5.0
 
     def __post_init__(self):
         if (
