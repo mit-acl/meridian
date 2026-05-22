@@ -12,7 +12,7 @@ class CrossViewMatchingParams(ParamsBase):
     params_key: ClassVar[str] = "cross_view_matching"
 
     matching_mode: str = "vpr"  # "all", "gt", "vpr", or "max_intersection"
-    max_intersection_patches_per_ground_sm: int = 4
+    max_intersection_patches_per_ground_sm: int = 2
 
     match_min_len_m: float = 2.0
 
