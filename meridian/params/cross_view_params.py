@@ -65,7 +65,7 @@ class CrossViewRPGOParams(ParamsBase):
     trans_consistency_sigma_m: float = 2.0
     trans_consistency_eps_m: float = 2.0
     added_trans_noise_m_per_m: float = 0.05
-    added_rot_noise_deg_per_m: float = 0.05
+    added_rot_noise_deg_per_m: float = 0.02
     single_lc_per_ground_sm: bool = True
     single_lc_per_ground_aerial_pair: bool = True
     fuse_lc_score: bool = True
@@ -136,4 +136,4 @@ class CrossViewIncrementalParams(ParamsBase):
     # If > 0, then the most recent n loop closures will not be committed to.
     # In other words, all hypotheses will remain for the n most recent lcs,
     # until newer loop closure distributions have been acquired.
-    delay_most_recent_lc_commit_num: int = 0
+    delay_most_recent_lc_commit_num: int = 2
