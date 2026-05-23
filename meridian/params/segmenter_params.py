@@ -123,7 +123,7 @@ class AerialSegmenterParams(SegmenterParamsBase):
     # SamAutomaticMaskGenerator knobs (used when model_type == "segment_anything").
     # None => use SAM's defaults; SAM defaults shown in comments.
     sam_points_per_side: int = None  # SAM default: 32
-    sam_pred_iou_thresh: float = None  # SAM default: 0.88
-    sam_stability_score_thresh: float = None  # SAM default: 0.95
+    sam_pred_iou_thresh: float = 0.85  # SAM default is 0.88
+    sam_stability_score_thresh: float = 0.85  # SAM default is 0.95
     sam_crop_n_layers: int = None  # SAM default: 0
     sam_min_mask_region_area: int = None  # SAM default: 0
