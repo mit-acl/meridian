@@ -84,6 +84,7 @@ class CrossViewMatching:
         show_progress: bool = False,
         local_to_pixel_fn=None,
         gt_trajectory=None,
+        aerial_submaps_2d: Optional[Dict[str, Submap]] = None,
     ) -> CrossViewMatchResult:
         """Match aerial and ground submaps without any I/O.
 
@@ -116,9 +117,9 @@ class CrossViewMatching:
                 "No ground submaps provided — check the ground directory path."
             )
 
-        aerial_submaps_2d, ground_submaps_2d = self._preprocess_submaps_2d(
-            aerial_submaps, ground_submaps
-        )
+        if aerial_submaps_2d is None:
+            aerial_submaps_2d = self.preprocess_aerial_submaps_2d(aerial_submaps)
+        ground_submaps_2d = self._preprocess_ground_submaps_2d(ground_submaps)
 
         aerial_key_to_tuple = _aerial_key_to_tuple
         aerial_x_max = max(aerial_key_to_tuple(key)[0] for key in aerial_submaps.keys())
@@ -230,30 +231,39 @@ class CrossViewMatching:
     # Helpers for cross_view_match
     # ------------------------------------------------------------------
 
-    def _preprocess_submaps_2d(
-        self,
-        aerial_submaps: Dict[str, Submap],
-        ground_submaps: Dict[str, Submap],
-    ) -> Tuple[Dict[str, Submap], Dict[str, Submap]]:
-        """Convert submaps to 2D and filter short lines."""
-        aerial_submaps_2d: Dict[str, Submap] = {}
-        ground_submaps_2d: Dict[str, Submap] = {}
-        for submaps_2d_dict, original_submaps_dict in [
-            (aerial_submaps_2d, aerial_submaps),
-            (ground_submaps_2d, ground_submaps),
-        ]:
-            for key, submap in original_submaps_dict.items():
-                segments_2d = submap.segments.to_dim(2)
-                filtered_lines = [
-                    line
-                    for line in segments_2d.get_lines()
-                    if line.get_length() >= self.pipeline_params.match_min_len_m
-                ]
-                segments_2d = segments_2d.get_points() + PrimitiveList(filtered_lines)
-                submaps_2d_dict[key] = deepcopy(submap)
-                submaps_2d_dict[key].segments = segments_2d
+    def _to_2d_with_line_filter(self, submap: Submap) -> Submap:
+        segments_2d = submap.segments.to_dim(2)
+        filtered_lines = [
+            line
+            for line in segments_2d.get_lines()
+            if line.get_length() >= self.pipeline_params.match_min_len_m
+        ]
+        segments_2d = segments_2d.get_points() + PrimitiveList(filtered_lines)
+        out = deepcopy(submap)
+        out.segments = segments_2d
+        return out
 
-        # Transfer height for ground submaps
+    def preprocess_aerial_submaps_2d(
+        self, aerial_submaps: Dict[str, Submap]
+    ) -> Dict[str, Submap]:
+        """2D-project and line-filter aerial submaps.
+
+        Aerial submaps are static for the lifetime of a run, so callers that
+        match many times against the same aerial set (e.g. the incremental
+        pipeline) should call this once up front and pass the result into
+        `cross_view_match*` via `aerial_submaps_2d=` to keep the per-match
+        wall time out of the matching budget.
+        """
+        return {
+            key: self._to_2d_with_line_filter(sm) for key, sm in aerial_submaps.items()
+        }
+
+    def _preprocess_ground_submaps_2d(
+        self, ground_submaps: Dict[str, Submap]
+    ) -> Dict[str, Submap]:
+        ground_submaps_2d = {
+            key: self._to_2d_with_line_filter(sm) for key, sm in ground_submaps.items()
+        }
         for ground_key in ground_submaps_2d.keys():
             for segment in ground_submaps_2d[ground_key].segments:
                 segment.height = (
@@ -261,8 +271,17 @@ class CrossViewMatching:
                     .segments.get_segment_from_id(segment.id)
                     .height
                 )
+        return ground_submaps_2d
 
-        return aerial_submaps_2d, ground_submaps_2d
+    def _preprocess_submaps_2d(
+        self,
+        aerial_submaps: Dict[str, Submap],
+        ground_submaps: Dict[str, Submap],
+    ) -> Tuple[Dict[str, Submap], Dict[str, Submap]]:
+        return (
+            self.preprocess_aerial_submaps_2d(aerial_submaps),
+            self._preprocess_ground_submaps_2d(ground_submaps),
+        )
 
     def _get_filtered_aerial_keys(
         self,
@@ -603,6 +622,7 @@ class CrossViewMatching:
         show_progress: bool = False,
         local_to_pixel_fn=None,
         gt_trajectory=None,
+        aerial_submaps_2d: Optional[Dict[str, Submap]] = None,
     ) -> CrossViewMatchResult:
         """Cross-view match using max_intersection mode.
 
@@ -625,9 +645,9 @@ class CrossViewMatching:
             else self.pipeline_params.translation_only
         )
 
-        aerial_submaps_2d, ground_submaps_2d = self._preprocess_submaps_2d(
-            aerial_submaps, ground_submaps
-        )
+        if aerial_submaps_2d is None:
+            aerial_submaps_2d = self.preprocess_aerial_submaps_2d(aerial_submaps)
+        ground_submaps_2d = self._preprocess_ground_submaps_2d(ground_submaps)
 
         aerial_key_to_tuple = _aerial_key_to_tuple
         aerial_x_max = max(aerial_key_to_tuple(key)[0] for key in aerial_submaps.keys())

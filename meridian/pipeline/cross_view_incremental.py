@@ -150,6 +150,15 @@ class CrossViewIncremental:
         },
         init=False,
     )
+    # 2D-projected, line-filtered aerial submaps. Aerial is static across the
+    # run, so we preprocess once at init and pass to every match call to keep
+    # the per-call deepcopy/to_dim cost out of the `match` timing budget.
+    _aerial_submaps_2d: Dict[str, Submap] = field(default_factory=dict, init=False)
+
+    def __post_init__(self):
+        self._aerial_submaps_2d = self.algorithm.preprocess_aerial_submaps_2d(
+            self.aerial_submaps
+        )
 
     # ------------------------------------------------------------------
     # Per-frame loop
@@ -252,6 +261,7 @@ class CrossViewIncremental:
                 if self.data.geotiff_transform is not None
                 else None,
                 gt_trajectory=self.data.gt_pose_data,
+                aerial_submaps_2d=self._aerial_submaps_2d,
             )
         else:
             # Propagate the last-accepted PGO forward via odom over the full
@@ -273,6 +283,7 @@ class CrossViewIncremental:
                 if self.data.geotiff_transform is not None
                 else None,
                 gt_trajectory=self.data.gt_pose_data,
+                aerial_submaps_2d=self._aerial_submaps_2d,
             )
         self._timing["match"].append(time.time() - t_match_start)
 
@@ -653,6 +664,7 @@ class CrossViewIncremental:
             if self.data.geotiff_transform is not None
             else None,
             gt_trajectory=self.data.gt_pose_data,
+            aerial_submaps_2d=self._aerial_submaps_2d,
         )
         self._timing["match"].append(time.time() - t_match_start)
 
