@@ -506,13 +506,29 @@ class CrossViewIncremental:
         candidates that share a ground_key with any accepted inlier. Locks the
         chosen aerial hypothesis per submap so subsequent CLIPPER runs cannot
         drift into a different inlier basin for an already-resolved submap.
+
+        When `delay_most_recent_lc_commit_num` is > 0, defer that commit for
+        the N most recent ground submaps: their inliers still feed PGO this
+        cycle, but their alternative hypotheses are preserved until at least
+        N newer submaps have been added.
         """
         if not self.incremental_params.commit_accepted_inliers:
             return
         if len(inlier_indices) == 0:
             return
         inlier_set = {int(i) for i in inlier_indices}
-        committed_ground_keys = {self._candidates[i]["ground_key"] for i in inlier_set}
+        delay = self.incremental_params.delay_most_recent_lc_commit_num
+        if delay > 0:
+            latest_idx = max(int(c["ground_key"]) for c in self._candidates)
+            committed_ground_keys = {
+                self._candidates[i]["ground_key"]
+                for i in inlier_set
+                if int(self._candidates[i]["ground_key"]) <= latest_idx - delay
+            }
+        else:
+            committed_ground_keys = {
+                self._candidates[i]["ground_key"] for i in inlier_set
+            }
         if not committed_ground_keys:
             return
         pruned = [
