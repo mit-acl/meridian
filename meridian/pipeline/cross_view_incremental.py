@@ -10,8 +10,8 @@ with two gates before committing to global localization:
 - ATTEMPT (synchronous, may be retried): PGO on PRE candidates -> rough
   trajectory -> rerun max_intersection + translation_only matching on
   submaps 1..n -> CLIPPER on rerun candidates. Gate #2: if rerun inliers
-  >= rot_constrained_consistent_lc_thresh AND inlier fraction
-  (inliers / rerun candidates) >= rot_constrained_consistent_lc_frac,
+  >= rot_constrained_consistent_lc_thresh AND inliers-per-submap
+  (inliers / total ground submaps) >= rot_constrained_consistent_lc_frac,
   commit (replace candidates, run final PGO, transition to POST).
   Otherwise, leave PRE state untouched and retry on the next new submap.
 - POST: per new submap match only that submap with max_intersection +
@@ -743,14 +743,14 @@ class CrossViewIncremental:
 
         # Step 6: gate #2 check.
         # Guard against eventual inlier accumulation in long aerial runs: both
-        # an absolute count and an inlier-fraction threshold must be met.
+        # an absolute count and an inliers-per-submap fraction must be met.
         n_inliers = len(rerun_inliers)
-        n_total = len(rerun_candidates)
-        inlier_frac = n_inliers / n_total if n_total > 0 else 0.0
+        n_submaps = len(all_ground_submaps)
+        inlier_frac = n_inliers / n_submaps if n_submaps > 0 else 0.0
         if n_inliers < gate2_thresh or inlier_frac < gate2_frac:
             logger.warning(
-                f"[global-loc] gate-2 FAILED: rerun inliers={n_inliers}/{n_total} "
-                f"({inlier_frac:.1%}); requires >= "
+                f"[global-loc] gate-2 FAILED: rerun inliers={n_inliers}/"
+                f"{n_submaps} submaps ({inlier_frac:.1%}); requires >= "
                 f"rot_constrained_consistent_lc_thresh={gate2_thresh} AND "
                 f">= rot_constrained_consistent_lc_frac={gate2_frac:.2f}. "
                 f"Staying in PRE; preserving {len(self._candidates)} PRE candidates."
