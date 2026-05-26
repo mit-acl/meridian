@@ -1357,22 +1357,19 @@ class CrossViewIncremental:
         if not dense_segments:
             dense_segments = list(new_submap.segments)
 
-        # SE(2) transform mapping ground-submap points into the aerial frame:
-        # p_aerial = T_aerial_ground_2d @ p_ground (with p in homogeneous 2D).
-        # Comes from the matched pose's T_i_j_hat (i=aerial, j=ground). The
-        # 2x2 block has negative determinant (registration flips z between
-        # aerial top-down and ground top-down), so applying it both rotates
-        # and reflects, un-mirroring the ground view.
-        T_aerial_ground_2d = None
-        T_aerial_ground_hat = getattr(best_single.pose_result, "T_i_j_hat", None)
-        if T_aerial_ground_hat is not None and not np.any(
-            np.isnan(T_aerial_ground_hat)
-        ):
-            T_aerial_ground_2d = np.eye(3)
-            T_aerial_ground_2d[:2, :2] = T_aerial_ground_hat[:2, :2]
-            T_aerial_ground_2d[:2, 2] = T_aerial_ground_hat[:2, 3]
-
-        print(T_aerial_ground_2d)
+        # SE(2) transform mapping ground-submap (odom) points into the aerial
+        # frame: p_aerial = T_aerial_ground_2d @ p_ground_homog. Use the raw
+        # registerer output, NOT pose_result.T_i_j_hat — the latter has been
+        # chained with T_ground_odom_ground_robot @ T_camera_flu, so its 2x2
+        # rotation block encodes the robot's pose/camera extrinsics on top of
+        # the submap-frame registration. That extra rotation makes the warp
+        # look "not rotated" whenever the robot's odom-frame yaw happens to
+        # cancel the registration yaw, and wrong otherwise.
+        T_aerial_ground_2d = getattr(
+            best_single, "T_aerial_ground_odom_2d", None
+        )
+        if T_aerial_ground_2d is not None and np.any(np.isnan(T_aerial_ground_2d)):
+            T_aerial_ground_2d = None
 
         self._movie.update_match(
             ground_key=ground_key,

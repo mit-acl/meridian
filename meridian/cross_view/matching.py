@@ -45,6 +45,7 @@ class SingleMatchResult:
     ground_segs_processed: PrimitiveList = None
     matched_ground: PrimitiveList = None
     matched_aerial: PrimitiveList = None
+    T_aerial_ground_odom_2d: "np.ndarray | None" = None
 
 
 @dataclass
@@ -488,6 +489,7 @@ class CrossViewMatching:
                 ground_segs_processed=ground_segs_i,
                 matched_ground=matched_ground,
                 matched_aerial=matched_aerial,
+                T_aerial_ground_odom_2d=T_aerial_ground_odom_2d,
             )
             raw_results.append((result, T_aerial_ground_hat, count))
 
