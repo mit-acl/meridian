@@ -116,6 +116,7 @@ class CrossViewIncrementalParams(ParamsBase):
 
     consistent_loop_closure_thresh: int = 1
     rot_constrained_consistent_lc_thresh: int = 6
+    rot_constrained_consistent_lc_frac: float = 0.5
 
     # POST-state guard: if the loop-closure outlier-rejection objective
     # (u^T M u / u^T u) drops by more than this versus the last accepted POST
