@@ -1675,6 +1675,8 @@ def cross_view_incremental(
     if movie:
         movie_path = os.path.join(output_dir, "incremental.mp4")
         pipeline.enable_movie(movie_path, live=live)
+        if full_t0 is not None:
+            pipeline._movie.total_time_s = full_tf - full_t0
 
     # Save params + commit hash (mirror cross_view_matching).
     all_params = [

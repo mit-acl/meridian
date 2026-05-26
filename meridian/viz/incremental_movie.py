@@ -20,15 +20,18 @@ FRAME_W = 1440
 FRAME_H = 1080
 TOP_BAR_H = 50
 DIVIDER = 4
+# Outer black border. Reserved on left/right/bottom (top is the black bar).
+BORDER = 4
 LABEL_PAD = 45
 FOOT_PAD = 15
-ROW_H = (FRAME_H - TOP_BAR_H - DIVIDER) // 2
+INNER_W = FRAME_W - 2 * BORDER
+ROW_H = (FRAME_H - TOP_BAR_H - DIVIDER - BORDER) // 2
 IMG_H = ROW_H - LABEL_PAD - FOOT_PAD
 
 TOP_AERIAL_W = 600
-TOP_GROUND_W = FRAME_W - TOP_AERIAL_W - DIVIDER
+TOP_GROUND_W = INNER_W - TOP_AERIAL_W - DIVIDER
 BOT_PANE_LEFT_W = TOP_AERIAL_W
-BOT_PANE_RIGHT_W = FRAME_W - BOT_PANE_LEFT_W
+BOT_PANE_RIGHT_W = INNER_W - BOT_PANE_LEFT_W
 
 BG_COLOR = (255, 255, 255)
 BAR_COLOR = (0, 0, 0)
@@ -37,12 +40,14 @@ TEXT_COLOR = (0, 0, 0)
 TEXT_OUTLINE = (255, 255, 255)
 GT_COLOR = (40, 160, 40)
 EST_COLOR = (180, 105, 255)  # pink (BGR)
-INLIER_COLOR = (230, 0, 180)  # red (BGR)
+INLIER_COLOR = (0, 0, 230)  # red (BGR)
 LATEST_INLIER_COLOR = (0, 215, 255)  # gold (BGR)
 PATCH_BOX_COLOR = (230, 216, 173)  # light blue (BGR)
 MATCH_LINE_COLOR = (0, 150, 0)
 
 FONT = cv.FONT_HERSHEY_SIMPLEX
+
+SHOW_TOTAL_TIME = False
 
 
 def _put_text(
@@ -52,12 +57,16 @@ def _put_text(
     scale: float = 1.1,
     thickness: int = 2,
     center: bool = False,
+    stroke_extra: int = 3,
 ):
     """Black text with a white stroke, legible on any background."""
     (tw, _th), _ = cv.getTextSize(text, FONT, scale, thickness)
     x = org[0] - tw // 2 if center else org[0]
     y = org[1]
-    cv.putText(img, text, (x, y), FONT, scale, TEXT_OUTLINE, thickness + 3, cv.LINE_AA)
+    cv.putText(
+        img, text, (x, y), FONT, scale, TEXT_OUTLINE,
+        thickness + stroke_extra, cv.LINE_AA,
+    )
     cv.putText(img, text, (x, y), FONT, scale, TEXT_COLOR, thickness, cv.LINE_AA)
 
 
@@ -151,7 +160,7 @@ def _draw_scale_bar(
     if x1 < 4 or right_x >= canvas.shape[1]:
         return
     tick = thickness + 3
-    out_t = thickness + 3
+    out_t = thickness + 6
     cv.line(canvas, (x1, bottom_y), (right_x, bottom_y), TEXT_OUTLINE, out_t, cv.LINE_AA)
     cv.line(canvas, (x1, bottom_y - tick), (x1, bottom_y + tick), TEXT_OUTLINE, out_t, cv.LINE_AA)
     cv.line(canvas, (right_x, bottom_y - tick), (right_x, bottom_y + tick), TEXT_OUTLINE, out_t, cv.LINE_AA)
@@ -159,7 +168,7 @@ def _draw_scale_bar(
     cv.line(canvas, (x1, bottom_y - tick), (x1, bottom_y + tick), color, thickness, cv.LINE_AA)
     cv.line(canvas, (right_x, bottom_y - tick), (right_x, bottom_y + tick), color, thickness, cv.LINE_AA)
     label = f"{L_m} m" if L_m < 1000 else f"{L_m / 1000:.1f} km"
-    _put_text(canvas, label, (x1, bottom_y - 12), scale=0.7)
+    _put_text(canvas, label, (x1, bottom_y - 12), scale=0.7, stroke_extra=6)
 
 
 def _draw_primitive_world(
@@ -216,6 +225,7 @@ class IncrementalMovieWriter:
     patch_side_len_m: float
     patch_overlap: float
     fps: int = 10
+    total_time_s: Optional[float] = None
 
     _writer: Optional[cv.VideoWriter] = field(default=None, init=False)
     _aerial_thumb: np.ndarray = field(default=None, init=False)
@@ -255,12 +265,15 @@ class IncrementalMovieWriter:
 
     def _gui_loop(self):
         """Owns the HighGUI window: creates it and pumps events."""
-        cv.namedWindow(self._live_window, cv.WINDOW_NORMAL)
-        cv.resizeWindow(self._live_window, FRAME_W, FRAME_H)
+        window_created = False
         while not self._gui_stop:
             with self._gui_lock:
                 frame = self._latest_frame
             if frame is not None:
+                if not window_created:
+                    cv.namedWindow(self._live_window, cv.WINDOW_NORMAL)
+                    cv.resizeWindow(self._live_window, FRAME_W, FRAME_H)
+                    window_created = True
                 cv.imshow(self._live_window, frame)
             cv.waitKey(15)
 
@@ -315,51 +328,55 @@ class IncrementalMovieWriter:
             frame, "MERIDIAN", (18, bar_baseline),
             FONT, bar_scale, BAR_TEXT_COLOR, bar_thick, cv.LINE_AA,
         )
-        t_text = f"t = {t:.2f} s"
+        if SHOW_TOTAL_TIME and self.total_time_s is not None and self.total_time_s > 0:
+            t_text = f"t = {t:.2f} / {self.total_time_s:.2f} s"
+        else:
+            t_text = f"t = {t:.2f} s"
         (tw, _), _ = cv.getTextSize(t_text, FONT, bar_scale, bar_thick)
         cv.putText(
             frame, t_text, (FRAME_W - tw - 18, bar_baseline),
             FONT, bar_scale, BAR_TEXT_COLOR, bar_thick, cv.LINE_AA,
         )
 
-        gr_x0 = TOP_AERIAL_W + DIVIDER
-        frame[top_img_y0:top_img_y1, 0:TOP_AERIAL_W] = self._render_aerial_traj(
+        x0 = BORDER
+        gr_x0 = x0 + TOP_AERIAL_W + DIVIDER
+        frame[top_img_y0:top_img_y1, x0:x0 + TOP_AERIAL_W] = self._render_aerial_traj(
             t, instant_pose_history
         )
-        frame[top_y0:top_y1, TOP_AERIAL_W:TOP_AERIAL_W + DIVIDER] = BAR_COLOR
+        frame[top_y0:top_y1, x0 + TOP_AERIAL_W:x0 + TOP_AERIAL_W + DIVIDER] = BAR_COLOR
         frame[top_img_y0:top_img_y1, gr_x0:gr_x0 + TOP_GROUND_W] = (
             self._render_ground_rgb(ground_img)
         )
-        _strip_label(frame, "Aerial View - GT (green) / Est (pink)", 10, top_y0)
+        _strip_label(frame, "Aerial View - GT (green) / Est (pink)", x0 + 10, top_y0)
         _strip_label(frame, "Ground View", gr_x0 + 10, top_y0)
 
         frame[top_y1:mid_div_y1, :] = BAR_COLOR
 
         bot_aerial, aerial_anchors = self._render_aerial_patch_pane()
         bot_ground, ground_anchors = self._render_ground_dense_pane()
-        frame[bot_img_y0:bot_img_y1, 0:BOT_PANE_LEFT_W] = bot_aerial
-        frame[bot_img_y0:bot_img_y1, BOT_PANE_LEFT_W:BOT_PANE_LEFT_W + BOT_PANE_RIGHT_W] = bot_ground
+        frame[bot_img_y0:bot_img_y1, x0:x0 + BOT_PANE_LEFT_W] = bot_aerial
+        frame[bot_img_y0:bot_img_y1, x0 + BOT_PANE_LEFT_W:x0 + BOT_PANE_LEFT_W + BOT_PANE_RIGHT_W] = bot_ground
         if self._last_match is not None:
             _strip_label(
                 frame, f"Aerial patch (ID {self._last_match.aerial_key})",
-                10, bot_y0,
+                x0 + 10, bot_y0,
             )
             _strip_label(
                 frame, f"Ground submap (ID {self._last_match.ground_key})",
-                BOT_PANE_LEFT_W + 10, bot_y0,
+                x0 + BOT_PANE_LEFT_W + 10, bot_y0,
             )
 
         for ap, gp in zip(aerial_anchors, ground_anchors):
             if ap is None or gp is None:
                 continue
-            a = (ap[0], ap[1] + bot_img_y0)
-            g = (gp[0] + BOT_PANE_LEFT_W, gp[1] + bot_img_y0)
+            a = (ap[0] + x0, ap[1] + bot_img_y0)
+            g = (gp[0] + x0 + BOT_PANE_LEFT_W, gp[1] + bot_img_y0)
             cv.line(frame, a, g, MATCH_LINE_COLOR, 2, cv.LINE_AA)
 
-        frame[:DIVIDER, :] = BAR_COLOR
-        frame[-DIVIDER:, :] = BAR_COLOR
-        frame[:, :DIVIDER] = BAR_COLOR
-        frame[:, -DIVIDER:] = BAR_COLOR
+        frame[:BORDER, :] = BAR_COLOR
+        frame[-BORDER:, :] = BAR_COLOR
+        frame[:, :BORDER] = BAR_COLOR
+        frame[:, -BORDER:] = BAR_COLOR
 
         self._writer.write(frame)
         if self.live:
@@ -372,7 +389,7 @@ class IncrementalMovieWriter:
             self._writer = None
         if self.live and self._gui_thread is not None:
             self._gui_stop = True
-            self._gui_thread.join(timeout=0.1)
+            self._gui_thread.join(timeout=0.01)
             self._gui_thread = None
 
     def _render_aerial_traj(self, t: float, instant_pose_history) -> np.ndarray:
@@ -661,13 +678,13 @@ class IncrementalMovieWriter:
                     )
                     canvas[ry[ok], cx_[ok]] = color_bgr
 
-        # Pin to the rendered bbox's bottom-right, where the actual points
-        # live (not the pane bounds, which are mostly white margin).
+        # Pin to the pane edge (not the rendered bbox), so the bar sits in
+        # the margin alongside the points rather than over them.
         _draw_scale_bar(
             canvas,
             m_per_px=1.0 / scale,
-            right_x=int(round(x_off + out_w - 12)),
-            bottom_y=int(round(y_off + out_h - 16)),
+            right_x=BOT_PANE_RIGHT_W - 12,
+            bottom_y=IMG_H - 16,
             target_px=140,
         )
 
