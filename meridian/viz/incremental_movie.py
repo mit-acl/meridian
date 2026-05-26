@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import threading
 from dataclasses import dataclass, field
 from typing import Callable, List, Optional, Tuple
 
@@ -225,6 +226,12 @@ class IncrementalMovieWriter:
     _gt_traj_px: List[Tuple[float, float]] = field(default_factory=list, init=False)
     _gt_t_cache: float = field(default=-1.0, init=False)
     _live_window: str = field(default="cross_view_incremental", init=False)
+    # Live-viewer GUI runs in its own thread so window resizes / repaints
+    # don't stall waiting for the next rendered frame.
+    _gui_thread: Optional[threading.Thread] = field(default=None, init=False)
+    _gui_lock: threading.Lock = field(default_factory=threading.Lock, init=False)
+    _latest_frame: Optional[np.ndarray] = field(default=None, init=False)
+    _gui_stop: bool = field(default=False, init=False)
 
     def __post_init__(self):
         self._aerial_thumb, self._aerial_thumb_offset = _fit_into(
@@ -238,8 +245,24 @@ class IncrementalMovieWriter:
         if not self._writer.isOpened():
             raise RuntimeError(f"Failed to open VideoWriter at {self.output_path}")
         if self.live:
-            cv.namedWindow(self._live_window, cv.WINDOW_NORMAL)
-            cv.resizeWindow(self._live_window, FRAME_W, FRAME_H)
+            # Window is created inside the GUI thread; on Linux HighGUI a
+            # window's events must be pumped from the same thread that called
+            # namedWindow.
+            self._gui_thread = threading.Thread(
+                target=self._gui_loop, name="movie-gui", daemon=True
+            )
+            self._gui_thread.start()
+
+    def _gui_loop(self):
+        """Owns the HighGUI window: creates it and pumps events."""
+        cv.namedWindow(self._live_window, cv.WINDOW_NORMAL)
+        cv.resizeWindow(self._live_window, FRAME_W, FRAME_H)
+        while not self._gui_stop:
+            with self._gui_lock:
+                frame = self._latest_frame
+            if frame is not None:
+                cv.imshow(self._live_window, frame)
+            cv.waitKey(15)
 
     def update_match(
         self,
@@ -307,8 +330,8 @@ class IncrementalMovieWriter:
         frame[top_img_y0:top_img_y1, gr_x0:gr_x0 + TOP_GROUND_W] = (
             self._render_ground_rgb(ground_img)
         )
-        _strip_label(frame, "Aerial  -  GT (green) / Est (pink)", 10, top_y0)
-        _strip_label(frame, "Ground RGB", gr_x0 + 10, top_y0)
+        _strip_label(frame, "Aerial View - GT (green) / Est (pink)", 10, top_y0)
+        _strip_label(frame, "Ground View", gr_x0 + 10, top_y0)
 
         frame[top_y1:mid_div_y1, :] = BAR_COLOR
 
@@ -318,11 +341,11 @@ class IncrementalMovieWriter:
         frame[bot_img_y0:bot_img_y1, BOT_PANE_LEFT_W:BOT_PANE_LEFT_W + BOT_PANE_RIGHT_W] = bot_ground
         if self._last_match is not None:
             _strip_label(
-                frame, f"Aerial patch  ({self._last_match.aerial_key})",
+                frame, f"Aerial patch (ID {self._last_match.aerial_key})",
                 10, bot_y0,
             )
             _strip_label(
-                frame, f"Ground submap  ({self._last_match.ground_key})",
+                frame, f"Ground submap (ID {self._last_match.ground_key})",
                 BOT_PANE_LEFT_W + 10, bot_y0,
             )
 
@@ -340,15 +363,17 @@ class IncrementalMovieWriter:
 
         self._writer.write(frame)
         if self.live:
-            cv.imshow(self._live_window, frame)
-            cv.waitKey(1)
+            with self._gui_lock:
+                self._latest_frame = frame
 
     def close(self):
         if self._writer is not None:
             self._writer.release()
             self._writer = None
-        if self.live:
-            cv.destroyWindow(self._live_window)
+        if self.live and self._gui_thread is not None:
+            self._gui_stop = True
+            self._gui_thread.join(timeout=1.0)
+            self._gui_thread = None
 
     def _render_aerial_traj(self, t: float, instant_pose_history) -> np.ndarray:
         canvas = self._aerial_thumb.copy()
