@@ -84,6 +84,7 @@ from meridian.pipeline.data import (
 from meridian.register.registerer import Registerer2D
 from meridian.utils import save_commit_hash, save_params
 from meridian.viz.cross_view_viz import viz_ground_segments
+from meridian.viz.incremental_movie import IncrementalMovieWriter
 
 logger = logging.getLogger(__name__)
 
@@ -155,6 +156,7 @@ class CrossViewIncremental:
     # run, so we preprocess once at init and pass to every match call to keep
     # the per-call deepcopy/to_dim cost out of the `match` timing budget.
     _aerial_submaps_2d: Dict[str, Submap] = field(default_factory=dict, init=False)
+    _movie: Optional[IncrementalMovieWriter] = field(default=None, init=False)
 
     def __post_init__(self):
         self._aerial_submaps_2d = self.algorithm.preprocess_aerial_submaps_2d(
@@ -240,6 +242,11 @@ class CrossViewIncremental:
 
             self._record_instantaneous_pose(img_t, pose)
 
+            if self._movie is not None:
+                self._movie.write_frame(
+                    img_t, img, self._instant_pose_history
+                )
+
         self._compute_wall_time += time.time() - t_loop_start
 
     # ------------------------------------------------------------------
@@ -295,6 +302,9 @@ class CrossViewIncremental:
             self._match_details_per_submap[ground_key] = match_result.match_details[
                 ground_key
             ]
+
+        if self._movie is not None:
+            self._update_movie_last_match(new_submap, ground_key, match_result)
 
         # Build candidate dicts and append.
         min_assoc = self._min_assoc_for_state()
@@ -1276,6 +1286,104 @@ class CrossViewIncremental:
         )
 
     # ------------------------------------------------------------------
+    # Movie viz wiring
+    # ------------------------------------------------------------------
+
+    def enable_movie(self, output_path: str, live: bool):
+        """Open the live/MP4 visualizer. Must be called before `run()`."""
+        if self.data.geotiff_transform is not None:
+
+            def utm_to_pixel(xy_utm):
+                return self.data.aerial_utm_to_pixel(np.atleast_2d(xy_utm))
+        else:
+            origin_x, origin_y = self.data.aerial_img_origin
+            pixel_len_m = self.data.aerial_img_scale
+
+            def utm_to_pixel(xy_utm):
+                xy_utm = np.atleast_2d(xy_utm)
+                cols = (xy_utm[:, 0] - origin_x) / pixel_len_m
+                rows = (origin_y - xy_utm[:, 1]) / pixel_len_m
+                return np.column_stack([cols, rows])
+
+        px_per_m = 1.0 / self.data.aerial_img_scale
+        # Match real-time ground RGB playback: one written frame per processed
+        # frame, so fps = 1 / dt.
+        fps = max(1, int(round(1.0 / self.mapping_params.dt)))
+
+        self._movie = IncrementalMovieWriter(
+            output_path=output_path,
+            live=live,
+            aerial_img=self.data.aerial_img,
+            utm_to_pixel=utm_to_pixel,
+            gt_pose_data=self.data.gt_pose_data,
+            T_camera_flu=self.data.T_camera_flu,
+            px_per_m=px_per_m,
+            patch_side_len_m=self.algorithm.aerial_patch_params.aerial_img_patch_side_len_m,
+            patch_overlap=self.algorithm.aerial_patch_params.aerial_img_patch_overlap,
+            fps=fps,
+        )
+
+    def _update_movie_last_match(self, new_submap, ground_key, match_result):
+        """Pick the best aerial cell from `match_result` for this ground submap
+        (highest num_associations among primary hypotheses) and push it to the
+        movie writer along with the ground submap's dense segments."""
+        details = match_result.match_details.get(ground_key, {})
+        best_aerial_key = None
+        best_n = -1
+        best_single = None
+        for aerial_key, single_or_list in details.items():
+            sr = single_or_list[0] if isinstance(single_or_list, list) else single_or_list
+            n = sr.pose_result.num_associations
+            if n is None:
+                continue
+            if n > best_n:
+                best_n = int(n)
+                best_aerial_key = aerial_key
+                best_single = sr
+        if best_single is None or best_aerial_key is None:
+            return
+
+        # Ground submap dense segments come from the mapper's per-submap
+        # intermediate (flattened_submap.segments carry dense_points). Fall
+        # back to the submap's own segments if intermediates aren't available.
+        dense_segments = []
+        try:
+            sm_idx = int(ground_key)
+            inter = self.mapper._submap_intermediates[sm_idx]
+            if inter is not None and inter.flattened_submap is not None:
+                dense_segments = list(inter.flattened_submap.segments)
+        except Exception:
+            dense_segments = []
+        if not dense_segments:
+            dense_segments = list(new_submap.segments)
+
+        # SE(2) transform mapping ground-submap points into the aerial frame:
+        # p_aerial = T_aerial_ground_2d @ p_ground (with p in homogeneous 2D).
+        # Comes from the matched pose's T_i_j_hat (i=aerial, j=ground). The
+        # 2x2 block has negative determinant (registration flips z between
+        # aerial top-down and ground top-down), so applying it both rotates
+        # and reflects, un-mirroring the ground view.
+        T_aerial_ground_2d = None
+        T_aerial_ground_hat = getattr(best_single.pose_result, "T_i_j_hat", None)
+        if T_aerial_ground_hat is not None and not np.any(
+            np.isnan(T_aerial_ground_hat)
+        ):
+            T_aerial_ground_2d = np.eye(3)
+            T_aerial_ground_2d[:2, :2] = T_aerial_ground_hat[:2, :2]
+            T_aerial_ground_2d[:2, 2] = T_aerial_ground_hat[:2, 3]
+
+        print(T_aerial_ground_2d)
+
+        self._movie.update_match(
+            ground_key=ground_key,
+            aerial_key=best_aerial_key,
+            matched_aerial=best_single.matched_aerial or [],
+            matched_ground=best_single.matched_ground or [],
+            ground_dense_segments=dense_segments,
+            T_aerial_ground_2d=T_aerial_ground_2d,
+        )
+
+    # ------------------------------------------------------------------
     # Setters used by entry-point glue
     # ------------------------------------------------------------------
 
@@ -1304,6 +1412,8 @@ def cross_view_incremental(
     aerial_dir: str,
     run: str = None,
     submap_viz: bool = False,
+    movie: bool = False,
+    live: bool = False,
 ):
     if not aerial_dir:
         raise ValueError(
@@ -1444,6 +1554,10 @@ def cross_view_incremental(
     pipeline._params_path = params_path
     pipeline._submap_viz = submap_viz
 
+    if movie:
+        movie_path = os.path.join(output_dir, "incremental.mp4")
+        pipeline.enable_movie(movie_path, live=live)
+
     # Save params + commit hash (mirror cross_view_matching).
     all_params = [
         mapping_params,
@@ -1467,47 +1581,59 @@ def cross_view_incremental(
     save_commit_hash(output_dir)
 
     wc_t0 = time.time()
-    if mapping_data_params.max_time is None or full_t0 is None:
-        print("Running incremental pipeline (no chunking)...")
-        if _chunk_is_empty(init_data):
-            print("No data in time range; nothing to run.")
+    interrupted = False
+    try:
+        if mapping_data_params.max_time is None or full_t0 is None:
+            print("Running incremental pipeline (no chunking)...")
+            if _chunk_is_empty(init_data):
+                print("No data in time range; nothing to run.")
+            else:
+                pipeline.run(init_data)
         else:
-            pipeline.run(init_data)
-    else:
-        chunk_idx = 0
-        print(
-            f"Running chunk {chunk_idx} ({full_t0:.2f} to {init_time_range[1]:.2f})..."
-        )
-        if _chunk_is_empty(init_data):
-            print(f"Chunk {chunk_idx} has no data in one or more topics; skipping.")
-        else:
-            pipeline.run(init_data)
-        del init_data
-        chunk_start = init_time_range[1]
-        chunk_idx += 1
-        while chunk_start < full_tf:
-            if pipeline._early_terminate:
-                break
-            chunk_end = min(chunk_start + mapping_data_params.max_time, full_tf)
+            chunk_idx = 0
             print(
-                f"Running chunk {chunk_idx} ({chunk_start:.2f} to {chunk_end:.2f})..."
+                f"Running chunk {chunk_idx} ({full_t0:.2f} to {init_time_range[1]:.2f})..."
             )
-            data = SegmentMappingData.from_params(
-                mapping_data_params, time_range=(chunk_start, chunk_end)
-            )
-            if _chunk_is_empty(data):
+            if _chunk_is_empty(init_data):
                 print(f"Chunk {chunk_idx} has no data in one or more topics; skipping.")
             else:
-                pipeline.run(data)
-            del data
-            chunk_start = chunk_end
+                pipeline.run(init_data)
+            del init_data
+            chunk_start = init_time_range[1]
             chunk_idx += 1
-    wall_time = time.time() - wc_t0
-    print(f"Pipeline took {wall_time:.2f}s")
-
-    print("Writing outputs...")
-    pipeline.write_outputs()
-    print("Done.")
+            while chunk_start < full_tf:
+                if pipeline._early_terminate:
+                    break
+                chunk_end = min(chunk_start + mapping_data_params.max_time, full_tf)
+                print(
+                    f"Running chunk {chunk_idx} ({chunk_start:.2f} to {chunk_end:.2f})..."
+                )
+                data = SegmentMappingData.from_params(
+                    mapping_data_params, time_range=(chunk_start, chunk_end)
+                )
+                if _chunk_is_empty(data):
+                    print(
+                        f"Chunk {chunk_idx} has no data in one or more topics; skipping."
+                    )
+                else:
+                    pipeline.run(data)
+                del data
+                chunk_start = chunk_end
+                chunk_idx += 1
+    except KeyboardInterrupt:
+        interrupted = True
+        print("\nInterrupted by user — finalizing outputs so far...")
+    finally:
+        wall_time = time.time() - wc_t0
+        print(f"Pipeline took {wall_time:.2f}s")
+        try:
+            print("Writing outputs...")
+            pipeline.write_outputs()
+        except Exception as e:
+            logger.warning(f"write_outputs failed during shutdown: {e}")
+        if pipeline._movie is not None:
+            pipeline._movie.close()
+        print("Done." if not interrupted else "Done (interrupted).")
 
 
 if __name__ == "__main__":
@@ -1533,6 +1659,17 @@ if __name__ == "__main__":
         action="store_true",
         help="Enable INFO-level logging.",
     )
+    parser.add_argument(
+        "-m",
+        "--movie",
+        action="store_true",
+        help="Write a per-frame incremental.mp4 visualization to the output dir.",
+    )
+    parser.add_argument(
+        "--live",
+        action="store_true",
+        help="With --movie, also open a live OpenCV window for each frame.",
+    )
     args = parser.parse_args()
 
     if args.debug:
@@ -1548,4 +1685,6 @@ if __name__ == "__main__":
         aerial_dir=args.aerial,
         run=args.run,
         submap_viz=args.viz,
+        movie=args.movie,
+        live=args.live,
     )
