@@ -51,7 +51,10 @@ BG_COLOR = (255, 255, 255)
 TEXT_COLOR = (0, 0, 0)
 TEXT_OUTLINE = (255, 255, 255)
 GT_COLOR = (40, 160, 40)
-EST_COLOR = (0, 0, 200)
+EST_COLOR = (180, 105, 255)  # pink (BGR)
+INLIER_COLOR = (230, 0, 180)  # red (BGR)
+LATEST_INLIER_COLOR = (0, 215, 255)  # gold (BGR)
+PATCH_BOX_COLOR = (230, 216, 173)  # light blue (BGR)
 MATCH_LINE_COLOR = (0, 150, 0)
 
 FONT = cv.FONT_HERSHEY_DUPLEX
@@ -61,13 +64,25 @@ def _put_text(
     img: np.ndarray,
     text: str,
     org: Tuple[int, int],
-    scale: float = 0.55,
-    thickness: int = 1,
+    scale: float = 0.88,
+    thickness: int = 2,
+    center: bool = False,
 ):
-    """White outline + black fill so text is legible on any background.
-    FONT_HERSHEY_DUPLEX with LINE_AA gives modern, anti-aliased glyphs."""
-    cv.putText(img, text, org, FONT, scale, TEXT_OUTLINE, thickness + 3, cv.LINE_AA)
-    cv.putText(img, text, org, FONT, scale, TEXT_COLOR, thickness, cv.LINE_AA)
+    """Black text on a solid white rectangle so it's legible on any background.
+    `org` follows the OpenCV convention (bottom-left of the text baseline).
+    If `center` is True, the rectangle is horizontally centered around
+    `org[0]` instead of starting at it."""
+    (tw, th), baseline = cv.getTextSize(text, FONT, scale, thickness)
+    pad_x = 6
+    pad_y = 4
+    x = org[0] - tw // 2 if center else org[0]
+    y = org[1]
+    x1 = x - pad_x
+    y1 = y - th - pad_y
+    x2 = x + tw + pad_x
+    y2 = y + baseline + pad_y
+    cv.rectangle(img, (x1, y1), (x2, y2), TEXT_OUTLINE, cv.FILLED)
+    cv.putText(img, text, (x, y), FONT, scale, TEXT_COLOR, thickness, cv.LINE_AA)
 
 
 def _white_canvas(h: int, w: int) -> np.ndarray:
@@ -222,6 +237,11 @@ class IncrementalMovieWriter:
     _aerial_thumb: np.ndarray = field(default=None, init=False)
     _aerial_thumb_offset: Tuple[int, int, float] = field(default=None, init=False)
     _last_match: Optional[LastMatch] = field(default=None, init=False)
+    # UTM positions (x, y) of the current CLIPPER inlier loop closures.
+    # Refreshed by `update_inliers` after each ground submap is processed.
+    _inlier_positions_utm: List[np.ndarray] = field(default_factory=list, init=False)
+    # UTM position of the most recent inlier (highlighted gold).
+    _latest_inlier_position_utm: Optional[np.ndarray] = field(default=None, init=False)
     _gt_traj_px: List[Tuple[float, float]] = field(default_factory=list, init=False)
     _gt_t_cache: float = field(default=-1.0, init=False)
     _live_window: str = field(default="cross_view_incremental", init=False)
@@ -238,8 +258,12 @@ class IncrementalMovieWriter:
         if not self._writer.isOpened():
             raise RuntimeError(f"Failed to open VideoWriter at {self.output_path}")
         if self.live:
-            cv.namedWindow(self._live_window, cv.WINDOW_NORMAL)
-            cv.resizeWindow(self._live_window, FRAME_W // 2, FRAME_H // 2)
+            # WINDOW_NORMAL = user-resizable; WINDOW_KEEPRATIO = image is
+            # letterboxed to the window while preserving 4:3 aspect.
+            cv.namedWindow(
+                self._live_window, cv.WINDOW_NORMAL | cv.WINDOW_KEEPRATIO
+            )
+            cv.resizeWindow(self._live_window, FRAME_W, FRAME_H)
 
     # ------------------------------------------------------------------
 
@@ -261,6 +285,19 @@ class IncrementalMovieWriter:
             matched_ground=matched_ground,
             ground_dense_segments=ground_dense_segments,
             T_aerial_ground_2d=T_aerial_ground_2d,
+        )
+
+    def update_inliers(
+        self,
+        positions_utm: List[np.ndarray],
+        latest_position_utm: Optional[np.ndarray] = None,
+    ):
+        """Refresh the set of inlier loop-closure positions (UTM xy) to draw on
+        the aerial trajectory pane as red stars. The most-recent inlier
+        (`latest_position_utm`) is highlighted with a gold star."""
+        self._inlier_positions_utm = list(positions_utm)
+        self._latest_inlier_position_utm = (
+            None if latest_position_utm is None else np.asarray(latest_position_utm)
         )
 
     def write_frame(self, t: float, ground_img: np.ndarray, instant_pose_history):
@@ -287,7 +324,7 @@ class IncrementalMovieWriter:
             g = (gp[0] + BOT_PANE_LEFT_W, gp[1] + ROW_H)
             cv.line(frame, a, g, MATCH_LINE_COLOR, 2, cv.LINE_AA)
 
-        _put_text(frame, f"t = {t:.2f}s", (12, 32), scale=0.7, thickness=1)
+        _put_text(frame, f"t = {t:.2f}s", (FRAME_W // 2, 38), center=True)
 
         self._writer.write(frame)
         if self.live:
@@ -355,8 +392,82 @@ class IncrementalMovieWriter:
             pts = full_to_canvas(pts_full).astype(np.int32)
             cv.polylines(canvas, [pts], False, EST_COLOR, 3, cv.LINE_AA)
 
-        _put_text(canvas, "Aerial - GT (green) / Est (red)", (10, ROW_H - 14))
+        # Aerial patch box: a thin light-blue rectangle outlining the
+        # currently-selected aerial patch on the full aerial. Drawn before
+        # the stars so star markers sit on top of it.
+        self._draw_aerial_patch_box(canvas, full_to_canvas)
+
+        # Inlier loop closures as red stars. Drawn last so they sit on top of
+        # the trajectory polylines. Skipped if outside the canvas bounds.
+        h, w = canvas.shape[:2]
+        if self._inlier_positions_utm:
+            utm_arr = np.atleast_2d(np.asarray(self._inlier_positions_utm))
+            pts_full = self.utm_to_pixel(utm_arr)
+            pts_cv = full_to_canvas(pts_full)
+            for (cx, cy) in pts_cv:
+                if 0 <= cx < w and 0 <= cy < h:
+                    cv.drawMarker(
+                        canvas,
+                        (int(round(cx)), int(round(cy))),
+                        INLIER_COLOR,
+                        markerType=cv.MARKER_STAR,
+                        markerSize=18,
+                        thickness=2,
+                        line_type=cv.LINE_AA,
+                    )
+
+        # Latest inlier: larger gold star on top so it's distinguishable from
+        # the rest of the inlier set.
+        if self._latest_inlier_position_utm is not None:
+            pts_full = self.utm_to_pixel(
+                np.atleast_2d(self._latest_inlier_position_utm)
+            )
+            pts_cv = full_to_canvas(pts_full)
+            cx, cy = pts_cv[0]
+            if 0 <= cx < w and 0 <= cy < h:
+                cv.drawMarker(
+                    canvas,
+                    (int(round(cx)), int(round(cy))),
+                    LATEST_INLIER_COLOR,
+                    markerType=cv.MARKER_STAR,
+                    markerSize=18,
+                    thickness=2,
+                    line_type=cv.LINE_AA,
+                )
+
+        _put_text(
+            canvas,
+            "Aerial - GT (green) / Est (pink) / Inliers (red, latest gold)",
+            (10, ROW_H - 14),
+        )
         return canvas
+
+    def _draw_aerial_patch_box(
+        self,
+        canvas: np.ndarray,
+        full_to_canvas: Callable[[np.ndarray], np.ndarray],
+    ):
+        if self._last_match is None:
+            return
+        try:
+            i_a, j_a = (int(x) for x in self._last_match.aerial_key.split("_"))
+        except Exception:
+            return
+        stride_m = self.patch_side_len_m * (1.0 - self.patch_overlap)
+        x_min_m = i_a * stride_m
+        y_min_m = j_a * stride_m
+        x_max_m = x_min_m + self.patch_side_len_m
+        y_max_m = y_min_m + self.patch_side_len_m
+        corners_full = np.array(
+            [
+                [x_min_m * self.px_per_m, y_min_m * self.px_per_m],
+                [x_max_m * self.px_per_m, y_max_m * self.px_per_m],
+            ]
+        )
+        c = full_to_canvas(corners_full)
+        p1 = (int(round(c[0, 0])), int(round(c[0, 1])))
+        p2 = (int(round(c[1, 0])), int(round(c[1, 1])))
+        cv.rectangle(canvas, p1, p2, PATCH_BOX_COLOR, 3, cv.LINE_AA)
 
     def _render_ground_rgb(self, ground_img: np.ndarray) -> np.ndarray:
         if ground_img is None:
@@ -365,7 +476,7 @@ class IncrementalMovieWriter:
         if img.ndim == 2:
             img = cv.cvtColor(img, cv.COLOR_GRAY2BGR)
         canvas, _ = _fit_into(img, TOP_GROUND_W, ROW_H)
-        _put_text(canvas, "Ground RGB", (10, 25))
+        _put_text(canvas, "Ground RGB", (10, ROW_H - 14))
         return canvas
 
     def _render_aerial_patch_pane(self) -> Tuple[np.ndarray, List[Optional[Tuple[int, int]]]]:

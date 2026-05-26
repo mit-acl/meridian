@@ -123,6 +123,14 @@ class CrossViewIncremental:
     # most recent PGO. Future T_utm_camera(t) = T_utm_lastopt @ inv(T_odom_lastopt) @ T_odom_cam(t).
     _T_utm_lastopt: Optional[np.ndarray] = field(default=None, init=False)
     _T_odom_lastopt: Optional[np.ndarray] = field(default=None, init=False)
+    # Viz-only T_utm_odom estimate, refreshed after every CLIPPER pass that
+    # produces at least one inlier (or, as a fallback, after any match yields
+    # at least one candidate). Used by `_record_instantaneous_pose` to draw a
+    # live estimated trajectory in PRE state instead
+    # of leaving the pose NaN until POST is reached. Independent of the
+    # PGO-anchored `_T_utm_lastopt`/`_T_odom_lastopt`, which drive the
+    # production estimate.
+    _T_utm_odom_viz: Optional[np.ndarray] = field(default=None, init=False)
     # Most recent accepted CLIPPER outlier-rejection objective (for the
     # `allowable_outlier_lc_obj_drop` guard). None until first POST commit.
     _last_lc_out_rej_obj: Optional[float] = field(default=None, init=False)
@@ -131,6 +139,14 @@ class CrossViewIncremental:
     _early_terminate: bool = field(default=False, init=False)
     _optimized_pose_data: Optional[object] = field(default=None, init=False)
     _instant_pose_history: List[Tuple[float, np.ndarray]] = field(
+        default_factory=list, init=False
+    )
+    # Viz-only trajectory belief, rebuilt on every new submap by applying the
+    # *current* T_utm_odom estimate (PGO-anchored or viz frame-align) uniformly
+    # across the entire `mapper.poses_cam_history`. Decoupled from
+    # `_instant_pose_history` so production paths (eval, output writers,
+    # early-termination) continue to see the per-frame causal record.
+    _viz_pose_history: List[Tuple[float, np.ndarray]] = field(
         default_factory=list, init=False
     )
     _global_loc_frame_idx: Optional[int] = field(default=None, init=False)
@@ -243,8 +259,14 @@ class CrossViewIncremental:
             self._record_instantaneous_pose(img_t, pose)
 
             if self._movie is not None:
+                # Append new frames in O(1) using the current transform —
+                # full rebuilds only happen after each CLIPPER/PGO update in
+                # `_handle_new_submap`. The transform is constant between
+                # submaps, so appended entries are consistent with the
+                # rebuilt prefix and the polyline doesn't jump.
+                self._sync_viz_pose_history()
                 self._movie.write_frame(
-                    img_t, img, self._instant_pose_history
+                    img_t, img, self._viz_pose_history
                 )
 
         self._compute_wall_time += time.time() - t_loop_start
@@ -303,9 +325,6 @@ class CrossViewIncremental:
                 ground_key
             ]
 
-        if self._movie is not None:
-            self._update_movie_last_match(new_submap, ground_key, match_result)
-
         # Build candidate dicts and append.
         min_assoc = self._min_assoc_for_state()
         new_candidates = build_candidates_from_match_result(
@@ -338,6 +357,46 @@ class CrossViewIncremental:
             f"candidates={len(self._candidates)} inliers={n_inliers}"
         )
 
+        if self._movie is not None:
+            inlier_positions_utm = []
+            latest_pos = None
+            latest_aerial_key = None
+            latest_ground_key = -1
+            for i in inlier_indices:
+                cand = self._candidates[int(i)]
+                T = cand.get("T_utm_body_se2")
+                if T is None:
+                    continue
+                pos = np.array([T[0, 2], T[1, 2]])
+                inlier_positions_utm.append(pos)
+                try:
+                    gk = int(cand["ground_key"])
+                except (KeyError, ValueError, TypeError):
+                    gk = -1
+                if gk > latest_ground_key:
+                    latest_ground_key = gk
+                    latest_pos = pos
+                    latest_aerial_key = cand.get("aerial_key")
+            self._movie.update_inliers(inlier_positions_utm, latest_pos)
+            # Bottom panes should display the *latest inlier's* match — even
+            # if that inlier is from an older submap. `_update_movie_last_match`
+            # falls back to the memoized `_match_details_per_submap` cache in
+            # that case. When there are no inliers, fall back to the current
+            # submap's best-by-num_assoc hypothesis so something is shown.
+            if latest_ground_key >= 0 and latest_aerial_key is not None:
+                self._update_movie_last_match(
+                    str(latest_ground_key),
+                    match_result,
+                    prefer_aerial_key=latest_aerial_key,
+                )
+            else:
+                self._update_movie_last_match(ground_key, match_result)
+
+        # `_T_utm_odom_viz` only feeds the PRE viz path; in POST the rebuild
+        # uses the PGO-anchored chain instead, so refreshing it there is wasted.
+        if self._state == "PRE":
+            self._refresh_viz_utm_odom(rpgo, inlier_indices)
+
         if self._state == "PRE":
             if n_inliers >= self.incremental_params.consistent_loop_closure_thresh:
                 if self._gate1_first_submap_count is None:
@@ -346,6 +405,12 @@ class CrossViewIncremental:
                     self._state = "POST"
         else:
             self._run_post_pgo(inlier_indices, lc_obj)
+
+        # Full rebuild here — the only places anything changes are this
+        # CLIPPER run (PRE) and `_run_post_pgo` (POST). Between submaps the
+        # transform is fixed, so per-frame paths just append one entry.
+        if self._movie is not None:
+            self._rebuild_viz_pose_history()
 
         self._emit_submap_viz(ground_key)
 
@@ -845,6 +910,62 @@ class CrossViewIncremental:
         else:
             self._instant_pose_history.append((t, np.full((4, 4), np.nan)))
 
+    def _apply_camera_flu(self, T_utm_camera: np.ndarray) -> np.ndarray:
+        if self.data.T_camera_flu is not None:
+            return T_utm_camera @ self.data.T_camera_flu
+        return T_utm_camera
+
+    def _viz_pose_for_cam(self, idx: int, pose_cam: np.ndarray) -> np.ndarray:
+        """Map a single `pose_cam` (T_odom_cam at frame `idx`) to T_utm_body
+        under the current best estimate. POST + PGO portion: uses the deformed
+        optimized trajectory directly. POST tail: rigid lastopt-anchor
+        propagation. PRE: rigid `_T_utm_odom_viz`. Otherwise NaN."""
+        if (
+            self._state == "POST"
+            and self._last_optimized_trajectory is not None
+            and self._T_utm_lastopt is not None
+            and self._T_odom_lastopt is not None
+        ):
+            opt = self._last_optimized_trajectory
+            if idx < len(opt):
+                return opt[idx]
+            T_odom_inv = np.linalg.inv(self._T_odom_lastopt)
+            T_utm_cam = self._T_utm_lastopt @ T_odom_inv @ pose_cam
+            return self._apply_camera_flu(T_utm_cam)
+        if self._T_utm_odom_viz is not None:
+            return self._apply_camera_flu(self._T_utm_odom_viz @ pose_cam)
+        return np.full((4, 4), np.nan)
+
+    def _sync_viz_pose_history(self):
+        """Append entries for any frames in `mapper.poses_cam_history` not yet
+        in `_viz_pose_history`. O(1) per new frame (one matrix mult)."""
+        poses_cam = self.mapper.poses_cam_history
+        times = self.mapper.times_history
+        while len(self._viz_pose_history) < len(poses_cam):
+            i = len(self._viz_pose_history)
+            self._viz_pose_history.append((times[i], self._viz_pose_for_cam(i, poses_cam[i])))
+
+    def _rebuild_viz_pose_history(self):
+        """Rebuild the viz-only trajectory from scratch using the *current*
+        best estimate applied uniformly to all of `mapper.poses_cam_history`.
+        Called only after CLIPPER/PGO state changes (PRE: T_utm_odom_viz, POST:
+        lastopt anchor + PGO trajectory). Per-frame paths just `_sync_*` since
+        the transform is constant between submaps."""
+        self._viz_pose_history = []
+        self._sync_viz_pose_history()
+
+    def _refresh_viz_utm_odom(self, rpgo, inlier_indices: np.ndarray):
+        if len(inlier_indices) > 0:
+            indices = inlier_indices
+        elif len(self._candidates) > 0:
+            indices = np.array([len(self._candidates) - 1])
+        else:
+            return
+        try:
+            self._T_utm_odom_viz = rpgo._frame_align(self._candidates, indices)
+        except Exception as e:
+            logger.debug(f"viz frame_align failed: {e}")
+
     def _maybe_early_terminate(self, t: float, T_utm_body: np.ndarray):
         """Trip `_early_terminate` when the live translation error exceeds
         `early_termination_err_m`. No-op if the threshold is None or no GT is
@@ -1323,29 +1444,59 @@ class CrossViewIncremental:
             fps=fps,
         )
 
-    def _update_movie_last_match(self, new_submap, ground_key, match_result):
-        """Pick the best aerial cell from `match_result` for this ground submap
-        (highest num_associations among primary hypotheses) and push it to the
-        movie writer along with the ground submap's dense segments."""
+    def _lookup_single_match(self, ground_key: str, aerial_key: str):
+        """Retrieve a memoized SingleMatchResult by (ground_key, aerial_key)
+        from `_match_details_per_submap`, which is populated each time
+        `_handle_new_submap` runs. Returns None if missing."""
+        details = self._match_details_per_submap.get(ground_key, {})
+        sr_or_list = details.get(aerial_key)
+        if sr_or_list is None:
+            return None
+        return sr_or_list[0] if isinstance(sr_or_list, list) else sr_or_list
+
+    def _update_movie_last_match(
+        self, ground_key, match_result, prefer_aerial_key=None
+    ):
+        """Push the match to display in the bottom panes. When
+        `prefer_aerial_key` is provided (e.g. the latest CLIPPER inlier's
+        aerial cell), use that exact SingleMatchResult — falling back to
+        `_match_details_per_submap` if the cell isn't in the current
+        `match_result` (i.e. the latest inlier is from an older ground
+        submap). Otherwise pick the current submap's
+        highest-num_associations primary hypothesis."""
         details = match_result.match_details.get(ground_key, {})
         best_aerial_key = None
-        best_n = -1
         best_single = None
-        for aerial_key, single_or_list in details.items():
-            sr = single_or_list[0] if isinstance(single_or_list, list) else single_or_list
-            n = sr.pose_result.num_associations
-            if n is None:
-                continue
-            if n > best_n:
-                best_n = int(n)
-                best_aerial_key = aerial_key
-                best_single = sr
+        if prefer_aerial_key is not None:
+            sr_or_list = details.get(prefer_aerial_key)
+            if sr_or_list is not None:
+                best_single = (
+                    sr_or_list[0] if isinstance(sr_or_list, list) else sr_or_list
+                )
+            else:
+                best_single = self._lookup_single_match(ground_key, prefer_aerial_key)
+            if best_single is not None:
+                best_aerial_key = prefer_aerial_key
+        if best_single is None:
+            best_n = -1
+            for aerial_key, single_or_list in details.items():
+                sr = (
+                    single_or_list[0]
+                    if isinstance(single_or_list, list)
+                    else single_or_list
+                )
+                n = sr.pose_result.num_associations
+                if n is None:
+                    continue
+                if n > best_n:
+                    best_n = int(n)
+                    best_aerial_key = aerial_key
+                    best_single = sr
         if best_single is None or best_aerial_key is None:
             return
 
         # Ground submap dense segments come from the mapper's per-submap
-        # intermediate (flattened_submap.segments carry dense_points). Fall
-        # back to the submap's own segments if intermediates aren't available.
+        # intermediate. Only `flattened_submap.segments` carry `dense_points`
         dense_segments = []
         try:
             sm_idx = int(ground_key)
@@ -1354,8 +1505,6 @@ class CrossViewIncremental:
                 dense_segments = list(inter.flattened_submap.segments)
         except Exception:
             dense_segments = []
-        if not dense_segments:
-            dense_segments = list(new_submap.segments)
 
         # SE(2) transform mapping ground-submap (odom) points into the aerial
         # frame: p_aerial = T_aerial_ground_2d @ p_ground_homog. Use the raw
