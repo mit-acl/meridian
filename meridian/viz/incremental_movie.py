@@ -225,7 +225,7 @@ class IncrementalMovieWriter:
     _latest_inlier_position_utm: Optional[np.ndarray] = field(default=None, init=False)
     _gt_traj_px: List[Tuple[float, float]] = field(default_factory=list, init=False)
     _gt_t_cache: float = field(default=-1.0, init=False)
-    _live_window: str = field(default="cross_view_incremental", init=False)
+    _live_window: str = field(default="MERIDIAN Incremental Visualization", init=False)
     # Live-viewer GUI runs in its own thread so window resizes / repaints
     # don't stall waiting for the next rendered frame.
     _gui_thread: Optional[threading.Thread] = field(default=None, init=False)
@@ -372,7 +372,7 @@ class IncrementalMovieWriter:
             self._writer = None
         if self.live and self._gui_thread is not None:
             self._gui_stop = True
-            self._gui_thread.join(timeout=1.0)
+            self._gui_thread.join(timeout=0.1)
             self._gui_thread = None
 
     def _render_aerial_traj(self, t: float, instant_pose_history) -> np.ndarray:
