@@ -1,20 +1,4 @@
-"""Live/MP4 visualization for cross_view_incremental.
-
-Composite frame layout (fixed 1440x1080, 4:3):
-
-  top row (h=540):
-    [ aerial trajectory (540x540, square) | current ground RGB (900x540) ]
-  bottom row (h=540):
-    [ aerial patch + matched primitives (720x540) |
-      ground dense pcd + matched primitives (720x540) ]
-
-The aerial trajectory pane is square (aerial backdrop is letterboxed into a
-540x540 square). The other panes get extra horizontal room. The aerial patch
-pane shows the full configured patch (e.g. 60m x 60m) cropped from the
-aerial; its pixel rectangle is derived from patch geometry in meters so it
-isn't sensitive to int() rounding on stride. Green lines connect matched
-aerial/ground primitives across the bottom row.
-"""
+"""Live/MP4 visualization for cross_view_incremental."""
 
 from __future__ import annotations
 
@@ -33,21 +17,21 @@ logger = logging.getLogger(__name__)
 
 FRAME_W = 1440
 FRAME_H = 1080
-ROW_H = 540
-# Bottom split matches top split. Aerial pane stays square (aerial backdrop
-# is letterboxed into a 540x540 sub-region inside it). Ground RGB is slightly
-# narrower than half-width and is stretched in (aspect not preserved) to
-# fill the pane.
-LEFT_PANE_W = 600
-RIGHT_PANE_W = FRAME_W - LEFT_PANE_W  # 840
-TOP_AERIAL_W = LEFT_PANE_W
-TOP_GROUND_W = RIGHT_PANE_W
-BOT_PANE_LEFT_W = LEFT_PANE_W
-BOT_PANE_RIGHT_W = RIGHT_PANE_W
-assert TOP_AERIAL_W + TOP_GROUND_W == FRAME_W
-assert BOT_PANE_LEFT_W + BOT_PANE_RIGHT_W == FRAME_W
+TOP_BAR_H = 50
+DIVIDER = 4
+LABEL_PAD = 45
+FOOT_PAD = 15
+ROW_H = (FRAME_H - TOP_BAR_H - DIVIDER) // 2
+IMG_H = ROW_H - LABEL_PAD - FOOT_PAD
+
+TOP_AERIAL_W = 600
+TOP_GROUND_W = FRAME_W - TOP_AERIAL_W - DIVIDER
+BOT_PANE_LEFT_W = TOP_AERIAL_W
+BOT_PANE_RIGHT_W = FRAME_W - BOT_PANE_LEFT_W
 
 BG_COLOR = (255, 255, 255)
+BAR_COLOR = (0, 0, 0)
+BAR_TEXT_COLOR = (255, 255, 255)
 TEXT_COLOR = (0, 0, 0)
 TEXT_OUTLINE = (255, 255, 255)
 GT_COLOR = (40, 160, 40)
@@ -57,32 +41,39 @@ LATEST_INLIER_COLOR = (0, 215, 255)  # gold (BGR)
 PATCH_BOX_COLOR = (230, 216, 173)  # light blue (BGR)
 MATCH_LINE_COLOR = (0, 150, 0)
 
-FONT = cv.FONT_HERSHEY_DUPLEX
+FONT = cv.FONT_HERSHEY_SIMPLEX
 
 
 def _put_text(
     img: np.ndarray,
     text: str,
     org: Tuple[int, int],
-    scale: float = 0.88,
+    scale: float = 1.1,
     thickness: int = 2,
     center: bool = False,
 ):
-    """Black text on a solid white rectangle so it's legible on any background.
-    `org` follows the OpenCV convention (bottom-left of the text baseline).
-    If `center` is True, the rectangle is horizontally centered around
-    `org[0]` instead of starting at it."""
-    (tw, th), baseline = cv.getTextSize(text, FONT, scale, thickness)
-    pad_x = 6
-    pad_y = 4
+    """Black text with a white stroke, legible on any background."""
+    (tw, _th), _ = cv.getTextSize(text, FONT, scale, thickness)
     x = org[0] - tw // 2 if center else org[0]
     y = org[1]
-    x1 = x - pad_x
-    y1 = y - th - pad_y
-    x2 = x + tw + pad_x
-    y2 = y + baseline + pad_y
-    cv.rectangle(img, (x1, y1), (x2, y2), TEXT_OUTLINE, cv.FILLED)
+    cv.putText(img, text, (x, y), FONT, scale, TEXT_OUTLINE, thickness + 3, cv.LINE_AA)
     cv.putText(img, text, (x, y), FONT, scale, TEXT_COLOR, thickness, cv.LINE_AA)
+
+
+def _strip_label(
+    frame: np.ndarray,
+    text: str,
+    x_left: int,
+    strip_y_top: int,
+    strip_h: int = LABEL_PAD,
+    color: Tuple[int, int, int] = TEXT_COLOR,
+    scale: float = 0.88,
+    thickness: int = 2,
+):
+    """Left-aligned, vertically-centered label inside an existing strip."""
+    (tw, th), baseline = cv.getTextSize(text, FONT, scale, thickness)
+    y = strip_y_top + (strip_h + th) // 2 - 2
+    cv.putText(frame, text, (x_left, y), FONT, scale, color, thickness, cv.LINE_AA)
 
 
 def _white_canvas(h: int, w: int) -> np.ndarray:
@@ -94,8 +85,7 @@ def _white_canvas(h: int, w: int) -> np.ndarray:
 def _fit_into(
     src: np.ndarray, dst_w: int, dst_h: int
 ) -> Tuple[np.ndarray, Tuple[int, int, float]]:
-    """Resize src into a dst_w x dst_h white canvas preserving aspect,
-    centered. Returns (canvas, (x_off, y_off, scale))."""
+    """Letterbox src into a dst_w x dst_h white canvas. Returns (canvas, (x_off, y_off, scale))."""
     h, w = src.shape[:2]
     if h <= 0 or w <= 0:
         return _white_canvas(dst_h, dst_w), (0, 0, 1.0)
@@ -149,12 +139,8 @@ def _draw_scale_bar(
     color: Tuple[int, int, int] = (40, 40, 40),
     thickness: int = 3,
 ):
-    """Horizontal scale bar with end ticks and a labeled length.
-
-    Bar's right end sits at (right_x, bottom_y); it grows leftward to a
-    nice-round length from `_NICE_LENGTHS_M` closest to `target_px * m_per_px`.
-    No-op if the chosen bar would fall outside the canvas.
-    """
+    """Right-anchored scale bar with end ticks. Picks a nice-round length from
+    `_NICE_LENGTHS_M` near `target_px * m_per_px`. Bar gets a white stroke."""
     if m_per_px <= 0:
         return
     target_m = target_px * m_per_px
@@ -164,11 +150,15 @@ def _draw_scale_bar(
     if x1 < 4 or right_x >= canvas.shape[1]:
         return
     tick = thickness + 3
+    out_t = thickness + 3
+    cv.line(canvas, (x1, bottom_y), (right_x, bottom_y), TEXT_OUTLINE, out_t, cv.LINE_AA)
+    cv.line(canvas, (x1, bottom_y - tick), (x1, bottom_y + tick), TEXT_OUTLINE, out_t, cv.LINE_AA)
+    cv.line(canvas, (right_x, bottom_y - tick), (right_x, bottom_y + tick), TEXT_OUTLINE, out_t, cv.LINE_AA)
     cv.line(canvas, (x1, bottom_y), (right_x, bottom_y), color, thickness, cv.LINE_AA)
     cv.line(canvas, (x1, bottom_y - tick), (x1, bottom_y + tick), color, thickness, cv.LINE_AA)
     cv.line(canvas, (right_x, bottom_y - tick), (right_x, bottom_y + tick), color, thickness, cv.LINE_AA)
     label = f"{L_m} m" if L_m < 1000 else f"{L_m / 1000:.1f} km"
-    _put_text(canvas, label, (x1, bottom_y - 10), scale=0.55)
+    _put_text(canvas, label, (x1, bottom_y - 12), scale=0.7)
 
 
 def _draw_primitive_world(
@@ -208,11 +198,8 @@ class LastMatch:
     matched_aerial: PrimitiveList
     matched_ground: PrimitiveList
     ground_dense_segments: list
-    # SE(2) transform with the repo's T_<dest>_<src> convention:
-    # p_aerial = T_aerial_ground_2d @ p_ground_homog. Extracted from
-    # pose_result.T_i_j_hat (i=aerial, j=ground). Its 2x2 block has negative
-    # determinant (z flips between aerial top-down and ground top-down), so
-    # applying it both rotates and reflects, un-mirroring the ground view.
+    # SE(2) ground -> aerial. 2x2 has negative determinant (reflects), which
+    # un-mirrors the ground view to match the aerial orientation.
     T_aerial_ground_2d: Optional[np.ndarray] = None
 
 
@@ -225,10 +212,6 @@ class IncrementalMovieWriter:
     gt_pose_data: Optional[object]
     T_camera_flu: Optional[np.ndarray]
     px_per_m: float
-    # Authoritative patch geometry in meters. Pixel bounds for the crop are
-    # derived at render time via px_per_m, so a single int() truncation per
-    # corner is the only quantization (vs. stacking truncations on stride and
-    # patch_size_px and then multiplying by i_a/j_a).
     patch_side_len_m: float
     patch_overlap: float
     fps: int = 10
@@ -237,10 +220,7 @@ class IncrementalMovieWriter:
     _aerial_thumb: np.ndarray = field(default=None, init=False)
     _aerial_thumb_offset: Tuple[int, int, float] = field(default=None, init=False)
     _last_match: Optional[LastMatch] = field(default=None, init=False)
-    # UTM positions (x, y) of the current CLIPPER inlier loop closures.
-    # Refreshed by `update_inliers` after each ground submap is processed.
     _inlier_positions_utm: List[np.ndarray] = field(default_factory=list, init=False)
-    # UTM position of the most recent inlier (highlighted gold).
     _latest_inlier_position_utm: Optional[np.ndarray] = field(default=None, init=False)
     _gt_traj_px: List[Tuple[float, float]] = field(default_factory=list, init=False)
     _gt_t_cache: float = field(default=-1.0, init=False)
@@ -248,7 +228,7 @@ class IncrementalMovieWriter:
 
     def __post_init__(self):
         self._aerial_thumb, self._aerial_thumb_offset = _fit_into(
-            self.aerial_img, TOP_AERIAL_W, ROW_H
+            self.aerial_img, TOP_AERIAL_W, IMG_H
         )
 
         fourcc = cv.VideoWriter_fourcc(*"mp4v")
@@ -258,14 +238,8 @@ class IncrementalMovieWriter:
         if not self._writer.isOpened():
             raise RuntimeError(f"Failed to open VideoWriter at {self.output_path}")
         if self.live:
-            # WINDOW_NORMAL = user-resizable; WINDOW_KEEPRATIO = image is
-            # letterboxed to the window while preserving 4:3 aspect.
-            cv.namedWindow(
-                self._live_window, cv.WINDOW_NORMAL | cv.WINDOW_KEEPRATIO
-            )
+            cv.namedWindow(self._live_window, cv.WINDOW_NORMAL)
             cv.resizeWindow(self._live_window, FRAME_W, FRAME_H)
-
-    # ------------------------------------------------------------------
 
     def update_match(
         self,
@@ -292,9 +266,7 @@ class IncrementalMovieWriter:
         positions_utm: List[np.ndarray],
         latest_position_utm: Optional[np.ndarray] = None,
     ):
-        """Refresh the set of inlier loop-closure positions (UTM xy) to draw on
-        the aerial trajectory pane as red stars. The most-recent inlier
-        (`latest_position_utm`) is highlighted with a gold star."""
+        """Refresh inlier UTM xy positions (red stars) and the latest (gold)."""
         self._inlier_positions_utm = list(positions_utm)
         self._latest_inlier_position_utm = (
             None if latest_position_utm is None else np.asarray(latest_position_utm)
@@ -303,28 +275,68 @@ class IncrementalMovieWriter:
     def write_frame(self, t: float, ground_img: np.ndarray, instant_pose_history):
         frame = _white_canvas(FRAME_H, FRAME_W)
 
-        frame[0:ROW_H, 0:TOP_AERIAL_W] = self._render_aerial_traj(
+        top_y0 = TOP_BAR_H
+        top_img_y0 = top_y0 + LABEL_PAD
+        top_img_y1 = top_img_y0 + IMG_H
+        top_y1 = top_y0 + ROW_H
+        mid_div_y1 = top_y1 + DIVIDER
+        bot_y0 = mid_div_y1
+        bot_img_y0 = bot_y0 + LABEL_PAD
+        bot_img_y1 = bot_img_y0 + IMG_H
+
+        frame[0:TOP_BAR_H, :] = BAR_COLOR
+        bar_scale = 1.05
+        bar_thick = 2
+        bar_baseline = TOP_BAR_H - 16
+        cv.putText(
+            frame, "MERIDIAN", (18, bar_baseline),
+            FONT, bar_scale, BAR_TEXT_COLOR, bar_thick, cv.LINE_AA,
+        )
+        t_text = f"t = {t:.2f} s"
+        (tw, _), _ = cv.getTextSize(t_text, FONT, bar_scale, bar_thick)
+        cv.putText(
+            frame, t_text, (FRAME_W - tw - 18, bar_baseline),
+            FONT, bar_scale, BAR_TEXT_COLOR, bar_thick, cv.LINE_AA,
+        )
+
+        gr_x0 = TOP_AERIAL_W + DIVIDER
+        frame[top_img_y0:top_img_y1, 0:TOP_AERIAL_W] = self._render_aerial_traj(
             t, instant_pose_history
         )
-        frame[0:ROW_H, TOP_AERIAL_W : TOP_AERIAL_W + TOP_GROUND_W] = (
+        frame[top_y0:top_y1, TOP_AERIAL_W:TOP_AERIAL_W + DIVIDER] = BAR_COLOR
+        frame[top_img_y0:top_img_y1, gr_x0:gr_x0 + TOP_GROUND_W] = (
             self._render_ground_rgb(ground_img)
         )
+        _strip_label(frame, "Aerial  -  GT (green) / Est (pink)", 10, top_y0)
+        _strip_label(frame, "Ground RGB", gr_x0 + 10, top_y0)
+
+        frame[top_y1:mid_div_y1, :] = BAR_COLOR
 
         bot_aerial, aerial_anchors = self._render_aerial_patch_pane()
         bot_ground, ground_anchors = self._render_ground_dense_pane()
-        frame[ROW_H:FRAME_H, 0:BOT_PANE_LEFT_W] = bot_aerial
-        frame[ROW_H:FRAME_H, BOT_PANE_LEFT_W : BOT_PANE_LEFT_W + BOT_PANE_RIGHT_W] = (
-            bot_ground
-        )
+        frame[bot_img_y0:bot_img_y1, 0:BOT_PANE_LEFT_W] = bot_aerial
+        frame[bot_img_y0:bot_img_y1, BOT_PANE_LEFT_W:BOT_PANE_LEFT_W + BOT_PANE_RIGHT_W] = bot_ground
+        if self._last_match is not None:
+            _strip_label(
+                frame, f"Aerial patch  ({self._last_match.aerial_key})",
+                10, bot_y0,
+            )
+            _strip_label(
+                frame, f"Ground submap  ({self._last_match.ground_key})",
+                BOT_PANE_LEFT_W + 10, bot_y0,
+            )
 
         for ap, gp in zip(aerial_anchors, ground_anchors):
             if ap is None or gp is None:
                 continue
-            a = (ap[0], ap[1] + ROW_H)
-            g = (gp[0] + BOT_PANE_LEFT_W, gp[1] + ROW_H)
+            a = (ap[0], ap[1] + bot_img_y0)
+            g = (gp[0] + BOT_PANE_LEFT_W, gp[1] + bot_img_y0)
             cv.line(frame, a, g, MATCH_LINE_COLOR, 2, cv.LINE_AA)
 
-        _put_text(frame, f"t = {t:.2f}s", (FRAME_W // 2, 38), center=True)
+        frame[:DIVIDER, :] = BAR_COLOR
+        frame[-DIVIDER:, :] = BAR_COLOR
+        frame[:, :DIVIDER] = BAR_COLOR
+        frame[:, -DIVIDER:] = BAR_COLOR
 
         self._writer.write(frame)
         if self.live:
@@ -337,8 +349,6 @@ class IncrementalMovieWriter:
             self._writer = None
         if self.live:
             cv.destroyWindow(self._live_window)
-
-    # ------------------------------------------------------------------
 
     def _render_aerial_traj(self, t: float, instant_pose_history) -> np.ndarray:
         canvas = self._aerial_thumb.copy()
@@ -367,7 +377,7 @@ class IncrementalMovieWriter:
         if len(self._gt_traj_px) >= 2:
             pts_full = np.array(self._gt_traj_px)
             pts = full_to_canvas(pts_full).astype(np.int32)
-            cv.polylines(canvas, [pts], False, GT_COLOR, 3, cv.LINE_AA)
+            cv.polylines(canvas, [pts], False, GT_COLOR, 2, cv.LINE_AA)
 
         est_utm = []
         for _, T in instant_pose_history:
@@ -390,15 +400,10 @@ class IncrementalMovieWriter:
                 continue
             pts_full = self.utm_to_pixel(r)
             pts = full_to_canvas(pts_full).astype(np.int32)
-            cv.polylines(canvas, [pts], False, EST_COLOR, 3, cv.LINE_AA)
+            cv.polylines(canvas, [pts], False, EST_COLOR, 2, cv.LINE_AA)
 
-        # Aerial patch box: a thin light-blue rectangle outlining the
-        # currently-selected aerial patch on the full aerial. Drawn before
-        # the stars so star markers sit on top of it.
         self._draw_aerial_patch_box(canvas, full_to_canvas)
 
-        # Inlier loop closures as red stars. Drawn last so they sit on top of
-        # the trajectory polylines. Skipped if outside the canvas bounds.
         h, w = canvas.shape[:2]
         if self._inlier_positions_utm:
             utm_arr = np.atleast_2d(np.asarray(self._inlier_positions_utm))
@@ -416,8 +421,6 @@ class IncrementalMovieWriter:
                         line_type=cv.LINE_AA,
                     )
 
-        # Latest inlier: larger gold star on top so it's distinguishable from
-        # the rest of the inlier set.
         if self._latest_inlier_position_utm is not None:
             pts_full = self.utm_to_pixel(
                 np.atleast_2d(self._latest_inlier_position_utm)
@@ -435,11 +438,17 @@ class IncrementalMovieWriter:
                     line_type=cv.LINE_AA,
                 )
 
-        _put_text(
-            canvas,
-            "Aerial - GT (green) / Est (pink) / Inliers (red, latest gold)",
-            (10, ROW_H - 14),
-        )
+        if scale > 0 and self.px_per_m > 0:
+            # Pin to the bottom-right of the actual aerial image (letterboxed
+            # inside the pane), not the pane bounds.
+            _draw_scale_bar(
+                canvas,
+                m_per_px=1.0 / (scale * self.px_per_m),
+                right_x=TOP_AERIAL_W - x_off - 12,
+                bottom_y=IMG_H - y_off - 16,
+                target_px=140,
+            )
+
         return canvas
 
     def _draw_aerial_patch_box(
@@ -471,16 +480,15 @@ class IncrementalMovieWriter:
 
     def _render_ground_rgb(self, ground_img: np.ndarray) -> np.ndarray:
         if ground_img is None:
-            return _white_canvas(ROW_H, TOP_GROUND_W)
+            return _white_canvas(IMG_H, TOP_GROUND_W)
         img = ground_img
         if img.ndim == 2:
             img = cv.cvtColor(img, cv.COLOR_GRAY2BGR)
-        canvas, _ = _fit_into(img, TOP_GROUND_W, ROW_H)
-        _put_text(canvas, "Ground RGB", (10, ROW_H - 14))
+        canvas, _ = _fit_into(img, TOP_GROUND_W, IMG_H)
         return canvas
 
     def _render_aerial_patch_pane(self) -> Tuple[np.ndarray, List[Optional[Tuple[int, int]]]]:
-        canvas = _white_canvas(ROW_H, BOT_PANE_LEFT_W)
+        canvas = _white_canvas(IMG_H, BOT_PANE_LEFT_W)
         if self._last_match is None:
             return canvas, []
         m = self._last_match
@@ -490,9 +498,6 @@ class IncrementalMovieWriter:
         except Exception:
             return canvas, []
 
-        # Patch bounds in WORLD meters (full-aerial frame; primitives live in
-        # this same frame). Derived from key + patch_side_len_m + overlap so
-        # the result doesn't drift with int(stride_px) truncation.
         patch_size_m = self.patch_side_len_m
         stride_m = patch_size_m * (1.0 - self.patch_overlap)
         x_min_m = i_a * stride_m
@@ -512,7 +517,7 @@ class IncrementalMovieWriter:
         if px_x2c <= px_x1c or px_y2c <= px_y1c:
             return canvas, []
         crop = self.aerial_img[px_y1c:px_y2c, px_x1c:px_x2c]
-        pane, (x_off, y_off, scale) = _fit_into(crop, BOT_PANE_LEFT_W, ROW_H)
+        pane, (x_off, y_off, scale) = _fit_into(crop, BOT_PANE_LEFT_W, IMG_H)
         crop_origin_m = (px_x1c / self.px_per_m, px_y1c / self.px_per_m)
 
         def world_to_px(xy_m: np.ndarray) -> Tuple[int, int]:
@@ -522,8 +527,6 @@ class IncrementalMovieWriter:
             row = row_in_crop * scale + y_off
             return (int(round(col)), int(round(row)))
 
-        # Thick lines survive the large downscale from a full 60m crop into a
-        # 720x540 pane (typically ~10x reduction).
         anchors: List[Optional[Tuple[int, int]]] = []
         for i, seg in enumerate(m.matched_aerial):
             a = _draw_primitive_world(
@@ -531,29 +534,24 @@ class IncrementalMovieWriter:
             )
             anchors.append(a)
 
+        # Pin to the patch crop's bottom-right (not the pane bounds — the
+        # crop is letterboxed so x_off/y_off are non-zero on the short side).
         _draw_scale_bar(
             pane,
             m_per_px=1.0 / (scale * self.px_per_m),
-            right_x=BOT_PANE_LEFT_W - 12,
-            bottom_y=ROW_H - 16,
+            right_x=BOT_PANE_LEFT_W - x_off - 12,
+            bottom_y=IMG_H - y_off - 16,
         )
-        _put_text(pane, f"Aerial patch ({m.aerial_key})", (10, 25))
         return pane, anchors
 
     def _render_ground_dense_pane(self) -> Tuple[np.ndarray, List[Optional[Tuple[int, int]]]]:
-        canvas = _white_canvas(ROW_H, BOT_PANE_RIGHT_W)
+        canvas = _white_canvas(IMG_H, BOT_PANE_RIGHT_W)
         if self._last_match is None:
             return canvas, []
         m = self._last_match
 
-        # Apply the matched SE(2) transform (ground -> aerial frame) to all
-        # ground coordinates before bbox / draw. The 2x2 block of the
-        # registration result has negative determinant, so this rotates *and*
-        # reflects, fixing the "ground looks mirrored" appearance and aligning
-        # it with the aerial orientation. Without the transform we'd be
-        # rendering raw submap-local coords, which use a different axis
-        # convention than the aerial image.
-        T = m.T_aerial_ground_2d  # (3,3) or None
+        # Warp ground coords into the aerial-aligned frame (un-mirrors them).
+        T = m.T_aerial_ground_2d
         if T is not None:
             R = T[:2, :2]
             t = T[:2, 2]
@@ -566,8 +564,7 @@ class IncrementalMovieWriter:
             def warp(pts: np.ndarray) -> np.ndarray:
                 return np.atleast_2d(pts)
 
-        # Gather all dense points to define the world bbox. Fall back to
-        # matched-primitive anchors only if no dense points are available.
+        # Bbox from dense points; fall back to matched-primitive anchors.
         pts_list = [
             warp(np.asarray(s.dense_points[:, :2]))
             for s in m.ground_dense_segments
@@ -590,42 +587,25 @@ class IncrementalMovieWriter:
         y_min -= pad_m
         y_max += pad_m
 
-        # Uniform scale that fits the bbox in either dimension, preserving
-        # aspect (no stretching). Then center within the rectangular pane.
         margin_px = 24
         avail_w = BOT_PANE_RIGHT_W - 2 * margin_px
-        avail_h = ROW_H - 2 * margin_px
+        avail_h = IMG_H - 2 * margin_px
         span_x = x_max - x_min
         span_y = y_max - y_min
         scale = min(avail_w / span_x, avail_h / span_y)
         out_w = span_x * scale
         out_h = span_y * scale
         x_off = (BOT_PANE_RIGHT_W - out_w) * 0.5
-        y_off = (ROW_H - out_h) * 0.5
+        y_off = (IMG_H - out_h) * 0.5
 
         def world_to_px(xy_m: np.ndarray) -> Tuple[int, int]:
-            # _draw_primitive_world passes raw submap-frame coords here; warp
-            # them into the aerial-aligned frame before mapping to pane px.
             pt = warp(np.asarray(xy_m).reshape(1, 2))[0]
             col = (pt[0] - x_min) * scale + x_off
             row = (pt[1] - y_min) * scale + y_off
             return (int(round(col)), int(round(row)))
 
-        # # Subtle bbox frame so the user can see the actual extent of the
-        # # submap even when the pcd is sparse.
-        # cv.rectangle(
-        #     canvas,
-        #     (int(round(x_off)), int(round(y_off))),
-        #     (int(round(x_off + out_w)), int(round(y_off + out_h))),
-        #     (220, 220, 220),
-        #     1,
-        #     cv.LINE_AA,
-        # )
-
-        # Draw dense pcd: largest segments first so smaller ones land on top.
-        # Use a small square stamp per point (size in pane pixels) for
-        # legibility — single-pixel scatter is invisible after compression.
-        pt_radius_px = 1  # half-side in px; total stamp = 2*r+1
+        # Largest segments first so smaller ones land on top.
+        pt_radius_px = 3  # roughly matches aerial primitive thickness
         segs_sorted = sorted(
             m.ground_dense_segments,
             key=lambda s: 0
@@ -638,7 +618,7 @@ class IncrementalMovieWriter:
             if dp is None or len(dp) == 0:
                 continue
             r_, g_, b_ = s.color_from_id(order="rgb", num_type=int)
-            # Darken light colors so they read on white.
+            # Darken so points read on white.
             r_, g_, b_ = (int(c) * 7 // 10 for c in (r_, g_, b_))
             color_bgr = np.array([b_, g_, r_], dtype=np.uint8)
             pts = warp(np.asarray(dp[:, :2]))
@@ -652,16 +632,18 @@ class IncrementalMovieWriter:
                         (cx_ >= 0)
                         & (cx_ < BOT_PANE_RIGHT_W)
                         & (ry >= 0)
-                        & (ry < ROW_H)
+                        & (ry < IMG_H)
                     )
                     canvas[ry[ok], cx_[ok]] = color_bgr
 
+        # Pin to the rendered bbox's bottom-right, where the actual points
+        # live (not the pane bounds, which are mostly white margin).
         _draw_scale_bar(
             canvas,
             m_per_px=1.0 / scale,
-            right_x=int(round(x_off + out_w - 8)),
-            bottom_y=int(round(y_off + out_h - 12)),
-            target_px=int(round(out_w * 0.25)),
+            right_x=int(round(x_off + out_w - 12)),
+            bottom_y=int(round(y_off + out_h - 16)),
+            target_px=140,
         )
 
         anchors: List[Optional[Tuple[int, int]]] = []
@@ -671,7 +653,6 @@ class IncrementalMovieWriter:
             )
             anchors.append(a)
 
-        _put_text(canvas, f"Ground submap ({m.ground_key})", (10, 25))
         return canvas, anchors
 
 

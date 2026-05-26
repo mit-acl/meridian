@@ -123,13 +123,8 @@ class CrossViewIncremental:
     # most recent PGO. Future T_utm_camera(t) = T_utm_lastopt @ inv(T_odom_lastopt) @ T_odom_cam(t).
     _T_utm_lastopt: Optional[np.ndarray] = field(default=None, init=False)
     _T_odom_lastopt: Optional[np.ndarray] = field(default=None, init=False)
-    # Viz-only T_utm_odom estimate, refreshed after every CLIPPER pass that
-    # produces at least one inlier (or, as a fallback, after any match yields
-    # at least one candidate). Used by `_record_instantaneous_pose` to draw a
-    # live estimated trajectory in PRE state instead
-    # of leaving the pose NaN until POST is reached. Independent of the
-    # PGO-anchored `_T_utm_lastopt`/`_T_odom_lastopt`, which drive the
-    # production estimate.
+    # Viz-only T_utm_odom (PRE state); refreshed via rigid frame_align on
+    # current candidates. Independent of `_T_utm_lastopt`/`_T_odom_lastopt`.
     _T_utm_odom_viz: Optional[np.ndarray] = field(default=None, init=False)
     # Most recent accepted CLIPPER outlier-rejection objective (for the
     # `allowable_outlier_lc_obj_drop` guard). None until first POST commit.
@@ -141,11 +136,8 @@ class CrossViewIncremental:
     _instant_pose_history: List[Tuple[float, np.ndarray]] = field(
         default_factory=list, init=False
     )
-    # Viz-only trajectory belief, rebuilt on every new submap by applying the
-    # *current* T_utm_odom estimate (PGO-anchored or viz frame-align) uniformly
-    # across the entire `mapper.poses_cam_history`. Decoupled from
-    # `_instant_pose_history` so production paths (eval, output writers,
-    # early-termination) continue to see the per-frame causal record.
+    # Viz-only trajectory belief; rebuilt on new submaps with the current
+    # T_utm_odom estimate. Decoupled from `_instant_pose_history`.
     _viz_pose_history: List[Tuple[float, np.ndarray]] = field(
         default_factory=list, init=False
     )
@@ -259,11 +251,8 @@ class CrossViewIncremental:
             self._record_instantaneous_pose(img_t, pose)
 
             if self._movie is not None:
-                # Append new frames in O(1) using the current transform —
-                # full rebuilds only happen after each CLIPPER/PGO update in
-                # `_handle_new_submap`. The transform is constant between
-                # submaps, so appended entries are consistent with the
-                # rebuilt prefix and the polyline doesn't jump.
+                # O(1) append; full rebuild happens in `_handle_new_submap`
+                # whenever the transform changes.
                 self._sync_viz_pose_history()
                 self._movie.write_frame(
                     img_t, img, self._viz_pose_history
@@ -378,11 +367,8 @@ class CrossViewIncremental:
                     latest_pos = pos
                     latest_aerial_key = cand.get("aerial_key")
             self._movie.update_inliers(inlier_positions_utm, latest_pos)
-            # Bottom panes should display the *latest inlier's* match — even
-            # if that inlier is from an older submap. `_update_movie_last_match`
-            # falls back to the memoized `_match_details_per_submap` cache in
-            # that case. When there are no inliers, fall back to the current
-            # submap's best-by-num_assoc hypothesis so something is shown.
+            # Bottom panes show the latest inlier's match (may be from an
+            # older submap — `_update_movie_last_match` hits the cache).
             if latest_ground_key >= 0 and latest_aerial_key is not None:
                 self._update_movie_last_match(
                     str(latest_ground_key),
@@ -392,8 +378,7 @@ class CrossViewIncremental:
             else:
                 self._update_movie_last_match(ground_key, match_result)
 
-        # `_T_utm_odom_viz` only feeds the PRE viz path; in POST the rebuild
-        # uses the PGO-anchored chain instead, so refreshing it there is wasted.
+        # POST uses the PGO chain, so the viz frame_align is PRE-only.
         if self._state == "PRE":
             self._refresh_viz_utm_odom(rpgo, inlier_indices)
 
@@ -406,9 +391,8 @@ class CrossViewIncremental:
         else:
             self._run_post_pgo(inlier_indices, lc_obj)
 
-        # Full rebuild here — the only places anything changes are this
-        # CLIPPER run (PRE) and `_run_post_pgo` (POST). Between submaps the
-        # transform is fixed, so per-frame paths just append one entry.
+        # Transform only changes here (CLIPPER/PGO), so per-frame paths just
+        # append entries against the current transform.
         if self._movie is not None:
             self._rebuild_viz_pose_history()
 
@@ -916,10 +900,14 @@ class CrossViewIncremental:
         return T_utm_camera
 
     def _viz_pose_for_cam(self, idx: int, pose_cam: np.ndarray) -> np.ndarray:
-        """Map a single `pose_cam` (T_odom_cam at frame `idx`) to T_utm_body
-        under the current best estimate. POST + PGO portion: uses the deformed
-        optimized trajectory directly. POST tail: rigid lastopt-anchor
-        propagation. PRE: rigid `_T_utm_odom_viz`. Otherwise NaN."""
+        """T_utm_body for frame `idx` under the current best estimate.
+
+        POST + idx within PGO range: use the PGO-deformed trajectory directly.
+        POST tail (frames after the last PGO solve): rigid-propagate from
+        the lastopt anchor (T_utm_lastopt @ T_odom_lastopt^-1 @ pose_cam).
+        PRE: rigid `_T_utm_odom_viz` (frame_align over current inliers).
+        Otherwise NaN (no viz-usable estimate yet).
+        """
         if (
             self._state == "POST"
             and self._last_optimized_trajectory is not None
@@ -937,8 +925,7 @@ class CrossViewIncremental:
         return np.full((4, 4), np.nan)
 
     def _sync_viz_pose_history(self):
-        """Append entries for any frames in `mapper.poses_cam_history` not yet
-        in `_viz_pose_history`. O(1) per new frame (one matrix mult)."""
+        """Append viz-history entries for any new frames in `poses_cam_history`."""
         poses_cam = self.mapper.poses_cam_history
         times = self.mapper.times_history
         while len(self._viz_pose_history) < len(poses_cam):
@@ -946,11 +933,8 @@ class CrossViewIncremental:
             self._viz_pose_history.append((times[i], self._viz_pose_for_cam(i, poses_cam[i])))
 
     def _rebuild_viz_pose_history(self):
-        """Rebuild the viz-only trajectory from scratch using the *current*
-        best estimate applied uniformly to all of `mapper.poses_cam_history`.
-        Called only after CLIPPER/PGO state changes (PRE: T_utm_odom_viz, POST:
-        lastopt anchor + PGO trajectory). Per-frame paths just `_sync_*` since
-        the transform is constant between submaps."""
+        """Rebuild the viz trajectory using the current best estimate uniformly
+        across all frames. Called only after CLIPPER/PGO updates the transform."""
         self._viz_pose_history = []
         self._sync_viz_pose_history()
 
@@ -1445,9 +1429,7 @@ class CrossViewIncremental:
         )
 
     def _lookup_single_match(self, ground_key: str, aerial_key: str):
-        """Retrieve a memoized SingleMatchResult by (ground_key, aerial_key)
-        from `_match_details_per_submap`, which is populated each time
-        `_handle_new_submap` runs. Returns None if missing."""
+        """Memoized SingleMatchResult lookup; None if missing."""
         details = self._match_details_per_submap.get(ground_key, {})
         sr_or_list = details.get(aerial_key)
         if sr_or_list is None:
@@ -1457,13 +1439,9 @@ class CrossViewIncremental:
     def _update_movie_last_match(
         self, ground_key, match_result, prefer_aerial_key=None
     ):
-        """Push the match to display in the bottom panes. When
-        `prefer_aerial_key` is provided (e.g. the latest CLIPPER inlier's
-        aerial cell), use that exact SingleMatchResult — falling back to
-        `_match_details_per_submap` if the cell isn't in the current
-        `match_result` (i.e. the latest inlier is from an older ground
-        submap). Otherwise pick the current submap's
-        highest-num_associations primary hypothesis."""
+        """Push a match into the bottom panes. With `prefer_aerial_key`, use
+        that specific cell (cache fallback if it's from an older submap);
+        otherwise pick the current submap's best-by-num_associations."""
         details = match_result.match_details.get(ground_key, {})
         best_aerial_key = None
         best_single = None
@@ -1495,8 +1473,7 @@ class CrossViewIncremental:
         if best_single is None or best_aerial_key is None:
             return
 
-        # Ground submap dense segments come from the mapper's per-submap
-        # intermediate. Only `flattened_submap.segments` carry `dense_points`
+        # Only `flattened_submap.segments` carry `dense_points`.
         dense_segments = []
         try:
             sm_idx = int(ground_key)
@@ -1506,14 +1483,9 @@ class CrossViewIncremental:
         except Exception:
             dense_segments = []
 
-        # SE(2) transform mapping ground-submap (odom) points into the aerial
-        # frame: p_aerial = T_aerial_ground_2d @ p_ground_homog. Use the raw
-        # registerer output, NOT pose_result.T_i_j_hat — the latter has been
-        # chained with T_ground_odom_ground_robot @ T_camera_flu, so its 2x2
-        # rotation block encodes the robot's pose/camera extrinsics on top of
-        # the submap-frame registration. That extra rotation makes the warp
-        # look "not rotated" whenever the robot's odom-frame yaw happens to
-        # cancel the registration yaw, and wrong otherwise.
+        # Use the raw registerer output (ground submap odom -> aerial).
+        # NOT pose_result.T_i_j_hat, which is post-multiplied by the robot's
+        # odom pose + camera extrinsics and thus warps incorrectly.
         T_aerial_ground_2d = getattr(
             best_single, "T_aerial_ground_odom_2d", None
         )
