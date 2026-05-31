@@ -43,7 +43,7 @@ EST_COLOR = (180, 105, 255)  # pink (BGR)
 INLIER_COLOR = (0, 0, 230)  # red (BGR)
 LATEST_INLIER_COLOR = (0, 215, 255)  # gold (BGR)
 PATCH_BOX_COLOR = (230, 216, 173)  # light blue (BGR)
-MATCH_LINE_COLOR = (0, 150, 0)
+MATCH_LINE_COLOR = (0, 230, 0)
 
 FONT = cv.FONT_HERSHEY_SIMPLEX
 
@@ -371,7 +371,7 @@ class IncrementalMovieWriter:
                 continue
             a = (ap[0] + x0, ap[1] + bot_img_y0)
             g = (gp[0] + x0 + BOT_PANE_LEFT_W, gp[1] + bot_img_y0)
-            cv.line(frame, a, g, MATCH_LINE_COLOR, 2, cv.LINE_AA)
+            cv.line(frame, a, g, MATCH_LINE_COLOR, 3, cv.LINE_AA)
 
         frame[:BORDER, :] = BAR_COLOR
         frame[-BORDER:, :] = BAR_COLOR
@@ -572,7 +572,7 @@ class IncrementalMovieWriter:
         anchors: List[Optional[Tuple[int, int]]] = []
         for i, seg in enumerate(m.matched_aerial):
             a = _draw_primitive_world(
-                pane, seg, world_to_px, _color_for(i), thickness=6
+                pane, seg, world_to_px, _color_for(i), thickness=9
             )
             anchors.append(a)
 
@@ -660,8 +660,8 @@ class IncrementalMovieWriter:
             if dp is None or len(dp) == 0:
                 continue
             r_, g_, b_ = s.color_from_id(order="rgb", num_type=int)
-            # Darken so points read on white.
-            r_, g_, b_ = (int(c) * 7 // 10 for c in (r_, g_, b_))
+            # Darken so the brightly colored matched primitives pop on top.
+            r_, g_, b_ = (int(c) * 4 // 10 for c in (r_, g_, b_))
             color_bgr = np.array([b_, g_, r_], dtype=np.uint8)
             pts = warp(np.asarray(dp[:, :2]))
             cols = ((pts[:, 0] - x_min) * scale + x_off).astype(np.int32)
@@ -691,22 +691,25 @@ class IncrementalMovieWriter:
         anchors: List[Optional[Tuple[int, int]]] = []
         for i, seg in enumerate(m.matched_ground):
             a = _draw_primitive_world(
-                canvas, seg, world_to_px, _color_for(i), thickness=4
+                canvas, seg, world_to_px, _color_for(i), thickness=6
             )
             anchors.append(a)
 
         return canvas, anchors
 
 
+# matplotlib tab10, brightened (each color's max channel scaled to 255), in BGR.
 _MATCH_PALETTE = [
-    (0, 0, 200),
-    (0, 140, 200),
-    (180, 0, 180),
-    (200, 130, 0),
-    (0, 110, 0),
-    (200, 0, 0),
-    (140, 60, 200),
-    (60, 60, 60),
+    (255, 169, 44),   # tab:blue
+    (14, 127, 255),   # tab:orange
+    (70, 255, 70),    # tab:green
+    (48, 46, 255),    # tab:red
+    (255, 139, 200),  # tab:purple
+    (137, 157, 255),  # tab:brown
+    (218, 134, 255),  # tab:pink
+    (180, 180, 180),  # tab:gray
+    (46, 255, 254),   # tab:olive
+    (255, 234, 28),   # tab:cyan
 ]
 
 
