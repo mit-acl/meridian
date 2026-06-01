@@ -91,6 +91,29 @@ def _white_canvas(h: int, w: int) -> np.ndarray:
     c[:] = BG_COLOR
     return c
 
+def whiten_edge_black(img: np.ndarray) -> np.ndarray:
+    """Flood any pure-black regions connected to the image border to pure white.
+
+    A pixel is black iff every channel is 0. Modifies `img` in place; also returns it.
+    """
+    if img.size == 0:
+        return img
+    gray = img if img.ndim == 2 else img.max(axis=2)
+    black = (gray == 0).astype(np.uint8)
+    if not black.any():
+        return img
+    n_labels, labels = cv.connectedComponents(black, connectivity=4)
+    if n_labels <= 1:
+        return img
+    border_labels = set()
+    for arr in (labels[0, :], labels[-1, :], labels[:, 0], labels[:, -1]):
+        border_labels.update(int(v) for v in np.unique(arr))
+    border_labels.discard(0)
+    if not border_labels:
+        return img
+    mask = np.isin(labels, list(border_labels))
+    img[mask] = 255
+    return img
 
 def _fit_into(
     src: np.ndarray, dst_w: int, dst_h: int
@@ -247,6 +270,7 @@ class IncrementalMovieWriter:
         self._aerial_thumb, self._aerial_thumb_offset = _fit_into(
             self.aerial_img, TOP_AERIAL_W, IMG_H
         )
+        whiten_edge_black(self._aerial_thumb)
 
         fourcc = cv.VideoWriter_fourcc(*"mp4v")
         self._writer = cv.VideoWriter(
@@ -559,6 +583,7 @@ class IncrementalMovieWriter:
         if px_x2c <= px_x1c or px_y2c <= px_y1c:
             return canvas, []
         crop = self.aerial_img[px_y1c:px_y2c, px_x1c:px_x2c]
+        whiten_edge_black(crop)
         pane, (x_off, y_off, scale) = _fit_into(crop, BOT_PANE_LEFT_W, IMG_H)
         crop_origin_m = (px_x1c / self.px_per_m, px_y1c / self.px_per_m)
 
