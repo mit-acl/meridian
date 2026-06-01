@@ -42,7 +42,7 @@ GT_COLOR = (40, 160, 40)
 EST_COLOR = (180, 105, 255)  # pink (BGR)
 INLIER_COLOR = (0, 0, 230)  # red (BGR)
 LATEST_INLIER_COLOR = (0, 215, 255)  # gold (BGR)
-PATCH_BOX_COLOR = (230, 216, 173)  # light blue (BGR)
+PATCH_BOX_COLOR = (247, 166, 86)  # #56a6f7 (BGR)
 MATCH_LINE_COLOR = (0, 255, 0)
 
 FONT = cv.FONT_HERSHEY_SIMPLEX
@@ -220,7 +220,7 @@ def _draw_primitive_world(
             cv.line(img, p0, p1, color, thickness, cv.LINE_AA)
     elif isinstance(seg, PointPrimitive):
         if anchor_px is not None:
-            cv.circle(img, anchor_px, max(6, thickness + 3), color, -1, cv.LINE_AA)
+            cv.circle(img, anchor_px, max(4, int(round((thickness + 3) * 0.7))), color, -1, cv.LINE_AA)
     return anchor_px
 
 
