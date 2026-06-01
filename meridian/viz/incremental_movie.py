@@ -43,7 +43,7 @@ EST_COLOR = (180, 105, 255)  # pink (BGR)
 INLIER_COLOR = (0, 0, 230)  # red (BGR)
 LATEST_INLIER_COLOR = (0, 215, 255)  # gold (BGR)
 PATCH_BOX_COLOR = (230, 216, 173)  # light blue (BGR)
-MATCH_LINE_COLOR = (0, 230, 0)
+MATCH_LINE_COLOR = (0, 255, 0)
 
 FONT = cv.FONT_HERSHEY_SIMPLEX
 
@@ -661,7 +661,7 @@ class IncrementalMovieWriter:
                 continue
             r_, g_, b_ = s.color_from_id(order="rgb", num_type=int)
             # Darken so the brightly colored matched primitives pop on top.
-            r_, g_, b_ = (int(c) * 4 // 10 for c in (r_, g_, b_))
+            r_, g_, b_ = (int(c) * 6 // 10 for c in (r_, g_, b_))
             color_bgr = np.array([b_, g_, r_], dtype=np.uint8)
             pts = warp(np.asarray(dp[:, :2]))
             cols = ((pts[:, 0] - x_min) * scale + x_off).astype(np.int32)
