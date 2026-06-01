@@ -691,7 +691,7 @@ class IncrementalMovieWriter:
         anchors: List[Optional[Tuple[int, int]]] = []
         for i, seg in enumerate(m.matched_ground):
             a = _draw_primitive_world(
-                canvas, seg, world_to_px, _color_for(i), thickness=6
+                canvas, seg, world_to_px, _color_for(i), thickness=7
             )
             anchors.append(a)
 
