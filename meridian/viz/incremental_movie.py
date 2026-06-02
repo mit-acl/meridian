@@ -220,7 +220,7 @@ def _draw_primitive_world(
             cv.line(img, p0, p1, color, thickness, cv.LINE_AA)
     elif isinstance(seg, PointPrimitive):
         if anchor_px is not None:
-            cv.circle(img, anchor_px, max(4, int(round((thickness + 3) * 0.7))), color, -1, cv.LINE_AA)
+            cv.circle(img, anchor_px, max(6, round((thickness + 2))), color, -1, cv.LINE_AA)
     return anchor_px
 
 
