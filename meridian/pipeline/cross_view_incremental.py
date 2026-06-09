@@ -84,6 +84,7 @@ from meridian.pipeline.data import (
 from meridian.register.registerer import Registerer2D
 from meridian.utils import save_commit_hash, save_params
 from meridian.viz.cross_view_viz import viz_ground_segments
+from meridian.viz.incremental_movie import IncrementalMovieWriter
 
 logger = logging.getLogger(__name__)
 
@@ -122,6 +123,9 @@ class CrossViewIncremental:
     # most recent PGO. Future T_utm_camera(t) = T_utm_lastopt @ inv(T_odom_lastopt) @ T_odom_cam(t).
     _T_utm_lastopt: Optional[np.ndarray] = field(default=None, init=False)
     _T_odom_lastopt: Optional[np.ndarray] = field(default=None, init=False)
+    # Viz-only T_utm_odom (PRE state); refreshed via rigid frame_align on
+    # current candidates. Independent of `_T_utm_lastopt`/`_T_odom_lastopt`.
+    _T_utm_odom_viz: Optional[np.ndarray] = field(default=None, init=False)
     # Most recent accepted CLIPPER outlier-rejection objective (for the
     # `allowable_outlier_lc_obj_drop` guard). None until first POST commit.
     _last_lc_out_rej_obj: Optional[float] = field(default=None, init=False)
@@ -130,6 +134,11 @@ class CrossViewIncremental:
     _early_terminate: bool = field(default=False, init=False)
     _optimized_pose_data: Optional[object] = field(default=None, init=False)
     _instant_pose_history: List[Tuple[float, np.ndarray]] = field(
+        default_factory=list, init=False
+    )
+    # Viz-only trajectory belief; rebuilt on new submaps with the current
+    # T_utm_odom estimate. Decoupled from `_instant_pose_history`.
+    _viz_pose_history: List[Tuple[float, np.ndarray]] = field(
         default_factory=list, init=False
     )
     _global_loc_frame_idx: Optional[int] = field(default=None, init=False)
@@ -155,6 +164,7 @@ class CrossViewIncremental:
     # run, so we preprocess once at init and pass to every match call to keep
     # the per-call deepcopy/to_dim cost out of the `match` timing budget.
     _aerial_submaps_2d: Dict[str, Submap] = field(default_factory=dict, init=False)
+    _movie: Optional[IncrementalMovieWriter] = field(default=None, init=False)
 
     def __post_init__(self):
         self._aerial_submaps_2d = self.algorithm.preprocess_aerial_submaps_2d(
@@ -239,6 +249,14 @@ class CrossViewIncremental:
                 self._submap_count += 1
 
             self._record_instantaneous_pose(img_t, pose)
+
+            if self._movie is not None:
+                # O(1) append; full rebuild happens in `_handle_new_submap`
+                # whenever the transform changes.
+                self._sync_viz_pose_history()
+                self._movie.write_frame(
+                    img_t, img, self._viz_pose_history
+                )
 
         self._compute_wall_time += time.time() - t_loop_start
 
@@ -328,6 +346,42 @@ class CrossViewIncremental:
             f"candidates={len(self._candidates)} inliers={n_inliers}"
         )
 
+        if self._movie is not None:
+            inlier_positions_utm = []
+            latest_pos = None
+            latest_aerial_key = None
+            latest_ground_key = -1
+            for i in inlier_indices:
+                cand = self._candidates[int(i)]
+                T = cand.get("T_utm_body_se2")
+                if T is None:
+                    continue
+                pos = np.array([T[0, 2], T[1, 2]])
+                inlier_positions_utm.append(pos)
+                try:
+                    gk = int(cand["ground_key"])
+                except (KeyError, ValueError, TypeError):
+                    gk = -1
+                if gk > latest_ground_key:
+                    latest_ground_key = gk
+                    latest_pos = pos
+                    latest_aerial_key = cand.get("aerial_key")
+            self._movie.update_inliers(inlier_positions_utm, latest_pos)
+            # Bottom panes show the latest inlier's match (may be from an
+            # older submap — `_update_movie_last_match` hits the cache).
+            if latest_ground_key >= 0 and latest_aerial_key is not None:
+                self._update_movie_last_match(
+                    str(latest_ground_key),
+                    match_result,
+                    prefer_aerial_key=latest_aerial_key,
+                )
+            else:
+                self._update_movie_last_match(ground_key, match_result)
+
+        # POST uses the PGO chain, so the viz frame_align is PRE-only.
+        if self._state == "PRE":
+            self._refresh_viz_utm_odom(rpgo, inlier_indices)
+
         if self._state == "PRE":
             if n_inliers >= self.incremental_params.consistent_loop_closure_thresh:
                 if self._gate1_first_submap_count is None:
@@ -336,6 +390,11 @@ class CrossViewIncremental:
                     self._state = "POST"
         else:
             self._run_post_pgo(inlier_indices, lc_obj)
+
+        # Transform only changes here (CLIPPER/PGO), so per-frame paths just
+        # append entries against the current transform.
+        if self._movie is not None:
+            self._rebuild_viz_pose_history()
 
         self._emit_submap_viz(ground_key)
 
@@ -835,6 +894,62 @@ class CrossViewIncremental:
         else:
             self._instant_pose_history.append((t, np.full((4, 4), np.nan)))
 
+    def _apply_camera_flu(self, T_utm_camera: np.ndarray) -> np.ndarray:
+        if self.data.T_camera_flu is not None:
+            return T_utm_camera @ self.data.T_camera_flu
+        return T_utm_camera
+
+    def _viz_pose_for_cam(self, idx: int, pose_cam: np.ndarray) -> np.ndarray:
+        """T_utm_body for frame `idx` under the current best estimate.
+
+        POST + idx within PGO range: use the PGO-deformed trajectory directly.
+        POST tail (frames after the last PGO solve): rigid-propagate from
+        the lastopt anchor (T_utm_lastopt @ T_odom_lastopt^-1 @ pose_cam).
+        PRE: rigid `_T_utm_odom_viz` (frame_align over current inliers).
+        Otherwise NaN (no viz-usable estimate yet).
+        """
+        if (
+            self._state == "POST"
+            and self._last_optimized_trajectory is not None
+            and self._T_utm_lastopt is not None
+            and self._T_odom_lastopt is not None
+        ):
+            opt = self._last_optimized_trajectory
+            if idx < len(opt):
+                return opt[idx]
+            T_odom_inv = np.linalg.inv(self._T_odom_lastopt)
+            T_utm_cam = self._T_utm_lastopt @ T_odom_inv @ pose_cam
+            return self._apply_camera_flu(T_utm_cam)
+        if self._T_utm_odom_viz is not None:
+            return self._apply_camera_flu(self._T_utm_odom_viz @ pose_cam)
+        return np.full((4, 4), np.nan)
+
+    def _sync_viz_pose_history(self):
+        """Append viz-history entries for any new frames in `poses_cam_history`."""
+        poses_cam = self.mapper.poses_cam_history
+        times = self.mapper.times_history
+        while len(self._viz_pose_history) < len(poses_cam):
+            i = len(self._viz_pose_history)
+            self._viz_pose_history.append((times[i], self._viz_pose_for_cam(i, poses_cam[i])))
+
+    def _rebuild_viz_pose_history(self):
+        """Rebuild the viz trajectory using the current best estimate uniformly
+        across all frames. Called only after CLIPPER/PGO updates the transform."""
+        self._viz_pose_history = []
+        self._sync_viz_pose_history()
+
+    def _refresh_viz_utm_odom(self, rpgo, inlier_indices: np.ndarray):
+        if len(inlier_indices) > 0:
+            indices = inlier_indices
+        elif len(self._candidates) > 0:
+            indices = np.array([len(self._candidates) - 1])
+        else:
+            return
+        try:
+            self._T_utm_odom_viz = rpgo._frame_align(self._candidates, indices)
+        except Exception as e:
+            logger.debug(f"viz frame_align failed: {e}")
+
     def _maybe_early_terminate(self, t: float, T_utm_body: np.ndarray):
         """Trip `_early_terminate` when the live translation error exceeds
         `early_termination_err_m`. No-op if the threshold is None or no GT is
@@ -1276,6 +1391,117 @@ class CrossViewIncremental:
         )
 
     # ------------------------------------------------------------------
+    # Movie viz wiring
+    # ------------------------------------------------------------------
+
+    def enable_movie(self, output_path: str, live: bool):
+        """Open the live/MP4 visualizer. Must be called before `run()`."""
+        if self.data.geotiff_transform is not None:
+
+            def utm_to_pixel(xy_utm):
+                return self.data.aerial_utm_to_pixel(np.atleast_2d(xy_utm))
+        else:
+            origin_x, origin_y = self.data.aerial_img_origin
+            pixel_len_m = self.data.aerial_img_scale
+
+            def utm_to_pixel(xy_utm):
+                xy_utm = np.atleast_2d(xy_utm)
+                cols = (xy_utm[:, 0] - origin_x) / pixel_len_m
+                rows = (origin_y - xy_utm[:, 1]) / pixel_len_m
+                return np.column_stack([cols, rows])
+
+        px_per_m = 1.0 / self.data.aerial_img_scale
+        # Match real-time ground RGB playback: one written frame per processed
+        # frame, so fps = 1 / dt.
+        fps = max(1, int(round(1.0 / self.mapping_params.dt)))
+
+        self._movie = IncrementalMovieWriter(
+            output_path=output_path,
+            live=live,
+            aerial_img=self.data.aerial_img,
+            utm_to_pixel=utm_to_pixel,
+            gt_pose_data=self.data.gt_pose_data,
+            T_camera_flu=self.data.T_camera_flu,
+            px_per_m=px_per_m,
+            patch_side_len_m=self.algorithm.aerial_patch_params.aerial_img_patch_side_len_m,
+            patch_overlap=self.algorithm.aerial_patch_params.aerial_img_patch_overlap,
+            fps=fps,
+        )
+
+    def _lookup_single_match(self, ground_key: str, aerial_key: str):
+        """Memoized SingleMatchResult lookup; None if missing."""
+        details = self._match_details_per_submap.get(ground_key, {})
+        sr_or_list = details.get(aerial_key)
+        if sr_or_list is None:
+            return None
+        return sr_or_list[0] if isinstance(sr_or_list, list) else sr_or_list
+
+    def _update_movie_last_match(
+        self, ground_key, match_result, prefer_aerial_key=None
+    ):
+        """Push a match into the bottom panes. With `prefer_aerial_key`, use
+        that specific cell (cache fallback if it's from an older submap);
+        otherwise pick the current submap's best-by-num_associations."""
+        details = match_result.match_details.get(ground_key, {})
+        best_aerial_key = None
+        best_single = None
+        if prefer_aerial_key is not None:
+            sr_or_list = details.get(prefer_aerial_key)
+            if sr_or_list is not None:
+                best_single = (
+                    sr_or_list[0] if isinstance(sr_or_list, list) else sr_or_list
+                )
+            else:
+                best_single = self._lookup_single_match(ground_key, prefer_aerial_key)
+            if best_single is not None:
+                best_aerial_key = prefer_aerial_key
+        if best_single is None:
+            best_n = -1
+            for aerial_key, single_or_list in details.items():
+                sr = (
+                    single_or_list[0]
+                    if isinstance(single_or_list, list)
+                    else single_or_list
+                )
+                n = sr.pose_result.num_associations
+                if n is None:
+                    continue
+                if n > best_n:
+                    best_n = int(n)
+                    best_aerial_key = aerial_key
+                    best_single = sr
+        if best_single is None or best_aerial_key is None:
+            return
+
+        # Only `flattened_submap.segments` carry `dense_points`.
+        dense_segments = []
+        try:
+            sm_idx = int(ground_key)
+            inter = self.mapper._submap_intermediates[sm_idx]
+            if inter is not None and inter.flattened_submap is not None:
+                dense_segments = list(inter.flattened_submap.segments)
+        except Exception:
+            dense_segments = []
+
+        # Use the raw registerer output (ground submap odom -> aerial).
+        # NOT pose_result.T_i_j_hat, which is post-multiplied by the robot's
+        # odom pose + camera extrinsics and thus warps incorrectly.
+        T_aerial_ground_2d = getattr(
+            best_single, "T_aerial_ground_odom_2d", None
+        )
+        if T_aerial_ground_2d is not None and np.any(np.isnan(T_aerial_ground_2d)):
+            T_aerial_ground_2d = None
+
+        self._movie.update_match(
+            ground_key=ground_key,
+            aerial_key=best_aerial_key,
+            matched_aerial=best_single.matched_aerial or [],
+            matched_ground=best_single.matched_ground or [],
+            ground_dense_segments=dense_segments,
+            T_aerial_ground_2d=T_aerial_ground_2d,
+        )
+
+    # ------------------------------------------------------------------
     # Setters used by entry-point glue
     # ------------------------------------------------------------------
 
@@ -1304,6 +1530,8 @@ def cross_view_incremental(
     aerial_dir: str,
     run: str = None,
     submap_viz: bool = False,
+    movie: bool = False,
+    live: bool = False,
 ):
     if not aerial_dir:
         raise ValueError(
@@ -1444,6 +1672,12 @@ def cross_view_incremental(
     pipeline._params_path = params_path
     pipeline._submap_viz = submap_viz
 
+    if movie:
+        movie_path = os.path.join(output_dir, "incremental.mp4")
+        pipeline.enable_movie(movie_path, live=live)
+        if full_t0 is not None:
+            pipeline._movie.total_time_s = full_tf - full_t0
+
     # Save params + commit hash (mirror cross_view_matching).
     all_params = [
         mapping_params,
@@ -1467,47 +1701,59 @@ def cross_view_incremental(
     save_commit_hash(output_dir)
 
     wc_t0 = time.time()
-    if mapping_data_params.max_time is None or full_t0 is None:
-        print("Running incremental pipeline (no chunking)...")
-        if _chunk_is_empty(init_data):
-            print("No data in time range; nothing to run.")
+    interrupted = False
+    try:
+        if mapping_data_params.max_time is None or full_t0 is None:
+            print("Running incremental pipeline (no chunking)...")
+            if _chunk_is_empty(init_data):
+                print("No data in time range; nothing to run.")
+            else:
+                pipeline.run(init_data)
         else:
-            pipeline.run(init_data)
-    else:
-        chunk_idx = 0
-        print(
-            f"Running chunk {chunk_idx} ({full_t0:.2f} to {init_time_range[1]:.2f})..."
-        )
-        if _chunk_is_empty(init_data):
-            print(f"Chunk {chunk_idx} has no data in one or more topics; skipping.")
-        else:
-            pipeline.run(init_data)
-        del init_data
-        chunk_start = init_time_range[1]
-        chunk_idx += 1
-        while chunk_start < full_tf:
-            if pipeline._early_terminate:
-                break
-            chunk_end = min(chunk_start + mapping_data_params.max_time, full_tf)
+            chunk_idx = 0
             print(
-                f"Running chunk {chunk_idx} ({chunk_start:.2f} to {chunk_end:.2f})..."
+                f"Running chunk {chunk_idx} ({full_t0:.2f} to {init_time_range[1]:.2f})..."
             )
-            data = SegmentMappingData.from_params(
-                mapping_data_params, time_range=(chunk_start, chunk_end)
-            )
-            if _chunk_is_empty(data):
+            if _chunk_is_empty(init_data):
                 print(f"Chunk {chunk_idx} has no data in one or more topics; skipping.")
             else:
-                pipeline.run(data)
-            del data
-            chunk_start = chunk_end
+                pipeline.run(init_data)
+            del init_data
+            chunk_start = init_time_range[1]
             chunk_idx += 1
-    wall_time = time.time() - wc_t0
-    print(f"Pipeline took {wall_time:.2f}s")
-
-    print("Writing outputs...")
-    pipeline.write_outputs()
-    print("Done.")
+            while chunk_start < full_tf:
+                if pipeline._early_terminate:
+                    break
+                chunk_end = min(chunk_start + mapping_data_params.max_time, full_tf)
+                print(
+                    f"Running chunk {chunk_idx} ({chunk_start:.2f} to {chunk_end:.2f})..."
+                )
+                data = SegmentMappingData.from_params(
+                    mapping_data_params, time_range=(chunk_start, chunk_end)
+                )
+                if _chunk_is_empty(data):
+                    print(
+                        f"Chunk {chunk_idx} has no data in one or more topics; skipping."
+                    )
+                else:
+                    pipeline.run(data)
+                del data
+                chunk_start = chunk_end
+                chunk_idx += 1
+    except KeyboardInterrupt:
+        interrupted = True
+        print("\nInterrupted by user — finalizing outputs so far...")
+    finally:
+        wall_time = time.time() - wc_t0
+        print(f"Pipeline took {wall_time:.2f}s")
+        try:
+            print("Writing outputs...")
+            pipeline.write_outputs()
+        except Exception as e:
+            logger.warning(f"write_outputs failed during shutdown: {e}")
+        if pipeline._movie is not None:
+            pipeline._movie.close()
+        print("Done." if not interrupted else "Done (interrupted).")
 
 
 if __name__ == "__main__":
@@ -1533,6 +1779,17 @@ if __name__ == "__main__":
         action="store_true",
         help="Enable INFO-level logging.",
     )
+    parser.add_argument(
+        "-m",
+        "--movie",
+        action="store_true",
+        help="Write a per-frame incremental.mp4 visualization to the output dir.",
+    )
+    parser.add_argument(
+        "--live",
+        action="store_true",
+        help="With --movie, also open a live OpenCV window for each frame.",
+    )
     args = parser.parse_args()
 
     if args.debug:
@@ -1548,4 +1805,6 @@ if __name__ == "__main__":
         aerial_dir=args.aerial,
         run=args.run,
         submap_viz=args.viz,
+        movie=args.movie,
+        live=args.live,
     )
