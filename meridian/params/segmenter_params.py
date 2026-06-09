@@ -32,7 +32,7 @@ class SegmenterParamsBase(ParamsBase):
     triangle_ignore_masks: List[
         Tuple[Tuple[int, int], Tuple[int, int], Tuple[int, int]]
     ] = None
-    frame_descriptor: str = "anyloc"
+    frame_descriptor: str = "anyloc"  # anyloc, dino-gem, salad
 
     # AnyLoc params (used when frame_descriptor == "anyloc")
     anyloc_path: str = "${ANYLOC_PATH}"
