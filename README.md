@@ -29,7 +29,7 @@ M. Peterson, Q. Li, Y. Jia, F. Cladera, C. Nieto-Granda, C.J. Taylor, and J.P. H
 
 ## Install
 
-We recommend using this repo with a Python virtual environment. 
+We recommend using this repo with a Python virtual environment. This software has been tested with Python 3.12 on Ubuntu 24.04.
 
 To install, clone and `cd` into this repo, activate your environment, and run
 
@@ -65,17 +65,18 @@ source ./install/download_demo_data.sh <desired output directory>
 
 **Running Pipeline**
 
-Next, set an environment variable pointing to the Meridian demo data:
+Next, set an environment variable pointing to Meridian weights and demo data:
 
 ```
+export MERIDIAN_WEIGHTS=<path to this repo>/weights
 export MERIDIAN_DEMO_DATA=<path to demo data>
 ```
 
-Then, the meridian demo can be run with 
+Then, the meridian demo can be run with (from the root of the `meridian` repo)
 
 ```
 python3 -m meridian.pipeline.cross_view_incremental \
-  --aeril $MERIDIAN_DEMO_DATA/aerial_primitives \
+  --aerial $MERIDIAN_DEMO_DATA/aerial_primitive_map \
   -p ./cfg/demo.yaml \
   -o ./demo_output/ \
   -m --live
