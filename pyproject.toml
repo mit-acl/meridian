@@ -19,7 +19,8 @@ dependencies = [
     "transformers",
     "numba",
     "yolov7-package",
-    "robotdatapy"
+    "robotdatapy",
+    "gdown"
     # for dinov3
     #"torchmetrics",
     #"termcolor",
@@ -27,9 +28,10 @@ dependencies = [
 ]
 requires-python = ">=3.8"
 authors = [
-    {name = "Mason Peterson", email = "mbpeterson70@gmail.com"}
+    {name = "Mason Peterson", email = "mbpeterson70@gmail.com"},
+    {name = "Andy Li, email = "andyli27@mit.edu"}
 ]
-description = "Package for matching general segments (object and non-object)."
+description = "Package for localizing a ground robot from aerial ortho-imagery, providing meter-level pose estimates without any initial pose information or environmental fine-tuning."
 readme = "README.md"
 license = "MIT"
 
