@@ -254,9 +254,7 @@ class CrossViewIncremental:
                 # O(1) append; full rebuild happens in `_handle_new_submap`
                 # whenever the transform changes.
                 self._sync_viz_pose_history()
-                self._movie.write_frame(
-                    img_t, img, self._viz_pose_history
-                )
+                self._movie.write_frame(img_t, img, self._viz_pose_history)
 
         self._compute_wall_time += time.time() - t_loop_start
 
@@ -930,7 +928,9 @@ class CrossViewIncremental:
         times = self.mapper.times_history
         while len(self._viz_pose_history) < len(poses_cam):
             i = len(self._viz_pose_history)
-            self._viz_pose_history.append((times[i], self._viz_pose_for_cam(i, poses_cam[i])))
+            self._viz_pose_history.append(
+                (times[i], self._viz_pose_for_cam(i, poses_cam[i]))
+            )
 
     def _rebuild_viz_pose_history(self):
         """Rebuild the viz trajectory using the current best estimate uniformly
@@ -1486,9 +1486,7 @@ class CrossViewIncremental:
         # Use the raw registerer output (ground submap odom -> aerial).
         # NOT pose_result.T_i_j_hat, which is post-multiplied by the robot's
         # odom pose + camera extrinsics and thus warps incorrectly.
-        T_aerial_ground_2d = getattr(
-            best_single, "T_aerial_ground_odom_2d", None
-        )
+        T_aerial_ground_2d = getattr(best_single, "T_aerial_ground_odom_2d", None)
         if T_aerial_ground_2d is not None and np.any(np.isnan(T_aerial_ground_2d)):
             T_aerial_ground_2d = None
 

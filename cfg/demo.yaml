@@ -1,0 +1,78 @@
+# params to enable faster than real-time runs
+segment_mapping:
+  dt: 0.3333333333
+  fastsam_conf: 0.4
+
+segmenter:
+  frame_descriptor: dino-gem
+
+segment_mapping_data:
+
+  img_data:
+    type: bag 
+    path: ${MERIDIAN_DEMO_DATA}/bag
+    topic: /lewis/lewis_zed/rgb/image_rect_color/compressed
+    camera_info_topic: /lewis/lewis_zed/rgb/camera_info
+    compressed: True
+    color_space: bgr8
+    time_tol: 0.2
+
+
+  depth_data:
+    type: bag 
+    path: ${MERIDIAN_DEMO_DATA}/bag
+    topic: /lewis/lewis_zed/depth/depth_registered
+    camera_info_topic: /lewis/lewis_zed/depth/camera_info
+    compressed: False
+    time_tol: 0.2
+
+  camera_pose_data: 
+    type: bag_tf
+    path: ${MERIDIAN_DEMO_DATA}/bag
+    parent_frame: lewis/odom
+    child_frame: lewis_zed_left_camera_optical_frame
+    time_tol: 10.0
+
+  depth_scale: 1.0
+  max_time: 300.0
+
+cross_view_localization_data:
+  aerial_img_path: ${MERIDIAN_DEMO_DATA}/aerial.tiff
+  gt_pose_data:
+    type: "csv"
+    path: "${MERIDIAN_DEMO_DATA}/gt.csv"
+    csv_options:
+      cols:
+        time: ["#timestamp_kf"]
+        position: ["x", "y", "z"]
+        orientation: ["qx", "qy", "qz", "qw"]
+      col_nums:
+        time: [0]
+        position: [1, 2, 3]
+        orientation: [5, 6, 7, 4]
+      timescale: .000000001
+    interp: True
+    time_tol: 10.0
+    T_postmultiply: [
+        [-0.0010189438491307436, 0.0033272938897005197, 0.9999939454160732, 0.30307590776844173],
+        [-0.999996850696792, -0.0022969240887504225, -0.001011304221708292, 0.07146236794535586],
+        [0.0022935452754732346, -0.9999918265941489, 0.00332962384771535, 0.3708825484439066],
+        [0.0, 0.0, 0.0, 1.0]]
+  T_camera_flu: [
+      [0.0, -1.0, 0.0, 0.0],
+      [0.0, 0.0, -1.0, 0.0],
+      [1.0, 0.0, 0.0, 0.0],
+      [0.0, 0.0, 0.0, 1.0]
+  ]
+
+cross_view_matching:
+  matching_mode: vpr
+
+aerial_segmenter: 
+  downsample_factor: 5
+  frame_descriptor: dino-gem
+
+primitive_match: {}
+register: {}
+cross_view_rpgo: {}
+cross_view_place_recognition: {}

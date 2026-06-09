@@ -64,8 +64,14 @@ def _put_text(
     x = org[0] - tw // 2 if center else org[0]
     y = org[1]
     cv.putText(
-        img, text, (x, y), FONT, scale, TEXT_OUTLINE,
-        thickness + stroke_extra, cv.LINE_AA,
+        img,
+        text,
+        (x, y),
+        FONT,
+        scale,
+        TEXT_OUTLINE,
+        thickness + stroke_extra,
+        cv.LINE_AA,
     )
     cv.putText(img, text, (x, y), FONT, scale, TEXT_COLOR, thickness, cv.LINE_AA)
 
@@ -91,6 +97,7 @@ def _white_canvas(h: int, w: int) -> np.ndarray:
     c[:] = BG_COLOR
     return c
 
+
 def whiten_edge_black(img: np.ndarray) -> np.ndarray:
     """Flood any pure-black regions connected to the image border to pure white.
 
@@ -114,6 +121,7 @@ def whiten_edge_black(img: np.ndarray) -> np.ndarray:
     mask = np.isin(labels, list(border_labels))
     img[mask] = 255
     return img
+
 
 def _fit_into(
     src: np.ndarray, dst_w: int, dst_h: int
@@ -184,12 +192,42 @@ def _draw_scale_bar(
         return
     tick = thickness + 3
     out_t = thickness + 6
-    cv.line(canvas, (x1, bottom_y), (right_x, bottom_y), TEXT_OUTLINE, out_t, cv.LINE_AA)
-    cv.line(canvas, (x1, bottom_y - tick), (x1, bottom_y + tick), TEXT_OUTLINE, out_t, cv.LINE_AA)
-    cv.line(canvas, (right_x, bottom_y - tick), (right_x, bottom_y + tick), TEXT_OUTLINE, out_t, cv.LINE_AA)
+    cv.line(
+        canvas, (x1, bottom_y), (right_x, bottom_y), TEXT_OUTLINE, out_t, cv.LINE_AA
+    )
+    cv.line(
+        canvas,
+        (x1, bottom_y - tick),
+        (x1, bottom_y + tick),
+        TEXT_OUTLINE,
+        out_t,
+        cv.LINE_AA,
+    )
+    cv.line(
+        canvas,
+        (right_x, bottom_y - tick),
+        (right_x, bottom_y + tick),
+        TEXT_OUTLINE,
+        out_t,
+        cv.LINE_AA,
+    )
     cv.line(canvas, (x1, bottom_y), (right_x, bottom_y), color, thickness, cv.LINE_AA)
-    cv.line(canvas, (x1, bottom_y - tick), (x1, bottom_y + tick), color, thickness, cv.LINE_AA)
-    cv.line(canvas, (right_x, bottom_y - tick), (right_x, bottom_y + tick), color, thickness, cv.LINE_AA)
+    cv.line(
+        canvas,
+        (x1, bottom_y - tick),
+        (x1, bottom_y + tick),
+        color,
+        thickness,
+        cv.LINE_AA,
+    )
+    cv.line(
+        canvas,
+        (right_x, bottom_y - tick),
+        (right_x, bottom_y + tick),
+        color,
+        thickness,
+        cv.LINE_AA,
+    )
     label = f"{L_m} m" if L_m < 1000 else f"{L_m / 1000:.1f} km"
     _put_text(canvas, label, (x1, bottom_y - 12), scale=0.7, stroke_extra=6)
 
@@ -220,7 +258,9 @@ def _draw_primitive_world(
             cv.line(img, p0, p1, color, thickness, cv.LINE_AA)
     elif isinstance(seg, PointPrimitive):
         if anchor_px is not None:
-            cv.circle(img, anchor_px, max(6, round((thickness + 2))), color, -1, cv.LINE_AA)
+            cv.circle(
+                img, anchor_px, max(6, round((thickness + 2))), color, -1, cv.LINE_AA
+            )
     return anchor_px
 
 
@@ -349,8 +389,14 @@ class IncrementalMovieWriter:
         bar_thick = 2
         bar_baseline = TOP_BAR_H - 16
         cv.putText(
-            frame, "MERIDIAN", (18, bar_baseline),
-            FONT, bar_scale, BAR_TEXT_COLOR, bar_thick, cv.LINE_AA,
+            frame,
+            "MERIDIAN",
+            (18, bar_baseline),
+            FONT,
+            bar_scale,
+            BAR_TEXT_COLOR,
+            bar_thick,
+            cv.LINE_AA,
         )
         if SHOW_TOTAL_TIME and self.total_time_s is not None and self.total_time_s > 0:
             t_text = f"t = {t:.2f} / {self.total_time_s:.2f} s"
@@ -358,17 +404,25 @@ class IncrementalMovieWriter:
             t_text = f"t = {t:.2f} s"
         (tw, _), _ = cv.getTextSize(t_text, FONT, bar_scale, bar_thick)
         cv.putText(
-            frame, t_text, (FRAME_W - tw - 18, bar_baseline),
-            FONT, bar_scale, BAR_TEXT_COLOR, bar_thick, cv.LINE_AA,
+            frame,
+            t_text,
+            (FRAME_W - tw - 18, bar_baseline),
+            FONT,
+            bar_scale,
+            BAR_TEXT_COLOR,
+            bar_thick,
+            cv.LINE_AA,
         )
 
         x0 = BORDER
         gr_x0 = x0 + TOP_AERIAL_W + DIVIDER
-        frame[top_img_y0:top_img_y1, x0:x0 + TOP_AERIAL_W] = self._render_aerial_traj(
+        frame[top_img_y0:top_img_y1, x0 : x0 + TOP_AERIAL_W] = self._render_aerial_traj(
             t, instant_pose_history
         )
-        frame[top_y0:top_y1, x0 + TOP_AERIAL_W:x0 + TOP_AERIAL_W + DIVIDER] = BAR_COLOR
-        frame[top_img_y0:top_img_y1, gr_x0:gr_x0 + TOP_GROUND_W] = (
+        frame[top_y0:top_y1, x0 + TOP_AERIAL_W : x0 + TOP_AERIAL_W + DIVIDER] = (
+            BAR_COLOR
+        )
+        frame[top_img_y0:top_img_y1, gr_x0 : gr_x0 + TOP_GROUND_W] = (
             self._render_ground_rgb(ground_img)
         )
         _strip_label(frame, "Aerial View - GT (green) / Est (pink)", x0 + 10, top_y0)
@@ -378,16 +432,23 @@ class IncrementalMovieWriter:
 
         bot_aerial, aerial_anchors = self._render_aerial_patch_pane()
         bot_ground, ground_anchors = self._render_ground_dense_pane()
-        frame[bot_img_y0:bot_img_y1, x0:x0 + BOT_PANE_LEFT_W] = bot_aerial
-        frame[bot_img_y0:bot_img_y1, x0 + BOT_PANE_LEFT_W:x0 + BOT_PANE_LEFT_W + BOT_PANE_RIGHT_W] = bot_ground
+        frame[bot_img_y0:bot_img_y1, x0 : x0 + BOT_PANE_LEFT_W] = bot_aerial
+        frame[
+            bot_img_y0:bot_img_y1,
+            x0 + BOT_PANE_LEFT_W : x0 + BOT_PANE_LEFT_W + BOT_PANE_RIGHT_W,
+        ] = bot_ground
         if self._last_match is not None:
             _strip_label(
-                frame, f"Aerial patch (ID {self._last_match.aerial_key})",
-                x0 + 10, bot_y0,
+                frame,
+                f"Aerial patch (ID {self._last_match.aerial_key})",
+                x0 + 10,
+                bot_y0,
             )
             _strip_label(
-                frame, f"Ground submap (ID {self._last_match.ground_key})",
-                x0 + BOT_PANE_LEFT_W + 10, bot_y0,
+                frame,
+                f"Ground submap (ID {self._last_match.ground_key})",
+                x0 + BOT_PANE_LEFT_W + 10,
+                bot_y0,
             )
 
         for ap, gp in zip(aerial_anchors, ground_anchors):
@@ -475,7 +536,7 @@ class IncrementalMovieWriter:
             utm_arr = np.atleast_2d(np.asarray(self._inlier_positions_utm))
             pts_full = self.utm_to_pixel(utm_arr)
             pts_cv = full_to_canvas(pts_full)
-            for (cx, cy) in pts_cv:
+            for cx, cy in pts_cv:
                 if 0 <= cx < w and 0 <= cy < h:
                     cv.drawMarker(
                         canvas,
@@ -553,7 +614,9 @@ class IncrementalMovieWriter:
         canvas, _ = _fit_into(img, TOP_GROUND_W, IMG_H)
         return canvas
 
-    def _render_aerial_patch_pane(self) -> Tuple[np.ndarray, List[Optional[Tuple[int, int]]]]:
+    def _render_aerial_patch_pane(
+        self,
+    ) -> Tuple[np.ndarray, List[Optional[Tuple[int, int]]]]:
         canvas = _white_canvas(IMG_H, BOT_PANE_LEFT_W)
         if self._last_match is None:
             return canvas, []
@@ -611,7 +674,9 @@ class IncrementalMovieWriter:
         )
         return pane, anchors
 
-    def _render_ground_dense_pane(self) -> Tuple[np.ndarray, List[Optional[Tuple[int, int]]]]:
+    def _render_ground_dense_pane(
+        self,
+    ) -> Tuple[np.ndarray, List[Optional[Tuple[int, int]]]]:
         canvas = _white_canvas(IMG_H, BOT_PANE_RIGHT_W)
         if self._last_match is None:
             return canvas, []
@@ -696,10 +761,7 @@ class IncrementalMovieWriter:
                 for dx in range(-pt_radius_px, pt_radius_px + 1):
                     cx_ = cols + dx
                     ok = (
-                        (cx_ >= 0)
-                        & (cx_ < BOT_PANE_RIGHT_W)
-                        & (ry >= 0)
-                        & (ry < IMG_H)
+                        (cx_ >= 0) & (cx_ < BOT_PANE_RIGHT_W) & (ry >= 0) & (ry < IMG_H)
                     )
                     canvas[ry[ok], cx_[ok]] = color_bgr
 
@@ -725,16 +787,16 @@ class IncrementalMovieWriter:
 
 # matplotlib tab10, brightened (each color's max channel scaled to 255), in BGR.
 _MATCH_PALETTE = [
-    (255, 169, 44),   # tab:blue
-    (14, 127, 255),   # tab:orange
-    (70, 255, 70),    # tab:green
-    (48, 46, 255),    # tab:red
+    (255, 169, 44),  # tab:blue
+    (14, 127, 255),  # tab:orange
+    (70, 255, 70),  # tab:green
+    (48, 46, 255),  # tab:red
     (255, 139, 200),  # tab:purple
     (137, 157, 255),  # tab:brown
     (218, 134, 255),  # tab:pink
     (180, 180, 180),  # tab:gray
-    (46, 255, 254),   # tab:olive
-    (255, 234, 28),   # tab:cyan
+    (46, 255, 254),  # tab:olive
+    (255, 234, 28),  # tab:cyan
 ]
 
 
