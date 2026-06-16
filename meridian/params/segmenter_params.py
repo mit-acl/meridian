@@ -18,12 +18,13 @@ class SegmenterParamsBase(ParamsBase):
     conf: float = 0.2
     iou: float = 0.9
     device: str = "cuda"
+    segmentation_fp16: bool = True
 
     # Semantics
     semantics: str = "dino"
     semantics_dim: int = 1024
     semantics_size: str = "large"
-    dino_half: bool = False
+    semantics_fp16: bool = True
     dinov3_path: str = "~/code/dinov3"
     dinov3_weights: str = None
     subtract_frame_descriptor: bool = False
@@ -41,9 +42,11 @@ class SegmenterParamsBase(ParamsBase):
     anyloc_dino_model: str = "dinov2_vitg14"
     anyloc_layer: int = 31
     anyloc_facet: str = "value"
+    anyloc_fp16: bool = True
 
     # SALAD params (used when frame_descriptor == "salad")
     salad_path: str = "${SALAD_PATH}"
+    salad_fp16: bool = True
 
     def get_model_type(self):
         return self.model_type.lower()
