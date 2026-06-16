@@ -68,8 +68,7 @@ class SegmenterBase:
         self.semantics_preprocess = None
 
         self.frame_descriptor_type = params.frame_descriptor
-        self._anyloc_extractor = None
-        self._anyloc_vlad = None
+        self._anyloc_pipeline = None
         self._anyloc_transform = None
         self._salad_model = None
         self._salad_transform = None
@@ -511,25 +510,10 @@ class SegmenterBase:
         return frame_descriptor.cpu().detach().numpy()
 
     def _init_anyloc(self):
-        """Initialize AnyLoc DINOv2 extractor and VLAD vocabulary."""
-        import sys
+        """Initialize the AnyLoc DINOv2 + VLAD pipeline and vocabulary."""
         import torchvision.transforms as tvf
 
-        sys.path.insert(0, os.path.join(self.params.anyloc_path, "demo"))
-        from utilities import DinoV2ExtractFeatures, VLAD
-
-        self._anyloc_extractor = DinoV2ExtractFeatures(
-            self.params.anyloc_dino_model,
-            self.params.anyloc_layer,
-            self.params.anyloc_facet,
-            device=self.params.device,
-        )
-        self._anyloc_transform = tvf.Compose(
-            [
-                tvf.ToTensor(),
-                tvf.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
-            ]
-        )
+        from meridian.segmenter.vpr_pipeline import AnyLocPipeline
 
         ext_specifier = (
             f"{self.params.anyloc_dino_model}/"
@@ -547,12 +531,17 @@ class SegmenterBase:
             f"AnyLoc vocabulary not found: {c_centers_file}"
         )
 
-        self._anyloc_vlad = VLAD(
-            self.params.anyloc_num_clusters,
-            desc_dim=None,
-            cache_dir=os.path.dirname(c_centers_file),
+        self._anyloc_pipeline = AnyLocPipeline.from_cached_centers(
+            c_centers_file,
+            desc_layer=self.params.anyloc_layer,
+            device=self.params.device,
         )
-        self._anyloc_vlad.fit(None)
+        self._anyloc_transform = tvf.Compose(
+            [
+                tvf.ToTensor(),
+                tvf.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+            ]
+        )
 
     def _compute_anyloc_descriptor(self, img_bgr):
         """Compute AnyLoc (DINOv2 + VLAD) descriptor from a BGR image.
@@ -576,11 +565,9 @@ class SegmenterBase:
         w_new = (w // 14) * 14
         img_pt = tvf.CenterCrop((h_new, w_new))(img_pt)[None, ...]
 
-        with torch.no_grad():
-            ret = self._anyloc_extractor(img_pt)
-            gd = self._anyloc_vlad.generate(ret.cpu().squeeze())
+        gd = self._anyloc_pipeline(img_pt)
 
-        return gd.numpy()
+        return gd.squeeze(0).cpu().numpy()
 
     def _init_salad(self):
         """Initialize SALAD (DINOv2 + optimal transport aggregation) model."""

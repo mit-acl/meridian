@@ -35,7 +35,6 @@ class SegmenterParamsBase(ParamsBase):
     frame_descriptor: str = "anyloc"  # anyloc, dino-gem, salad
 
     # AnyLoc params (used when frame_descriptor == "anyloc")
-    anyloc_path: str = "${ANYLOC_PATH}"
     anyloc_vocab_dir: str = "${ANYLOC_VOCAB_DIR}"
     anyloc_domain: str = "urban"
     anyloc_num_clusters: int = 32
@@ -61,7 +60,6 @@ class SegmenterParamsBase(ParamsBase):
         self.dinov3_path = expandvars_recursive(self.dinov3_path)
         if self.dinov3_weights is not None:
             self.dinov3_weights = expandvars_recursive(self.dinov3_weights)
-        self.anyloc_path = expandvars_recursive(self.anyloc_path)
         self.anyloc_vocab_dir = expandvars_recursive(self.anyloc_vocab_dir)
         self.salad_path = expandvars_recursive(self.salad_path)
 
