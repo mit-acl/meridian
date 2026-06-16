@@ -81,6 +81,10 @@ class SegmenterBase:
                 "Frame descriptor only supported with DINO, DINOv3, DINOv3-HF semantics, or 'anyloc'/'salad'."
             )
 
+    def _fp16_enabled(self, flag: bool) -> bool:
+        """fp16 only on CUDA — half precision is unreliable/unsupported on CPU."""
+        return bool(flag) and "cuda" in str(self.params.device)
+
     def _ensure_segmentation_model(self):
         if not self._segmentation_model_loaded:
             self._init_segmentation_model()
@@ -140,7 +144,7 @@ class SegmenterBase:
             self.semantics_model = AutoModel.from_pretrained(dino_model_name)
             self.semantics_model.eval()
             self.semantics_model.to(self.params.device)
-            if self.params.semantics_fp16:
+            if self._fp16_enabled(self.params.semantics_fp16):
                 self.semantics_model.half()
             self._num_register_tokens = 0
         elif self.params.semantics.lower() == "dinov3-hf":
@@ -161,7 +165,7 @@ class SegmenterBase:
             self.semantics_model = AutoModel.from_pretrained(hf_name)
             self.semantics_model.eval()
             self.semantics_model.to(self.params.device)
-            if self.params.semantics_fp16:
+            if self._fp16_enabled(self.params.semantics_fp16):
                 self.semantics_model.half()
             self._num_register_tokens = self.semantics_model.config.num_register_tokens
         elif self.params.semantics.lower() == "dinov3":
@@ -186,7 +190,7 @@ class SegmenterBase:
             )
             self.semantics_model.eval()
             self.semantics_model.to(self.params.device)
-            if self.params.semantics_fp16:
+            if self._fp16_enabled(self.params.semantics_fp16):
                 self.semantics_model.half()
             self.dinov3_transform = T.Compose(
                 [
@@ -229,9 +233,7 @@ class SegmenterBase:
                 overrides["iou"] = self.params.iou
                 overrides["mode"] = "predict"
                 overrides["save"] = False
-                overrides["half"] = self.params.segmentation_fp16 and "cuda" in str(
-                    self.params.device
-                )
+                overrides["half"] = self._fp16_enabled(self.params.segmentation_fp16)
                 self._fastsam_predictor = FastSAMPredictor(overrides=overrides)
                 self._fastsam_predictor.setup_model(
                     model=self.model.model, verbose=False
@@ -261,9 +263,7 @@ class SegmenterBase:
             )
             masks = prompt_process.everything_prompt()
         elif self.params.get_model_type() == "segment_anything":
-            use_fp16 = self.params.segmentation_fp16 and "cuda" in str(
-                self.params.device
-            )
+            use_fp16 = self._fp16_enabled(self.params.segmentation_fp16)
             with torch.autocast("cuda", dtype=torch.float16, enabled=use_fp16):
                 masks_output = self.model.generate(image_rgb)
             mask_list = []
@@ -299,7 +299,7 @@ class SegmenterBase:
             preprocessed = self.semantics_preprocess(
                 images=img_rgb, return_tensors="pt"
             ).to(self.params.device)
-            if self.params.semantics_fp16:
+            if self._fp16_enabled(self.params.semantics_fp16):
                 preprocessed["pixel_values"] = preprocessed["pixel_values"].half()
             dino_output = self.semantics_model(**preprocessed)
             output_patches = self.get_output_patches(
@@ -316,7 +316,7 @@ class SegmenterBase:
             img_tensor = (
                 self.dinov3_transform(img_rgb).unsqueeze(0).to(self.params.device)
             )
-            if self.params.semantics_fp16:
+            if self._fp16_enabled(self.params.semantics_fp16):
                 img_tensor = img_tensor.half()
             with torch.no_grad():
                 features = self.semantics_model.get_intermediate_layers(
@@ -541,7 +541,7 @@ class SegmenterBase:
         self._anyloc_pipeline = AnyLocPipeline.from_cached_centers(
             c_centers_file,
             desc_layer=self.params.anyloc_layer,
-            fp16=self.params.anyloc_fp16,
+            fp16=self._fp16_enabled(self.params.anyloc_fp16),
             device=self.params.device,
         )
         self._anyloc_transform = tvf.Compose(
@@ -587,7 +587,7 @@ class SegmenterBase:
 
         self._salad_model = dinov2_salad(backbone="dinov2_vitb14", pretrained=True)
         self._salad_model.eval().to(self.params.device)
-        if self.params.salad_fp16:
+        if self._fp16_enabled(self.params.salad_fp16):
             self._salad_model.half()
         self._salad_transform = tvf.Compose(
             [
@@ -617,7 +617,7 @@ class SegmenterBase:
         h_new = (h // 14) * 14
         w_new = (w // 14) * 14
         img_pt = tvf.CenterCrop((h_new, w_new))(img_pt)[None, ...]
-        if self.params.salad_fp16:
+        if self._fp16_enabled(self.params.salad_fp16):
             img_pt = img_pt.half()
 
         with torch.no_grad():
