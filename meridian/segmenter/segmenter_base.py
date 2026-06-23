@@ -303,7 +303,7 @@ class SegmenterBase:
                 preprocessed["pixel_values"] = preprocessed["pixel_values"].half()
             dino_output = self.semantics_model(**preprocessed)
             output_patches = self.get_output_patches(
-                model_output=dino_output.last_hidden_state,
+                model_output=dino_output.last_hidden_state.float(),
                 img_shape=img_bgr.shape,
                 feature_dim=self.params.semantics_dim,
             )
@@ -321,7 +321,7 @@ class SegmenterBase:
             with torch.no_grad():
                 features = self.semantics_model.get_intermediate_layers(
                     img_tensor, n=1, reshape=True, return_class_token=False, norm=True
-                )[0]  # (B, C, H_patches, W_patches)
+                )[0].float()  # (B, C, H_patches, W_patches)
             output_patches = features.permute(0, 2, 3, 1)  # (1, H, W, C)
             per_pixel = torch.nn.functional.interpolate(
                 features,
@@ -573,7 +573,7 @@ class SegmenterBase:
         w_new = (w // 14) * 14
         img_pt = tvf.CenterCrop((h_new, w_new))(img_pt)[None, ...]
 
-        gd = self._anyloc_pipeline(img_pt)
+        gd = self._anyloc_pipeline(img_pt).float()
 
         return gd.squeeze(0).cpu().numpy()
 
@@ -621,7 +621,7 @@ class SegmenterBase:
             img_pt = img_pt.half()
 
         with torch.no_grad():
-            descriptor = self._salad_model(img_pt)
+            descriptor = self._salad_model(img_pt).float()
 
         descriptor = descriptor.cpu().squeeze().numpy()
         norm = np.linalg.norm(descriptor)
