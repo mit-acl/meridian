@@ -21,7 +21,6 @@ dependencies = [
     "yolov7-package",
     "robotdatapy",
     "gdown",
-    "vpr @ git+ssh://git@gitlab.com/mit-acl/sparse_mapping/vpr.git"
     # for dinov3
     #"torchmetrics",
     #"termcolor",

@@ -13,7 +13,7 @@ import torch
 import torch.hub  # stop torch.hub's GitHub check from hanging when offline
 import torch.nn.functional as F
 
-from vpr.models.vlad import VLAD as VprVLAD
+from meridian.segmenter.vlad import VLAD as VprVLAD
 
 torch.hub._validate_not_a_forked_repo = lambda *a, **k: True
 
