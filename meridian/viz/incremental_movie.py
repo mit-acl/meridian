@@ -740,9 +740,9 @@ class IncrementalMovieWriter:
         pt_radius_px = 3  # roughly matches aerial primitive thickness
         segs_sorted = sorted(
             m.ground_dense_segments,
-            key=lambda s: 0
-            if getattr(s, "dense_points", None) is None
-            else len(s.dense_points),
+            key=lambda s: (
+                0 if getattr(s, "dense_points", None) is None else len(s.dense_points)
+            ),
             reverse=True,
         )
         for s in segs_sorted:
