@@ -1,21 +1,32 @@
 """Minimal AnyLoc-free VPR pipeline: torch.hub DINOv2 + vpr cosine VLAD.
 
 Reproduces AnyLoc's front-end (truncated backbone, layer-DESC_LAYER "value"
-facet) and aggregation (cosine VLAD over AnyLoc's cached centers). 
+facet) and aggregation (cosine VLAD over AnyLoc's cached centers).
 The extractor copies AnyLoc's usage of the
 torch.hub `facebookresearch/dinov2` `dinov2_vitg14` model: a forward hook on
 `blocks[DESC_LAYER].attn.qkv` captures the attention "value" facet. We only run
 blocks 0..DESC_LAYER (later blocks + final norm are skipped) and use fp16.
+
+`describe` is the end-to-end entry point: it applies AnyLoc's preprocessing
+(ImageNet normalization + a center-crop to a multiple of the ViT patch size)
+and returns a global descriptor, so callers only need a raw RGB image.
 """
 from __future__ import annotations
 
+import numpy as np
 import torch
 import torch.hub  # stop torch.hub's GitHub check from hanging when offline
 import torch.nn.functional as F
+import torchvision.transforms as tvf
 
 from meridian.segmenter.vlad import VLAD as VprVLAD
 
 torch.hub._validate_not_a_forked_repo = lambda *a, **k: True
+
+# ImageNet statistics AnyLoc normalizes DINOv2 inputs with.
+_IMAGENET_MEAN = (0.485, 0.456, 0.406)
+_IMAGENET_STD = (0.229, 0.224, 0.225)
+_PATCH_SIZE = 14  # dinov2_vitg14 patch size; inputs are cropped to a multiple of it
 
 
 def load_centers(path: str) -> torch.Tensor:
@@ -57,9 +68,31 @@ class AnyLocPipeline(torch.nn.Module):
 
         self.vlad = VprVLAD(centers, metric="cosine").to(self.device).eval()
 
+        self.transform = tvf.Compose(
+            [tvf.ToTensor(), tvf.Normalize(mean=_IMAGENET_MEAN, std=_IMAGENET_STD)]
+        )
+
     @classmethod
     def from_cached_centers(cls, centers_path: str, **kwargs) -> "AnyLocPipeline":
         return cls(load_centers(centers_path), **kwargs)
+
+    @torch.no_grad()
+    def describe(self, img_rgb) -> np.ndarray:
+        """RGB image -> 1-D global descriptor (num_clusters * D,), L2-normalized.
+
+        `img_rgb` is an (H, W, 3) uint8 RGB array (or PIL image). Applies AnyLoc's
+        ImageNet normalization and center-crops to a multiple of the ViT patch
+        size before running the full extract -> aggregate pipeline.
+        """
+        if isinstance(img_rgb, np.ndarray):
+            img_rgb = np.ascontiguousarray(img_rgb)
+        img_pt = self.transform(img_rgb)
+        _, h, w = img_pt.shape
+        h_new = (h // _PATCH_SIZE) * _PATCH_SIZE
+        w_new = (w // _PATCH_SIZE) * _PATCH_SIZE
+        img_pt = tvf.CenterCrop((h_new, w_new))(img_pt)[None, ...]
+        gd = self.forward(img_pt).float()
+        return gd.squeeze(0).cpu().numpy()
 
     @torch.no_grad()
     def extract(self, img: torch.Tensor) -> torch.Tensor:

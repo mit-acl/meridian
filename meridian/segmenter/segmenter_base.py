@@ -69,7 +69,6 @@ class SegmenterBase:
 
         self.frame_descriptor_type = params.frame_descriptor
         self._anyloc_pipeline = None
-        self._anyloc_transform = None
         self._salad_model = None
         self._salad_transform = None
         if params.frame_descriptor is not None:
@@ -518,8 +517,6 @@ class SegmenterBase:
 
     def _init_anyloc(self):
         """Initialize the AnyLoc DINOv2 + VLAD pipeline and vocabulary."""
-        import torchvision.transforms as tvf
-
         from meridian.segmenter.vpr_pipeline import AnyLocPipeline
 
         ext_specifier = (
@@ -544,12 +541,6 @@ class SegmenterBase:
             fp16=self._fp16_enabled(self.params.anyloc_fp16),
             device=self.params.device,
         )
-        self._anyloc_transform = tvf.Compose(
-            [
-                tvf.ToTensor(),
-                tvf.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
-            ]
-        )
 
     def _compute_anyloc_descriptor(self, img_bgr):
         """Compute AnyLoc (DINOv2 + VLAD) descriptor from a BGR image.
@@ -561,21 +552,8 @@ class SegmenterBase:
             Normalized 1-D numpy array of shape (num_clusters * desc_dim,).
         """
         self._ensure_anyloc()
-        import torchvision.transforms as tvf
-        from PIL import Image as PILImage
-
         img_rgb = cv.cvtColor(img_bgr, cv.COLOR_BGR2RGB)
-        pil_img = PILImage.fromarray(img_rgb)
-        img_pt = self._anyloc_transform(pil_img).to(self.params.device)
-
-        c, h, w = img_pt.shape
-        h_new = (h // 14) * 14
-        w_new = (w // 14) * 14
-        img_pt = tvf.CenterCrop((h_new, w_new))(img_pt)[None, ...]
-
-        gd = self._anyloc_pipeline(img_pt).float()
-
-        return gd.squeeze(0).cpu().numpy()
+        return self._anyloc_pipeline.describe(img_rgb)
 
     def _init_salad(self):
         """Initialize SALAD (DINOv2 + optimal transport aggregation) model."""
