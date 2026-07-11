@@ -1,7 +1,9 @@
 import numpy as np
 from dataclasses import dataclass
 from typing import ClassVar, List, Tuple, Union
+from datetime import datetime
 
+from meridian.utils import expandvars_recursive
 from meridian.params.params_base import ParamsBase
 
 
@@ -51,6 +53,13 @@ class SegmentMappingParams(ParamsBase):
     sm2d_consec_min_path_len: float = 20.0
     sm2d_consec_min_time_s: float = 5.0
 
+    # ROS params
+    ros_viz_img: bool = True
+    rov_viz_img_min_dt: float = 0.25
+    ros_viz_rotate_img: str = None
+    ros_output_dir: str = f"~/.meridian_ros/{datetime.now().strftime('%Y%m%d-%H%M%S')}"
+    ros_timing_window: int = 10
+
     def __post_init__(self):
         if (
             self.semantic_association_method is not None
@@ -62,6 +71,7 @@ class SegmentMappingParams(ParamsBase):
             self.T_camera_flu = np.array(self.T_camera_flu).reshape((4, 4))
         else:
             self.T_camera_flu = np.eye(4)
+        self.ros_output_dir = expandvars_recursive(self.ros_output_dir)
 
     def get_map_segment_params(self):
         from meridian.map3d.map_segment import MapSegmentParams

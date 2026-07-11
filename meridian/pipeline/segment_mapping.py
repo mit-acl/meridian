@@ -7,7 +7,7 @@ import cv2 as cv
 from dataclasses import dataclass, field
 import open3d as o3d
 from scipy.spatial.transform import Rotation as Rot
-from meridian.viz.viz_segments import render3d_on_img
+from meridian.viz.viz_segments import render3d_on_img, viz_segments_on_cam_img
 
 from robotdatapy.data.robot_data import NoDataNearTimeException
 
@@ -119,37 +119,14 @@ class SegmentMapping:
         return np.hstack(panes)
 
     def _draw_map_on_img(self, t, pose_cam, img):
-        if len(img.shape) == 2:
-            img = np.stack([img] * 3, axis=2)
-        viz = img.copy()
-
-        graveyard_time = self.mapping_params.segment_graveyard_time
         all_segs = (
             self.mapper.segments
             + self.mapper.inactive_segments
             + self.mapper.segment_graveyard
         )
-        for seg in all_segs:
-            if seg.last_seen < t - graveyard_time - 10:
-                continue
-            outline = seg.outline_2d(pose_cam)
-            if outline is None:
-                continue
-            color = seg.viz_color[::-1]  # RGB → BGR
-            for i in range(len(outline) - 1):
-                start_point = tuple(outline[i].astype(np.int32))
-                end_point = tuple(outline[i + 1].astype(np.int32))
-                viz = cv.line(viz, start_point, end_point, color, thickness=2)
-            viz = cv.putText(
-                viz,
-                str(seg.id),
-                (np.array(outline[0]) + np.array([10.0, 10.0])).astype(np.int32),
-                cv.FONT_HERSHEY_SIMPLEX,
-                0.5,
-                color,
-                2,
-            )
-        return viz
+        return viz_segments_on_cam_img(
+            all_segs, t, pose_cam, img, self.mapper.params.segment_graveyard_time
+        )
 
     def _draw_3d(self, t, pose_cam):
         # Build point clouds from segments in time window
