@@ -1,6 +1,7 @@
 import logging
+import time
 from dataclasses import dataclass
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 import numpy as np
 from tqdm import tqdm
@@ -214,12 +215,16 @@ class GroundSubmapPrimitiveMapping:
         self,
         submap: Submap,
         return_intermediates: bool = False,
+        timings: Optional[Dict[str, float]] = None,
     ) -> tuple:
         """Convert a single 3D dense submap to a sparse 2D submap.
 
         Args:
             submap: A 3D submap in CAMERA frame.
             return_intermediates: Whether to return intermediate results.
+            timings: Optional dict; if provided, per-stage wall-clock durations
+                (seconds) are recorded under keys ``flatten_3d``, ``to_aerial``,
+                ``alpha_shape``, ``converter_convert``, ``line_filter``.
 
         Returns:
             (submap_2d, intermediate) tuple. intermediate is None if not requested.
@@ -230,13 +235,22 @@ class GroundSubmapPrimitiveMapping:
         submap.segments.transform(submap.pose)
 
         gs_params = self.ground_segmenter_params
+        _t0 = time.perf_counter()
         flattened_submap = flatten_3d_submap(
             submap,
             outlier_removal_std=gs_params.outlier_removal_std,
             dbscan_epsilon=gs_params.dbscan_epsilon,
             dbscan_min_points=gs_params.dbscan_min_points,
         )
+        if timings is not None:
+            timings["flatten_3d"] = time.perf_counter() - _t0
+
+        _t0 = time.perf_counter()
         aerial_segments = submap_2d_to_aerial(flattened_submap)
+        if timings is not None:
+            timings["to_aerial"] = time.perf_counter() - _t0
+
+        _t0 = time.perf_counter()
         aerial_segments = [
             seg
             for seg in aerial_segments
@@ -248,13 +262,19 @@ class GroundSubmapPrimitiveMapping:
             )
             is not None
         ]
+        if timings is not None:
+            timings["alpha_shape"] = time.perf_counter() - _t0
 
         # Convert to sparse primitives (parallelized per-segment internally)
+        _t0 = time.perf_counter()
         general_segments = self.converter.convert(aerial_segments)
+        if timings is not None:
+            timings["converter_convert"] = time.perf_counter() - _t0
 
         sparse_general_segments = general_segments
 
         # Remove lines that are FOV border artifacts
+        _t0 = time.perf_counter()
         params = self.submap_params
         valid_lines = PrimitiveList()
         for line in sparse_general_segments.get_lines():
@@ -274,6 +294,8 @@ class GroundSubmapPrimitiveMapping:
             ):
                 valid_lines.append(line)
         sparse_general_segments = sparse_general_segments.get_points() + valid_lines
+        if timings is not None:
+            timings["line_filter"] = time.perf_counter() - _t0
 
         sparse_general_segments.reindex()
         for seg in sparse_general_segments:
