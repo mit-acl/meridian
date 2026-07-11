@@ -310,3 +310,31 @@ def viz_masks_on_img(
 
     viz_img = np.clip(viz_img, 0, 255).astype(np.uint8)
     return viz_img
+
+
+def viz_segments_on_cam_img(segments, t, pose_cam, img, graveyard_time=15.0):
+    if len(img.shape) == 2:
+        img = np.stack([img] * 3, axis=2)
+    viz = img.copy()
+
+    for seg in segments:
+        if seg.last_seen < t - graveyard_time - 10:
+            continue
+        outline = seg.outline_2d(pose_cam)
+        if outline is None:
+            continue
+        color = seg.viz_color[::-1]  # RGB → BGR
+        for i in range(len(outline) - 1):
+            start_point = tuple(outline[i].astype(np.int32))
+            end_point = tuple(outline[i + 1].astype(np.int32))
+            viz = cv.line(viz, start_point, end_point, color, thickness=2)
+        viz = cv.putText(
+            viz,
+            str(seg.id),
+            (np.array(outline[0]) + np.array([10.0, 10.0])).astype(np.int32),
+            cv.FONT_HERSHEY_SIMPLEX,
+            0.5,
+            color,
+            2,
+        )
+    return viz

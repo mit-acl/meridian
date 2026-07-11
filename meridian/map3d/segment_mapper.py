@@ -729,6 +729,7 @@ class SegmentMapper:
             f"Created 2D submap {self._submap_counter - 1} with "
             f"{len(submap_2d.segments)} primitives at t={submap_time:.2f}"
         )
+        return submap_2d
 
     def _compute_gem_descriptor_from_history(
         self, submap_segments, center=None, max_dist_m=None
