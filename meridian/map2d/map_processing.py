@@ -86,6 +86,21 @@ def clean_up_line_map(
     semantic_sim_thresh: float = None,
 ) -> PrimitiveList:
     def merge_check(line1: LinePrimitive, line2: LinePrimitive):
+        len1 = line1.get_length()
+        len2 = line2.get_length()
+        # Cheap necessary condition (exact prune): line{1,2}.point lies on the
+        # respective segment, so every point of a segment is within its length
+        # of that point. Hence min segment-to-segment distance >=
+        # ||p1 - p2|| - len1 - len2. If that already exceeds dist_tol the pair
+        # can never satisfy min_dist < dist_tol, so skip before the expensive
+        # closest-point geometry below. Far-apart pairs dominate, so this cuts
+        # most of the O(iter*n^2) work without changing which pairs merge.
+        if (
+            np.linalg.norm(line1.point.ravel() - line2.point.ravel())
+            > len1 + len2 + dist_tol
+        ):
+            return False
+
         d1 = line1.direction
         d2 = line2.direction
         cross_norm = np.linalg.norm(np.cross(d1, d2))
@@ -93,7 +108,7 @@ def clean_up_line_map(
         # Relax angle tolerance for short lines
         effective_angle_tol = angle_tol
         if short_line_thresh is not None:
-            min_len = min(line1.get_length(), line2.get_length())
+            min_len = min(len1, len2)
             if min_len < short_line_thresh:
                 effective_angle_tol = angle_tol * (
                     short_line_thresh / max(min_len, 1e-6)

@@ -1,11 +1,12 @@
 """Flatten 3D dense submaps to 2D and convert their segments to Segment2D objects."""
 
-from copy import deepcopy
+from copy import copy as _shallow_copy
 from typing import List
 
 from meridian.map3d.submap import Submap
 from meridian.map2d.segment2d import Segment2D
 from meridian.primitive.primitive import Primitive
+from meridian.primitive.primitive_list import PrimitiveList
 from meridian.utils import clean_up_points
 
 
@@ -16,29 +17,41 @@ def flatten_3d_submap(
     dbscan_min_points: int,
 ) -> Submap:
     """Project a 3D dense submap onto z=0 and clean up each segment's points."""
-    map_2d = deepcopy(submap_3d)
-    to_rm = []
-    for seg in map_2d.segments:
-        seg.dense_points[:, 2] = 0.0
+    # Shallow-copy the submap and each segment, deep-copying only the point
+    # arrays we actually mutate (z->0, then cleanup reassigns dense_points). This
+    # replaces a full deepcopy of the object graph (large cos_feature descriptors,
+    # histories, cached point clouds) — which dominated this stage — while leaving
+    # submap_3d untouched for the later per-primitive height lookups.
+    map_2d = _shallow_copy(submap_3d)
+    new_segments = []
+    for seg in submap_3d.segments:
+        s = _shallow_copy(seg)
+        # Invalidate point-derived caches so they can't be stale after we edit
+        # the points on the copy.
+        for _cache_attr in ("_pcd", "_gaussian", "_eigvals"):
+            if hasattr(s, _cache_attr):
+                setattr(s, _cache_attr, None)
+        s.dense_points = seg.dense_points.copy()
+        s.dense_points[:, 2] = 0.0
         if (
             getattr(seg, "occluded_points", None) is not None
             and len(seg.occluded_points) > 0
         ):
-            seg.occluded_points[:, 2] = 0.0
+            s.occluded_points = seg.occluded_points.copy()
+            s.occluded_points[:, 2] = 0.0
         try:
             _cleanup_segment_points(
-                seg,
+                s,
                 outlier_removal_std=outlier_removal_std,
                 dbscan_epsilon=dbscan_epsilon,
                 dbscan_min_points=dbscan_min_points,
             )
         except Exception:
-            to_rm.append(seg)
             continue
-        if seg.dense_points is None or len(seg.dense_points) < 2:
-            to_rm.append(seg)
-    for seg in to_rm:
-        map_2d.segments.remove(seg)
+        if s.dense_points is None or len(s.dense_points) < 2:
+            continue
+        new_segments.append(s)
+    map_2d.segments = PrimitiveList(new_segments)
     return map_2d
 
 

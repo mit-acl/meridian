@@ -1,5 +1,6 @@
 import logging
-from concurrent.futures import ProcessPoolExecutor, as_completed
+from concurrent.futures import ProcessPoolExecutor
+from time import perf_counter as _perf
 from typing import List, Optional, Tuple
 
 import alphashape
@@ -17,6 +18,25 @@ from meridian.primitive.primitive_list import PrimitiveList
 from meridian.utils import suppress_alphashape_singular_warnings
 
 logger = logging.getLogger(__name__)
+
+# A single ProcessPoolExecutor reused across convert() calls. The per-call pool
+# used previously paid fork+pickle-of-workers overhead on every submap/window,
+# which almost entirely cancelled the parallel speedup. Forking once and reusing
+# amortizes that. Workers only run _classify_single_segment (pure CPU numpy /
+# shapely), so they never touch CUDA.
+_PERSISTENT_POOL = None
+_PERSISTENT_POOL_WORKERS = None
+
+
+def _get_persistent_pool(max_workers):
+    global _PERSISTENT_POOL, _PERSISTENT_POOL_WORKERS
+    if _PERSISTENT_POOL is None or _PERSISTENT_POOL_WORKERS != max_workers:
+        if _PERSISTENT_POOL is not None:
+            _PERSISTENT_POOL.shutdown(wait=False)
+        _PERSISTENT_POOL = ProcessPoolExecutor(max_workers=max_workers)
+        _PERSISTENT_POOL_WORKERS = max_workers
+    return _PERSISTENT_POOL
+
 
 # Drop the noisy "Singular matrix. Likely caused by all points lying in an
 # N-1 space." warnings that alphashape emits per colinear Delaunay simplex.
@@ -96,6 +116,24 @@ def _classify_single_segment(
     def pt_within_border(pt):
         return x1_border <= pt[0] <= x2_border and y1_border <= pt[1] <= y2_border
 
+    # Compute the alpha shape once, up front. This folds in the separate
+    # (serial) alpha-shape filter pass that convert_submap_to_sparse_2d used to
+    # run — a None alpha shape drops the segment, exactly matching that filter —
+    # and provides the shape reused by the circle/line branches below, so alpha
+    # is computed exactly once per segment (previously once in the filter AND
+    # again here). Computed before the point/line short-circuits to preserve the
+    # filter's drop semantics for small/thin segments with a None alpha shape.
+    alpha_shape = _compute_alpha_shape(
+        points,
+        alpha=params.alpha_shape_alpha,
+        grid_downsample=params.alpha_shape_grid_downsample,
+        max_n_pts=params.alpha_shape_max_n_pts,
+        alpha_ref_size=params.alpha_shape_ref_size_m,
+        max_extent=max_extent,
+    )
+    if alpha_shape is None:
+        return []
+
     if area < params.min_area_m_sq:
         return []
 
@@ -145,18 +183,6 @@ def _classify_single_segment(
                     history=[seg_id],
                 )
             ]
-
-    # Compute alpha shape
-    alpha_shape = _compute_alpha_shape(
-        points,
-        alpha=params.alpha_shape_alpha,
-        grid_downsample=params.alpha_shape_grid_downsample,
-        max_n_pts=params.alpha_shape_max_n_pts,
-        alpha_ref_size=params.alpha_shape_ref_size_m,
-        max_extent=max_extent,
-    )
-    if alpha_shape is None:
-        return []
 
     # Circle fit check for medium segments
     if area < params.circle_point_max_area:
@@ -219,6 +245,7 @@ class SegmentToPrimitiveConverter:
         crop: Crop = None,
         border_dist_m: float = 0.5,
         convert_to_infinite: bool = True,
+        timings: Optional[dict] = None,
     ) -> PrimitiveList:
         """Convert aerial segments to sparse point/line primitives.
 
@@ -259,18 +286,38 @@ class SegmentToPrimitiveConverter:
                 )
             )
 
+        _tc = _perf()
         if max_workers > 1 and len(tasks) > 1:
-            with ProcessPoolExecutor(max_workers=max_workers) as executor:
-                futures = {
-                    executor.submit(_classify_single_segment, *task): i
-                    for i, task in enumerate(tasks)
-                }
-                for future in as_completed(futures):
-                    all_primitives.extend(future.result())
+            # Classify segments in parallel across a reused ("persistent") process
+            # pool. Separate processes give true parallelism (bypassing the GIL,
+            # which alphashape/shapely otherwise hold); reusing the pool avoids
+            # re-forking it every submap.
+            #
+            # Longest-processing-time scheduling: submit segments with the most
+            # points first so the few large (expensive) alpha shapes start
+            # immediately and small ones backfill idle workers, keeping the
+            # makespan near max(largest job, total/n_workers). Results are placed
+            # back in original order so the downstream (order-dependent) line
+            # merge stays deterministic.
+            order = sorted(
+                range(len(tasks)), key=lambda k: len(tasks[k][8]), reverse=True
+            )
+            results = [None] * len(tasks)
+            executor = _get_persistent_pool(max_workers)
+            futures = [
+                (k, executor.submit(_classify_single_segment, *tasks[k])) for k in order
+            ]
+            for k, fut in futures:
+                results[k] = fut.result()
+            for r in results:
+                all_primitives.extend(r)
         else:
             for task in tasks:
                 all_primitives.extend(_classify_single_segment(*task))
+        if timings is not None:
+            timings["classify"] = _perf() - _tc
 
+        _tc = _perf()
         result = PrimitiveList(all_primitives)
         result.reindex()
 
@@ -278,9 +325,14 @@ class SegmentToPrimitiveConverter:
         result = self._cleanup_and_merge(
             result, convert_to_infinite=convert_to_infinite
         )
+        if timings is not None:
+            timings["cleanup_merge"] = _perf() - _tc
 
         if self.params.concat_nearby_descriptors:
+            _tc = _perf()
             result = self._concat_nearby_descriptors(result)
+            if timings is not None:
+                timings["concat_desc"] = _perf() - _tc
 
         return result
 
