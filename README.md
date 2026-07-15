@@ -76,7 +76,6 @@ Then, the meridian demo can be run with (from the root of the `meridian` repo)
 
 ```
 python3 -m meridian.pipeline.cross_view_incremental \
-  --aerial $MERIDIAN_DEMO_DATA/aerial_primitive_map \
   -p ./cfg/demo.yaml \
   -o ./demo_output/ \
   -m --live
