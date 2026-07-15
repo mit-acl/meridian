@@ -1026,6 +1026,10 @@ if __name__ == "__main__":
     if not os.path.isdir(args.output):
         os.mkdir(expandvars_recursive(args.output))
 
+    aerial_dir = CrossViewLocalizationDataParams.load(args.params).resolve_aerial_dir(
+        args.aerial, required=False
+    )
+
     cross_view_matching(
         args.params,
         args.output,
@@ -1033,6 +1037,6 @@ if __name__ == "__main__":
         args.skip_ground,
         args.skip_match,
         save_viz=args.viz,
-        aerial_dir=args.aerial,
+        aerial_dir=aerial_dir,
         ground_dir=args.ground,
     )

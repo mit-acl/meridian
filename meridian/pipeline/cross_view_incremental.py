@@ -863,13 +863,6 @@ def cross_view_incremental(
     movie: bool = False,
     live: bool = False,
 ):
-    if not aerial_dir:
-        # TODO: enable setting aerial in a params file instead.
-        raise ValueError(
-            "--aerial is required: point to a directory containing segments/*.pkl "
-            "(produced by `cross_view_matching --skip-match --skip-ground` or equivalent)."
-        )
-
     print("Loading parameters...")
     mapping_params = SegmentMappingParams.load(params_path, run=run)
     mapping_data_params = SegmentMappingDataParams.load(params_path, run=run)
@@ -890,6 +883,7 @@ def cross_view_incremental(
     rpgo_params = CrossViewRPGOParams.load(params_path, run=run)
     incremental_params = CrossViewIncrementalParams.load(params_path, run=run)
     loc_data_params = CrossViewLocalizationDataParams.load(params_path, run=run)
+    aerial_dir = loc_data_params.resolve_aerial_dir(aerial_dir, required=True)
 
     try:
         viz_params = CrossViewVisualizationParams.load(params_path, run=run)
@@ -1098,8 +1092,9 @@ if __name__ == "__main__":
     parser.add_argument(
         "--aerial",
         type=str,
-        required=True,
-        help="Path to aerial directory containing segments/*.pkl.",
+        default=None,
+        help="Path to aerial directory containing segments/*.pkl. If omitted, falls "
+        "back to `aerial_primitives_dir` in the cross_view_localization_data params.",
     )
     parser.add_argument("-r", "--run", type=str, default=None)
     parser.add_argument(

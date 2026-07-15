@@ -892,6 +892,9 @@ def cross_view_localization(
     """Run cross-view matching (optionally) then localization."""
     output_dir = str(output_dir)
 
+    data_params = CrossViewLocalizationDataParams.load(params)
+    aerial_dir = data_params.resolve_aerial_dir(aerial_dir, required=False)
+
     if not skip_matching:
         cross_view_matching(
             params,
@@ -904,7 +907,6 @@ def cross_view_localization(
     match_output_dir = os.path.join(output_dir, "match")
 
     rpgo_params = CrossViewRPGOParams.load(params)
-    data_params = CrossViewLocalizationDataParams.load(params)
     _maybe_resolve_ground_map_path(data_params, ground_dir)
     data = CrossViewLocalizationData.from_params(data_params)
 
@@ -1052,6 +1054,9 @@ if __name__ == "__main__":
             level=logging.INFO, format="%(levelname)s:%(name)s:%(message)s"
         )
 
+    data_params = CrossViewLocalizationDataParams.load(args.params)
+    aerial_dir = data_params.resolve_aerial_dir(args.aerial, required=False)
+
     if not args.skip_matching:
         cross_view_matching(
             args.params,
@@ -1060,13 +1065,12 @@ if __name__ == "__main__":
             skip_ground=args.skip_ground,
             skip_match=args.skip_match,
             save_viz=args.viz,
-            aerial_dir=args.aerial,
+            aerial_dir=aerial_dir,
             ground_dir=args.ground,
         )
 
     match_output_dir = os.path.join(args.output, "match")
     rpgo_params = CrossViewRPGOParams.load(args.params)
-    data_params = CrossViewLocalizationDataParams.load(args.params)
     _maybe_resolve_ground_map_path(data_params, args.ground)
     data = CrossViewLocalizationData.from_params(data_params)
 
@@ -1109,7 +1113,7 @@ if __name__ == "__main__":
         )
         pipeline = CrossViewMatchingPipeline(algorithm=algorithm)
         aerial_seg_dir = os.path.join(
-            args.aerial or os.path.join(args.output, "aerial"), "segments"
+            aerial_dir or os.path.join(args.output, "aerial"), "segments"
         )
         ground_seg_dir = os.path.join(
             args.ground or os.path.join(args.output, "ground"), "segments"
