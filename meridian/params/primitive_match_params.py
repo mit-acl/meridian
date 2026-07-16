@@ -66,7 +66,7 @@ class PrimitiveMatchParams(ParamsBase):
     params_key: ClassVar[str] = "primitive_match"
 
     # Parameters
-    dim: int = 3
+    dim: int = 2
     ratio_feature_dim: int = 0
     cos_feature_dim: int = 1024
     sigma_dist: float = 2.0

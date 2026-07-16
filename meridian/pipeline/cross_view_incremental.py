@@ -29,9 +29,8 @@ import pathlib
 import pickle
 import time
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Tuple
+from typing import List, Optional, Tuple
 
-import cv2 as cv
 import matplotlib
 
 matplotlib.use("Agg")
@@ -41,12 +40,9 @@ import tqdm
 
 from robotdatapy.data.robot_data import NoDataNearTimeException
 
+from meridian.cross_view.incremental_localization import IncrementalLocalization
 from meridian.cross_view.matching import CrossViewMatching
 from meridian.cross_view.place_recognition import CrossViewPlaceRecognition
-from meridian.cross_view.rpgo import (
-    CrossViewRPGO,
-    pose_data_from_trajectory,
-)
 from meridian.map2d.ground_submap_primitive_mapping import (
     GroundSubmapPrimitiveMapping,
 )
@@ -74,7 +70,7 @@ from meridian.params import (
 )
 from meridian.pipeline.cross_view_localization import (
     CrossViewLocalization,
-    build_candidates_from_match_result,
+    context_from_data,
 )
 from meridian.pipeline.cross_view_matching import CrossViewMatchingPipeline
 from meridian.pipeline.data import (
@@ -84,6 +80,11 @@ from meridian.pipeline.data import (
 from meridian.register.registerer import Registerer2D
 from meridian.utils import save_commit_hash, save_params
 from meridian.viz.cross_view_viz import viz_ground_segments
+from meridian.viz.incremental import (
+    make_utm_to_pixel,
+    plot_error_vs_time,
+    plot_incremental_trajectory,
+)
 from meridian.viz.incremental_movie import IncrementalMovieWriter
 
 logger = logging.getLogger(__name__)
@@ -91,53 +92,37 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class CrossViewIncremental:
+    """Pipeline wrapper around `IncrementalLocalization`.
+
+    Owns online ground submap creation, data movement, timing, result/figure
+    output, and the live movie. All cross-view localization algorithm work is
+    delegated to `self.loc` (an `IncrementalLocalization`).
+    """
+
     # Mapping
     mapping_params: SegmentMappingParams
     segmenter: Segmenter
     mapper: SegmentMapper
     conversion_params: SegmentToPrimitiveConversionParams
 
-    # Cross-view
-    algorithm: CrossViewMatching
-    aerial_submaps: Dict[str, Submap]
+    # Localization algorithm + I/O context
+    loc: IncrementalLocalization
     data: CrossViewLocalizationData
-    rpgo_params: CrossViewRPGOParams
-    incremental_params: CrossViewIncrementalParams
     viz_params: CrossViewVisualizationParams
 
     output_dir: str = ""
 
-    # State
-    _state: str = field(default="PRE", init=False)
+    # Pipeline state
     _submap_viz: bool = field(default=False, init=False)
     _submap_count: int = field(default=0, init=False)
-    _candidates: List[dict] = field(default_factory=list, init=False)
-    _results_per_submap: Dict[str, object] = field(default_factory=dict, init=False)
-    _match_details_per_submap: Dict[str, Dict[str, list]] = field(
-        default_factory=dict, init=False
-    )
-    _last_optimized_trajectory: Optional[List[np.ndarray]] = field(
-        default=None, init=False
-    )
-    # Camera-frame anchors for propagating future poses consistently with the
-    # most recent PGO. Future T_utm_camera(t) = T_utm_lastopt @ inv(T_odom_lastopt) @ T_odom_cam(t).
-    _T_utm_lastopt: Optional[np.ndarray] = field(default=None, init=False)
-    _T_odom_lastopt: Optional[np.ndarray] = field(default=None, init=False)
-    # Viz-only T_utm_odom (PRE state); refreshed via rigid frame_align on
-    # current candidates. Independent of `_T_utm_lastopt`/`_T_odom_lastopt`.
-    _T_utm_odom_viz: Optional[np.ndarray] = field(default=None, init=False)
-    # Most recent accepted CLIPPER outlier-rejection objective (for the
-    # `allowable_outlier_lc_obj_drop` guard). None until first POST commit.
-    _last_lc_out_rej_obj: Optional[float] = field(default=None, init=False)
-    # Set by `_record_instantaneous_pose` when the live error exceeds the
+    # Set by `_maybe_early_terminate` when the live error exceeds the
     # `early_termination_err_m` threshold. Causes the per-frame loop to break.
     _early_terminate: bool = field(default=False, init=False)
-    _optimized_pose_data: Optional[object] = field(default=None, init=False)
     _instant_pose_history: List[Tuple[float, np.ndarray]] = field(
         default_factory=list, init=False
     )
     # Viz-only trajectory belief; rebuilt on new submaps with the current
-    # T_utm_odom estimate. Decoupled from `_instant_pose_history`.
+    # estimate. Decoupled from `_instant_pose_history`.
     _viz_pose_history: List[Tuple[float, np.ndarray]] = field(
         default_factory=list, init=False
     )
@@ -160,21 +145,12 @@ class CrossViewIncremental:
         },
         init=False,
     )
-    # 2D-projected, line-filtered aerial submaps. Aerial is static across the
-    # run, so we preprocess once at init and pass to every match call to keep
-    # the per-call deepcopy/to_dim cost out of the `match` timing budget.
-    _aerial_submaps_2d: Dict[str, Submap] = field(default_factory=dict, init=False)
     _movie: Optional[IncrementalMovieWriter] = field(default=None, init=False)
-
-    def __post_init__(self):
-        self._aerial_submaps_2d = self.algorithm.preprocess_aerial_submaps_2d(
-            self.aerial_submaps
-        )
+    _params_path: str = field(default="", init=False, repr=False)
 
     # ------------------------------------------------------------------
     # Per-frame loop
     # ------------------------------------------------------------------
-
     def run(self, data: SegmentMappingData):
         if data.use_point_cloud:
             t0 = max(
@@ -263,86 +239,28 @@ class CrossViewIncremental:
     # ------------------------------------------------------------------
 
     def _handle_new_submap(self, new_submap: Submap, ground_key: str):
-        ground_submaps = {ground_key: new_submap}
-
-        # Match the single new submap.
-        t_match_start = time.time()
-        if self._state == "PRE":
-            match_result = self.algorithm.cross_view_match(
-                self.aerial_submaps,
-                ground_submaps,
-                reference_trajectory=None,
-                T_camera_flu=self.data.T_camera_flu,
-                show_progress=False,
-                local_to_pixel_fn=self.data.aerial_local_to_pixel
-                if self.data.geotiff_transform is not None
-                else None,
-                gt_trajectory=self.data.gt_pose_data,
-                aerial_submaps_2d=self._aerial_submaps_2d,
-            )
-        else:
-            # Propagate the last-accepted PGO forward via odom over the full
-            # mapper history so the matcher's reference trajectory reflects
-            # where the camera *currently is*, not just where it was at the
-            # last accepted PGO. Without this, queries beyond `times[-1]` of
-            # `_optimized_pose_data` clamp to the last optimized pose, which
-            # mis-anchors aerial-patch selection — especially after the drop
-            # guard rejects updates and `_optimized_pose_data` goes stale.
-            propagated_ref = self._build_propagated_reference_pose_data()
-            match_result = self.algorithm.cross_view_match_max_intersection(
-                self.aerial_submaps,
-                ground_submaps,
-                reference_trajectory=propagated_ref or self._optimized_pose_data,
-                T_camera_flu=self.data.T_camera_flu,
-                translation_only=True,
-                show_progress=False,
-                local_to_pixel_fn=self.data.aerial_local_to_pixel
-                if self.data.geotiff_transform is not None
-                else None,
-                gt_trajectory=self.data.gt_pose_data,
-                aerial_submaps_2d=self._aerial_submaps_2d,
-            )
-        self._timing["match"].append(time.time() - t_match_start)
-
-        # Stash for end-of-run heatmaps.
-        if ground_key in match_result.results:
-            self._results_per_submap[ground_key] = match_result.results[ground_key]
-        if ground_key in match_result.match_details:
-            self._match_details_per_submap[ground_key] = match_result.match_details[
-                ground_key
-            ]
-
-        # Build candidate dicts and append.
-        min_assoc = self._min_assoc_for_state()
-        new_candidates = build_candidates_from_match_result(
-            match_result,
-            ground_submaps,
-            self.aerial_submaps,
-            self.data,
-            min_assoc,
+        result = self.loc.update(
+            new_submap,
+            ground_key,
+            self.mapper.poses_cam_history,
+            np.array(self.mapper.times_history),
         )
-        self._candidates.extend(new_candidates)
+        match_result = result.match_result
+        inlier_indices = result.inlier_indices
 
-        # Outlier rejection on accumulated candidates.
-        t_or_start = time.time()
-        rpgo = CrossViewRPGO(params=self.rpgo_params)
-        try:
-            inlier_indices, _M, _C, lc_obj = rpgo.solve_clipper_only(
-                self._candidates,
-                self.mapper.poses_cam_history,
-                np.array(self.mapper.times_history),
-            )
-        except Exception as e:
-            logger.warning(f"CLIPPER failed (state={self._state}): {e}")
-            inlier_indices = np.array([], dtype=int)
-            lc_obj = None
-        self._timing["outlier_rej"].append(time.time() - t_or_start)
+        # Aggregate per-call timings measured inside the algorithm.
+        for key in ("match", "outlier_rej", "pgo"):
+            self._timing[key].extend(result.timings.get(key, []))
 
-        n_inliers = len(inlier_indices)
-        logger.info(
-            f"[submap {ground_key}] state={self._state} "
-            f"candidates={len(self._candidates)} inliers={n_inliers}"
-        )
+        # Record gate diagnostics.
+        if result.gate1_met and self._gate1_first_submap_count is None:
+            self._gate1_first_submap_count = len(self.mapper.submaps_2d)
+        if result.attempted and not result.gate2_passed:
+            self._failed_attempt_count += 1
+        if result.gate2_passed:
+            self._global_loc_frame_idx = len(self._instant_pose_history)
+            self._global_loc_wall_time = result.attempt_wall_time
+            self._gate2_passed_submap_count = len(self.mapper.submaps_2d)
 
         if self._movie is not None:
             inlier_positions_utm = []
@@ -350,7 +268,7 @@ class CrossViewIncremental:
             latest_aerial_key = None
             latest_ground_key = -1
             for i in inlier_indices:
-                cand = self._candidates[int(i)]
+                cand = self.loc.candidates[int(i)]
                 T = cand.get("T_utm_body_se2")
                 if T is None:
                     continue
@@ -376,22 +294,22 @@ class CrossViewIncremental:
             else:
                 self._update_movie_last_match(ground_key, match_result)
 
-        # POST uses the PGO chain, so the viz frame_align is PRE-only.
-        if self._state == "PRE":
-            self._refresh_viz_utm_odom(rpgo, inlier_indices)
+        # Diagnostic rerun viz (emitted whether or not gate-2 passed).
+        if result.attempt is not None:
+            diag = result.attempt
+            self._emit_rerun_viz(
+                ground_key,
+                diag.rerun_result,
+                diag.rerun_candidates,
+                diag.rerun_inliers,
+                diag.rerun_lc_obj,
+                diag.T_utm_odom_local,
+                diag.optimized_trajectory_local,
+            )
 
-        if self._state == "PRE":
-            if n_inliers >= self.incremental_params.consistent_loop_closure_thresh:
-                if self._gate1_first_submap_count is None:
-                    self._gate1_first_submap_count = len(self.mapper.submaps_2d)
-                if self._attempt_global_localization(ground_key):
-                    self._state = "POST"
-        else:
-            self._run_post_pgo(inlier_indices, lc_obj)
-
-        # Transform only changes here (CLIPPER/PGO), so per-frame paths just
-        # append entries against the current transform.
-        if self._movie is not None:
+        # The viz pose belief is recomputed each submap (CLIPPER/PGO moved the
+        # estimate), so rebuild it before the per-frame paths append against it.
+        if self._movie is not None and result.transform_changed:
             self._rebuild_viz_pose_history()
 
         self._emit_submap_viz(ground_key)
@@ -409,24 +327,17 @@ class CrossViewIncremental:
         viz_dir.mkdir(parents=True, exist_ok=True)
         name_prefix = f"ground_{ground_key}"
 
-        rpgo = CrossViewRPGO(params=self.rpgo_params)
-        result = None
-        try:
-            result = rpgo.solve(
-                self._candidates,
-                self.mapper.poses_cam_history,
-                np.array(self.mapper.times_history),
-                self.data.T_camera_flu,
-            )
-        except Exception as e:
-            logger.debug(f"submap viz: solve failed for {ground_key}: {e}")
+        result = self.loc.solve_full(
+            self.mapper.poses_cam_history,
+            np.array(self.mapper.times_history),
+        )
 
         if result is None or not result.success:
             stub = [
-                f"Number of candidates: {len(self._candidates)}",
+                f"Number of candidates: {len(self.loc.candidates)}",
                 "Number of inliers: 0",
                 "T_utm_odom: (no successful solve at this submap)",
-                f"State: {self._state}",
+                f"State: {self.loc.state}",
             ]
             with open(viz_dir / f"{name_prefix}.txt", "w") as f:
                 f.write("\n".join(stub) + "\n")
@@ -438,9 +349,9 @@ class CrossViewIncremental:
             viz_dir,
             self.viz_params,
             name_prefix=name_prefix,
-            match_results_per_submap=dict(self._results_per_submap),
-            match_trans_err_m=self.algorithm.pipeline_params.match_trans_err_m,
-            match_rot_err_deg=self.algorithm.pipeline_params.match_rot_err_deg,
+            match_results_per_submap=dict(self.loc.results_per_submap),
+            match_trans_err_m=self.loc.matcher.pipeline_params.match_trans_err_m,
+            match_rot_err_deg=self.loc.matcher.pipeline_params.match_rot_err_deg,
         )
 
     def _emit_rerun_viz(
@@ -475,7 +386,7 @@ class CrossViewIncremental:
                 f"Number of inliers: {len(rerun_inliers)}",
                 obj_line,
                 "T_utm_odom: (rerun trajectory unavailable)",
-                f"State at rerun: {self._state}",
+                f"State at rerun: {self.loc.state}",
             ]
             with open(viz_dir / f"{name_prefix}.txt", "w") as f:
                 f.write("\n".join(stub) + "\n")
@@ -501,426 +412,22 @@ class CrossViewIncremental:
             self.viz_params,
             name_prefix=name_prefix,
             match_results_per_submap=dict(rerun_result.results),
-            match_trans_err_m=self.algorithm.pipeline_params.match_trans_err_m,
-            match_rot_err_deg=self.algorithm.pipeline_params.match_rot_err_deg,
+            match_trans_err_m=self.loc.matcher.pipeline_params.match_trans_err_m,
+            match_rot_err_deg=self.loc.matcher.pipeline_params.match_rot_err_deg,
         )
-
-    def _min_assoc_for_state(self) -> int:
-        if (
-            self._state != "PRE"
-            and self.rpgo_params.min_num_associations_rerun is not None
-        ):
-            return self.rpgo_params.min_num_associations_rerun
-        return self.rpgo_params.min_num_associations
 
     # ------------------------------------------------------------------
-    # POST PGO
+    # Per-frame instantaneous pose + viz pose history
     # ------------------------------------------------------------------
-
-    def _run_post_pgo(self, inlier_indices: np.ndarray, objective: Optional[float]):
-        if len(inlier_indices) == 0:
-            return
-
-        # Guard against degenerate re-solves: if the new outlier-rejection
-        # objective dropped meaningfully versus the last accepted POST step,
-        # skip this update and keep the previous lastopt anchors. The pipeline
-        # continues and tries again on the next ground submap. Skipped when
-        # `objective` is None (e.g., GT-inliers path) so a missing measurement
-        # doesn't silently freeze updates.
-        drop = self.incremental_params.allowable_outlier_lc_obj_drop
-        if (
-            drop is not None
-            and self._last_lc_out_rej_obj is not None
-            and objective is not None
-            and objective < self._last_lc_out_rej_obj - drop
-        ):
-            logger.info(
-                f"POST PGO update rejected: objective {objective:.4f} dropped > "
-                f"{drop} below previous {self._last_lc_out_rej_obj:.4f}; "
-                "keeping previous lastopt anchors."
-            )
-            return
-
-        rpgo = CrossViewRPGO(params=self.rpgo_params)
-        t_pgo_start = time.time()
-        T_utm_odom = rpgo._frame_align(self._candidates, inlier_indices)
-        if self.rpgo_params.optimization_method == "pgo":
-            optimized_trajectory = rpgo._pgo(
-                self._candidates,
-                inlier_indices,
-                self.mapper.poses_cam_history,
-                np.array(self.mapper.times_history),
-                self.data.T_camera_flu,
-                T_utm_odom,
-            )
-        else:
-            optimized_trajectory = rpgo._apply_rigid_transform(
-                T_utm_odom,
-                self.mapper.poses_cam_history,
-                self.data.T_camera_flu,
-            )
-        self._timing["pgo"].append(time.time() - t_pgo_start)
-
-        self._last_optimized_trajectory = optimized_trajectory
-        self._set_lastopt_anchors(optimized_trajectory)
-        self._optimized_pose_data = self._build_camera_pose_data(
-            optimized_trajectory, np.array(self.mapper.times_history)
-        )
-        if objective is not None:
-            self._last_lc_out_rej_obj = objective
-        self._commit_accepted_inliers(inlier_indices)
-
-    def _commit_accepted_inliers(self, inlier_indices: np.ndarray):
-        """When `commit_accepted_inliers` is enabled, remove non-inlier
-        candidates that share a ground_key with any accepted inlier. Locks the
-        chosen aerial hypothesis per submap so subsequent CLIPPER runs cannot
-        drift into a different inlier basin for an already-resolved submap.
-
-        When `delay_most_recent_lc_commit_num` is > 0, defer that commit for
-        the N most recent ground submaps: their inliers still feed PGO this
-        cycle, but their alternative hypotheses are preserved until at least
-        N newer submaps have been added.
-        """
-        if not self.incremental_params.commit_accepted_inliers:
-            return
-        if len(inlier_indices) == 0:
-            return
-        inlier_set = {int(i) for i in inlier_indices}
-        delay = self.incremental_params.delay_most_recent_lc_commit_num
-        if delay > 0:
-            latest_idx = max(int(c["ground_key"]) for c in self._candidates)
-            committed_ground_keys = {
-                self._candidates[i]["ground_key"]
-                for i in inlier_set
-                if int(self._candidates[i]["ground_key"]) <= latest_idx - delay
-            }
-        else:
-            committed_ground_keys = {
-                self._candidates[i]["ground_key"] for i in inlier_set
-            }
-        if not committed_ground_keys:
-            return
-        pruned = [
-            c
-            for i, c in enumerate(self._candidates)
-            if i in inlier_set or c["ground_key"] not in committed_ground_keys
-        ]
-        n_removed = len(self._candidates) - len(pruned)
-        if n_removed:
-            logger.info(
-                f"commit_accepted_inliers: pruned {n_removed} alternative "
-                f"hypotheses across {len(committed_ground_keys)} committed "
-                f"submaps; candidate pool {len(self._candidates)} -> {len(pruned)}"
-            )
-        self._candidates = pruned
-
-    def _build_propagated_reference_pose_data(self):
-        """Build a camera-frame PoseData covering the full
-        `mapper.poses_cam_history` by propagating the last-accepted PGO
-        anchors forward via odom:
-            T_utm_camera(t) = _T_utm_lastopt @ inv(_T_odom_lastopt) @ pose_cam(t).
-        Used as the matcher's `reference_trajectory` so aerial-patch selection
-        tracks the live camera pose instead of clamping to the last accepted
-        PGO frame. Returns None if anchors are not yet set.
-        """
-        if self._T_utm_lastopt is None or self._T_odom_lastopt is None:
-            return None
-        if not self.mapper.poses_cam_history:
-            return None
-        T_odom_lastopt_inv = np.linalg.inv(self._T_odom_lastopt)
-        cam_traj = [
-            self._T_utm_lastopt @ T_odom_lastopt_inv @ pose_cam
-            for pose_cam in self.mapper.poses_cam_history
-        ]
-        times = np.array(self.mapper.times_history)
-        return pose_data_from_trajectory(cam_traj, times)
-
-    def _set_lastopt_anchors(self, optimized_trajectory: List[np.ndarray]):
-        """Capture the camera-frame T_utm and T_odom poses at the most recent
-        PGO step. Used by `_record_instantaneous_pose` to propagate future
-        poses consistently with PGO via:
-            T_utm_cam(t) = T_utm_lastopt @ inv(T_odom_lastopt) @ T_odom_cam(t).
-        `optimized_trajectory` is in body frame (T_utm_body); convert back to
-        camera frame so the chain composes directly with `pose_cam`.
-        """
-        if not optimized_trajectory:
-            return
-        idx = len(optimized_trajectory) - 1
-        if self.data.T_camera_flu is not None:
-            T_camera_flu_inv = np.linalg.inv(self.data.T_camera_flu)
-            self._T_utm_lastopt = optimized_trajectory[idx] @ T_camera_flu_inv
-        else:
-            self._T_utm_lastopt = optimized_trajectory[idx]
-        # poses_cam_history is already in camera frame (T_odom_camera).
-        self._T_odom_lastopt = self.mapper.poses_cam_history[idx]
-
-    # ------------------------------------------------------------------
-    # PRE -> POST attempt (gated; may be retried)
-    # ------------------------------------------------------------------
-
-    def _attempt_global_localization(self, ground_key: str) -> bool:
-        """Attempt global localization. Returns True iff both gates pass and
-        trajectory state was committed; False otherwise (caller stays in PRE).
-
-        `ground_key` identifies the submap whose CLIPPER pass just crossed
-        gate-1; used to name the diagnostic rerun viz.
-
-        Invariant: must not mutate self._candidates, self._results_per_submap,
-        self._match_details_per_submap, self._last_optimized_trajectory,
-        self._T_utm_lastopt, self._T_odom_lastopt, or self._optimized_pose_data
-        until gate #2 passes.
-        """
-        wc_start = time.time()
-        gate2_thresh = self.incremental_params.rot_constrained_consistent_lc_thresh
-        gate2_frac = self.incremental_params.rot_constrained_consistent_lc_frac
-        logger.info(
-            f"[global-loc] gate-1 met at submap {self._submap_count}: "
-            f"{len(self._candidates)} candidates"
-        )
-
-        rpgo = CrossViewRPGO(params=self.rpgo_params)
-
-        # Step 1: initial PGO on PRE candidates.
-        t_pgo_start = time.time()
-        try:
-            initial_result = rpgo.solve(
-                self._candidates,
-                self.mapper.poses_cam_history,
-                np.array(self.mapper.times_history),
-                self.data.T_camera_flu,
-            )
-        except Exception as e:
-            logger.warning(f"[global-loc] initial PGO failed: {e}")
-            self._timing["pgo"].append(time.time() - t_pgo_start)
-            self._failed_attempt_count += 1
-            return False
-        self._timing["pgo"].append(time.time() - t_pgo_start)
-
-        if not initial_result.success:
-            logger.warning("[global-loc] initial PGO returned no success — aborting.")
-            self._failed_attempt_count += 1
-            return False
-
-        # Step 2: rough-trajectory pose data for known-rotation matching.
-        rough_pose_data = self._build_camera_pose_data(
-            initial_result.optimized_trajectory,
-            np.array(self.mapper.times_history),
-        )
-
-        # Step 3: rerun matching on submaps 1..n with max_intersection +
-        # translation_only.
-        all_ground_submaps = {str(i): sm for i, sm in enumerate(self.mapper.submaps_2d)}
-
-        t_match_start = time.time()
-        rerun_result = self.algorithm.cross_view_match_max_intersection(
-            self.aerial_submaps,
-            all_ground_submaps,
-            reference_trajectory=rough_pose_data,
-            T_camera_flu=self.data.T_camera_flu,
-            translation_only=True,
-            show_progress=False,
-            local_to_pixel_fn=self.data.aerial_local_to_pixel
-            if self.data.geotiff_transform is not None
-            else None,
-            gt_trajectory=self.data.gt_pose_data,
-            aerial_submaps_2d=self._aerial_submaps_2d,
-        )
-        self._timing["match"].append(time.time() - t_match_start)
-
-        # Step 4: build rerun_candidates locally — do NOT assign to self yet.
-        min_assoc = (
-            self.rpgo_params.min_num_associations_rerun
-            if self.rpgo_params.min_num_associations_rerun is not None
-            else self.rpgo_params.min_num_associations
-        )
-        rerun_candidates = build_candidates_from_match_result(
-            rerun_result,
-            all_ground_submaps,
-            self.aerial_submaps,
-            self.data,
-            min_assoc,
-        )
-
-        # Step 5: CLIPPER on rerun candidates (still local, no commit yet).
-        t_or_start = time.time()
-        rerun_lc_obj: Optional[float] = None
-        try:
-            rerun_inliers, _M, _C, rerun_lc_obj = rpgo.solve_clipper_only(
-                rerun_candidates,
-                self.mapper.poses_cam_history,
-                np.array(self.mapper.times_history),
-            )
-        except Exception as e:
-            logger.warning(f"[global-loc] rerun CLIPPER failed: {e}")
-            rerun_inliers = np.array([], dtype=int)
-        self._timing["outlier_rej"].append(time.time() - t_or_start)
-
-        # Compute the rerun's frame_align + PGO trajectory now (local only;
-        # no self.* mutation). Used for the diagnostic rerun viz regardless
-        # of whether gate-2 passes, and reused at commit time if it does.
-        T_utm_odom_local: Optional[np.ndarray] = None
-        optimized_trajectory_local: Optional[List[np.ndarray]] = None
-        if len(rerun_inliers) > 0:
-            t_pgo_start = time.time()
-            try:
-                T_utm_odom_local = rpgo._frame_align(rerun_candidates, rerun_inliers)
-                if self.rpgo_params.optimization_method == "pgo":
-                    optimized_trajectory_local = rpgo._pgo(
-                        rerun_candidates,
-                        rerun_inliers,
-                        self.mapper.poses_cam_history,
-                        np.array(self.mapper.times_history),
-                        self.data.T_camera_flu,
-                        T_utm_odom_local,
-                    )
-                else:
-                    optimized_trajectory_local = rpgo._apply_rigid_transform(
-                        T_utm_odom_local,
-                        self.mapper.poses_cam_history,
-                        self.data.T_camera_flu,
-                    )
-            except Exception as e:
-                logger.warning(f"[global-loc] rerun frame_align/PGO failed: {e}")
-                T_utm_odom_local = None
-                optimized_trajectory_local = None
-            self._timing["pgo"].append(time.time() - t_pgo_start)
-
-        # Emit the diagnostic rerun viz (gated on --viz; no-op otherwise).
-        # Emitted whether gate-2 passes or fails so the user can inspect the
-        # rerun trajectory and per-submap matches in both cases.
-        self._emit_rerun_viz(
-            ground_key,
-            rerun_result,
-            rerun_candidates,
-            rerun_inliers,
-            rerun_lc_obj,
-            T_utm_odom_local,
-            optimized_trajectory_local,
-        )
-
-        # Step 6: gate #2 check.
-        # Guard against eventual inlier accumulation in long aerial runs: both
-        # an absolute count and an inliers-per-submap fraction must be met.
-        n_inliers = len(rerun_inliers)
-        n_submaps = len(all_ground_submaps)
-        inlier_frac = n_inliers / n_submaps if n_submaps > 0 else 0.0
-        if n_inliers < gate2_thresh or inlier_frac < gate2_frac:
-            logger.warning(
-                f"[global-loc] gate-2 FAILED: rerun inliers={n_inliers}/"
-                f"{n_submaps} submaps ({inlier_frac:.1%}); requires >= "
-                f"rot_constrained_consistent_lc_thresh={gate2_thresh} AND "
-                f">= rot_constrained_consistent_lc_frac={gate2_frac:.2f}. "
-                f"Staying in PRE; preserving {len(self._candidates)} PRE candidates."
-            )
-            self._failed_attempt_count += 1
-            return False
-
-        # Step 7: commit (gate #2 passed). Reuse the trajectory computed
-        # above — gate-2 pass implies len(rerun_inliers) > 0, so both locals
-        # are non-None unless the frame_align/PGO itself raised. In that rare
-        # case, abort the commit rather than re-running here.
-        if T_utm_odom_local is None or optimized_trajectory_local is None:
-            logger.warning(
-                "[global-loc] gate-2 passed but rerun PGO failed earlier; "
-                "aborting commit and staying in PRE."
-            )
-            self._failed_attempt_count += 1
-            return False
-        T_utm_odom = T_utm_odom_local
-        optimized_trajectory = optimized_trajectory_local
-
-        self._candidates = rerun_candidates
-        self._results_per_submap = dict(rerun_result.results)
-        self._match_details_per_submap = dict(rerun_result.match_details)
-        self._last_optimized_trajectory = optimized_trajectory
-        self._set_lastopt_anchors(optimized_trajectory)
-        self._optimized_pose_data = self._build_camera_pose_data(
-            optimized_trajectory, np.array(self.mapper.times_history)
-        )
-        # Seed the drop-guard baseline so the first POST step has something
-        # to compare against.
-        if rerun_lc_obj is not None:
-            self._last_lc_out_rej_obj = rerun_lc_obj
-        self._commit_accepted_inliers(rerun_inliers)
-
-        self._global_loc_frame_idx = len(self._instant_pose_history)
-        self._global_loc_wall_time = time.time() - wc_start
-        self._gate2_passed_submap_count = len(self.mapper.submaps_2d)
-        logger.info(
-            f"[global-loc] gate-2 PASSED: {len(rerun_candidates)} rerun candidates, "
-            f"{len(rerun_inliers)} inliers >= {gate2_thresh}, "
-            f"{self._global_loc_wall_time:.2f}s"
-        )
-        return True
-
-    # ------------------------------------------------------------------
-    # Helpers
-    # ------------------------------------------------------------------
-
-    def _build_camera_pose_data(
-        self, body_trajectory: List[np.ndarray], times: np.ndarray
-    ):
-        """Convert body-frame optimized trajectory to camera-frame PoseData
-        suitable as reference_trajectory for matching."""
-        if self.data.T_camera_flu is not None:
-            T_flu_camera = np.linalg.inv(self.data.T_camera_flu)
-            cam_traj = [T @ T_flu_camera for T in body_trajectory]
-        else:
-            cam_traj = body_trajectory
-        return pose_data_from_trajectory(cam_traj, times)
-
     def _record_instantaneous_pose(self, t: float, pose_cam: np.ndarray):
-        # Propagate the last PGO estimate forward via odom-frame relative motion:
-        # T_utm_camera(t) = T_utm_lastopt @ inv(T_odom_lastopt) @ T_odom_cam(t).
-        # This keeps the live causal pose consistent with the most recent PGO
-        # output instead of using the rigid frame-align T_utm_odom (which throws
-        # away the per-pose deformation PGO produced).
-        if (
-            self._state == "POST"
-            and self._T_utm_lastopt is not None
-            and self._T_odom_lastopt is not None
-        ):
-            T_utm_camera = (
-                self._T_utm_lastopt @ np.linalg.inv(self._T_odom_lastopt) @ pose_cam
-            )
-            if self.data.T_camera_flu is not None:
-                T_utm_body = T_utm_camera @ self.data.T_camera_flu
-            else:
-                T_utm_body = T_utm_camera
+        """Append the causal localization estimate for this frame. The estimate
+        is NaN until the algorithm has globally localized (POST)."""
+        T_utm_body = self.loc.instantaneous_pose(pose_cam)
+        if T_utm_body is not None:
             self._instant_pose_history.append((t, T_utm_body))
             self._maybe_early_terminate(t, T_utm_body)
         else:
             self._instant_pose_history.append((t, np.full((4, 4), np.nan)))
-
-    def _apply_camera_flu(self, T_utm_camera: np.ndarray) -> np.ndarray:
-        if self.data.T_camera_flu is not None:
-            return T_utm_camera @ self.data.T_camera_flu
-        return T_utm_camera
-
-    def _viz_pose_for_cam(self, idx: int, pose_cam: np.ndarray) -> np.ndarray:
-        """T_utm_body for frame `idx` under the current best estimate.
-
-        POST + idx within PGO range: use the PGO-deformed trajectory directly.
-        POST tail (frames after the last PGO solve): rigid-propagate from
-        the lastopt anchor (T_utm_lastopt @ T_odom_lastopt^-1 @ pose_cam).
-        PRE: rigid `_T_utm_odom_viz` (frame_align over current inliers).
-        Otherwise NaN (no viz-usable estimate yet).
-        """
-        if (
-            self._state == "POST"
-            and self._last_optimized_trajectory is not None
-            and self._T_utm_lastopt is not None
-            and self._T_odom_lastopt is not None
-        ):
-            opt = self._last_optimized_trajectory
-            if idx < len(opt):
-                return opt[idx]
-            T_odom_inv = np.linalg.inv(self._T_odom_lastopt)
-            T_utm_cam = self._T_utm_lastopt @ T_odom_inv @ pose_cam
-            return self._apply_camera_flu(T_utm_cam)
-        if self._T_utm_odom_viz is not None:
-            return self._apply_camera_flu(self._T_utm_odom_viz @ pose_cam)
-        return np.full((4, 4), np.nan)
 
     def _sync_viz_pose_history(self):
         """Append viz-history entries for any new frames in `poses_cam_history`."""
@@ -929,32 +436,20 @@ class CrossViewIncremental:
         while len(self._viz_pose_history) < len(poses_cam):
             i = len(self._viz_pose_history)
             self._viz_pose_history.append(
-                (times[i], self._viz_pose_for_cam(i, poses_cam[i]))
+                (times[i], self.loc.estimate_T_utm_body(i, poses_cam[i]))
             )
 
     def _rebuild_viz_pose_history(self):
         """Rebuild the viz trajectory using the current best estimate uniformly
-        across all frames. Called only after CLIPPER/PGO updates the transform."""
+        across all frames. Called after the algorithm updates the transform."""
         self._viz_pose_history = []
         self._sync_viz_pose_history()
-
-    def _refresh_viz_utm_odom(self, rpgo, inlier_indices: np.ndarray):
-        if len(inlier_indices) > 0:
-            indices = inlier_indices
-        elif len(self._candidates) > 0:
-            indices = np.array([len(self._candidates) - 1])
-        else:
-            return
-        try:
-            self._T_utm_odom_viz = rpgo._frame_align(self._candidates, indices)
-        except Exception as e:
-            logger.debug(f"viz frame_align failed: {e}")
 
     def _maybe_early_terminate(self, t: float, T_utm_body: np.ndarray):
         """Trip `_early_terminate` when the live translation error exceeds
         `early_termination_err_m`. No-op if the threshold is None or no GT is
         available."""
-        thresh = self.incremental_params.early_termination_err_m
+        thresh = self.loc.incremental_params.early_termination_err_m
         if thresh is None or self.data.gt_pose_data is None:
             return
         try:
@@ -988,6 +483,7 @@ class CrossViewIncremental:
         self._write_incremental_outputs()
         self._write_localization_outputs()
 
+    # TODO: could this be shared with the segment_mapping pipeline?
     def _write_mapping_outputs(self):
         """Mirror of segment_mapping.py end-of-run mapping outputs."""
         out = pathlib.Path(self.output_dir)
@@ -1086,8 +582,8 @@ class CrossViewIncremental:
         match_seg_dir.mkdir(parents=True, exist_ok=True)
         match_viz_dir.mkdir(parents=True, exist_ok=True)
 
-        params = self.algorithm.pipeline_params
-        for ground_key, results_matrix in self._results_per_submap.items():
+        params = self.loc.matcher.pipeline_params
+        for ground_key, results_matrix in self.loc.results_per_submap.items():
             results_matrix.save(
                 str(match_seg_dir / f"ground_{ground_key}_results_matrix.pkl")
             )
@@ -1158,168 +654,29 @@ class CrossViewIncremental:
             lines.append(f"Global loc wall time:   {self._global_loc_wall_time:.2f}s")
         else:
             lines.append("Global loc: not triggered")
-        lines.append(f"Final state:            {self._state}")
+        lines.append(f"Final state:            {self.loc.state}")
 
         with open(out / "timing.txt", "w") as f:
             f.write("\n".join(lines) + "\n")
 
     def _write_trajectory_incremental_plot(self, out: pathlib.Path):
-        if not self._instant_pose_history:
-            return
-
-        # Identify segments split by NaN (pre-loc) and by PGO updates.
-        positions = []
-        for _, T in self._instant_pose_history:
-            if np.any(np.isnan(T)):
-                positions.append(None)
-            else:
-                positions.append(T[:2, 3])
-
-        # Split into contiguous non-NaN runs.
-        segments_xy = []
-        cur = []
-        for p in positions:
-            if p is None:
-                if cur:
-                    segments_xy.append(np.array(cur))
-                    cur = []
-            else:
-                cur.append(p)
-        if cur:
-            segments_xy.append(np.array(cur))
-
-        # UTM -> pixel conversion.
-        if self.data.geotiff_transform is not None:
-
-            def utm_to_pixel(xy):
-                return self.data.aerial_utm_to_pixel(np.atleast_2d(xy))
-        else:
-            origin_x, origin_y = self.data.aerial_img_origin
-            pixel_len_m = self.data.aerial_img_scale
-
-            def utm_to_pixel(xy):
-                xy = np.atleast_2d(xy)
-                cols = (xy[:, 0] - origin_x) / pixel_len_m
-                rows = (origin_y - xy[:, 1]) / pixel_len_m
-                return np.column_stack([cols, rows])
-
-        fig, ax = plt.subplots(1, 1, figsize=(12, 12))
-        aerial_img = self.data.aerial_img
-        ds = max(1, min(aerial_img.shape[0], aerial_img.shape[1]) // 2000)
-        ax.imshow(
-            cv.cvtColor(aerial_img[::ds, ::ds], cv.COLOR_BGR2RGB),
-            extent=[0, aerial_img.shape[1], aerial_img.shape[0], 0],
+        plot_incremental_trajectory(
+            self._instant_pose_history,
+            self.data,
+            self.viz_params,
+            out / "trajectory_incremental.png",
         )
 
-        for i, seg_xy in enumerate(segments_xy):
-            if seg_xy.size == 0:
-                continue
-            seg_px = utm_to_pixel(seg_xy)
-            label = "Estimated (incremental)" if i == 0 else None
-            ax.plot(
-                seg_px[:, 0],
-                seg_px[:, 1],
-                color=self.viz_params.estimated_trajectory_color,
-                linestyle="-",
-                linewidth=1.2,
-                label=label,
-            )
-
-        if self.data.gt_pose_data is not None:
-            gt_xy = []
-            for t, _ in self._instant_pose_history:
-                try:
-                    gt_pose = self.data.gt_pose_data.pose(t)
-                    if self.data.T_camera_flu is not None:
-                        gt_body = gt_pose @ self.data.T_camera_flu
-                    else:
-                        gt_body = gt_pose
-                    gt_xy.append(gt_body[:2, 3])
-                except Exception:
-                    gt_xy.append([np.nan, np.nan])
-            gt_xy = np.array(gt_xy)
-            valid = ~np.any(np.isnan(gt_xy), axis=1)
-            if np.any(valid):
-                gt_px = utm_to_pixel(gt_xy[valid])
-                ax.plot(
-                    gt_px[:, 0],
-                    gt_px[:, 1],
-                    color=self.viz_params.gt_trajectory_color,
-                    linestyle="-",
-                    linewidth=1.2,
-                    label="Ground Truth",
-                )
-
-        ax.legend()
-        ax.set_title("Incremental Cross-View Localization")
-        fig.savefig(out / "trajectory_incremental.png", dpi=200, bbox_inches="tight")
-        plt.close(fig)
-
     def _write_error_vs_time_plot(self, out: pathlib.Path) -> dict:
-        if not self._instant_pose_history or self.data.gt_pose_data is None:
-            return {}
-
-        t0 = self._instant_pose_history[0][0]
-        ts, trans_errs, yaw_errs = [], [], []
-        for t, T in self._instant_pose_history:
-            ts.append(t - t0)
-            if np.any(np.isnan(T)):
-                trans_errs.append(np.nan)
-                yaw_errs.append(np.nan)
-                continue
-            try:
-                gt_pose = self.data.gt_pose_data.pose(t)
-            except Exception:
-                trans_errs.append(np.nan)
-                yaw_errs.append(np.nan)
-                continue
-            if self.data.T_camera_flu is not None:
-                gt_body = gt_pose @ self.data.T_camera_flu
-            else:
-                gt_body = gt_pose
-            trans_errs.append(float(np.linalg.norm(T[:2, 3] - gt_body[:2, 3])))
-            est_yaw = np.arctan2(T[1, 0], T[0, 0])
-            gt_yaw = np.arctan2(gt_body[1, 0], gt_body[0, 0])
-            d = est_yaw - gt_yaw
-            yaw_errs.append(float(np.abs(np.arctan2(np.sin(d), np.cos(d)))))
-
-        ts = np.array(ts)
-        trans_errs = np.array(trans_errs)
-        yaw_errs = np.array(yaw_errs)
-
-        fig, axes = plt.subplots(2, 1, figsize=(10, 6), sharex=True)
-        axes[0].plot(ts, trans_errs, "-", color="tab:blue")
-        axes[0].set_ylabel("Translation error (m)")
-        axes[0].grid(True)
-        axes[1].plot(ts, np.rad2deg(yaw_errs), "-", color="tab:orange")
-        axes[1].set_ylabel("Heading error (deg)")
-        axes[1].set_xlabel("t - t0 (s)")
-        axes[1].grid(True)
-        fig.suptitle("Incremental localization error vs. time")
-        fig.savefig(out / "error_vs_time.png", dpi=200, bbox_inches="tight")
-        plt.close(fig)
-
-        valid = ~np.isnan(trans_errs) & ~np.isnan(yaw_errs)
-        n_valid = int(valid.sum())
-        n_total = len(ts)
-        if n_valid > 0:
-            return {
-                "n_valid": n_valid,
-                "n_total": n_total,
-                "rmse_trans_m": float(np.sqrt(np.mean(trans_errs[valid] ** 2))),
-                "mean_trans_m": float(np.mean(trans_errs[valid])),
-                "max_trans_m": float(np.max(trans_errs[valid])),
-                "rmse_yaw_deg": float(
-                    np.rad2deg(np.sqrt(np.mean(yaw_errs[valid] ** 2)))
-                ),
-                "mean_yaw_deg": float(np.rad2deg(np.mean(yaw_errs[valid]))),
-                "max_yaw_deg": float(np.rad2deg(np.max(yaw_errs[valid]))),
-            }
-        return {"n_valid": 0, "n_total": n_total}
+        return plot_error_vs_time(
+            self._instant_pose_history,
+            self.data,
+            out / "error_vs_time.png",
+        )
 
     def _write_incremental_results(self, out: pathlib.Path, m: dict):
         lines = []
-        lines.append(f"Final state:           {self._state}")
+        lines.append(f"Final state:           {self.loc.state}")
         lines.append(f"Total ground submaps:  {len(self.mapper.submaps_2d)}")
         lines.append(f"Compute wall time (s): {self._compute_wall_time:.2f}")
         gate1_str = (
@@ -1360,22 +717,15 @@ class CrossViewIncremental:
     def _write_localization_outputs(self):
         out = pathlib.Path(self.output_dir) / "localization"
         out.mkdir(parents=True, exist_ok=True)
-        if not self._candidates:
+        if not self.loc.candidates:
             logger.warning("No candidates accumulated — skipping localization outputs.")
             return
-        rpgo = CrossViewRPGO(params=self.rpgo_params)
-        try:
-            result = rpgo.solve(
-                self._candidates,
-                self.mapper.poses_cam_history,
-                np.array(self.mapper.times_history),
-                self.data.T_camera_flu,
-            )
-        except Exception as e:
-            logger.warning(f"Final localization solve failed: {e}")
-            return
-        if not result.success:
-            logger.warning("Final localization solve returned no success.")
+        result = self.loc.solve_full(
+            self.mapper.poses_cam_history,
+            np.array(self.mapper.times_history),
+        )
+        if result is None or not result.success:
+            logger.warning("Final localization solve failed or returned no success.")
             return
         CrossViewLocalization._save_results(result, out)
         CrossViewLocalization._visualize_and_report(
@@ -1383,32 +733,19 @@ class CrossViewIncremental:
             self.data,
             out,
             self.viz_params,
-            match_results_per_submap=dict(self._results_per_submap)
-            if self._results_per_submap
+            match_results_per_submap=dict(self.loc.results_per_submap)
+            if self.loc.results_per_submap
             else None,
-            match_trans_err_m=self.algorithm.pipeline_params.match_trans_err_m,
-            match_rot_err_deg=self.algorithm.pipeline_params.match_rot_err_deg,
+            match_trans_err_m=self.loc.matcher.pipeline_params.match_trans_err_m,
+            match_rot_err_deg=self.loc.matcher.pipeline_params.match_rot_err_deg,
         )
 
     # ------------------------------------------------------------------
     # Movie viz wiring
     # ------------------------------------------------------------------
-
     def enable_movie(self, output_path: str, live: bool):
         """Open the live/MP4 visualizer. Must be called before `run()`."""
-        if self.data.geotiff_transform is not None:
-
-            def utm_to_pixel(xy_utm):
-                return self.data.aerial_utm_to_pixel(np.atleast_2d(xy_utm))
-        else:
-            origin_x, origin_y = self.data.aerial_img_origin
-            pixel_len_m = self.data.aerial_img_scale
-
-            def utm_to_pixel(xy_utm):
-                xy_utm = np.atleast_2d(xy_utm)
-                cols = (xy_utm[:, 0] - origin_x) / pixel_len_m
-                rows = (origin_y - xy_utm[:, 1]) / pixel_len_m
-                return np.column_stack([cols, rows])
+        utm_to_pixel = make_utm_to_pixel(self.data)
 
         px_per_m = 1.0 / self.data.aerial_img_scale
         # Match real-time ground RGB playback: one written frame per processed
@@ -1423,14 +760,14 @@ class CrossViewIncremental:
             gt_pose_data=self.data.gt_pose_data,
             T_camera_flu=self.data.T_camera_flu,
             px_per_m=px_per_m,
-            patch_side_len_m=self.algorithm.aerial_patch_params.aerial_img_patch_side_len_m,
-            patch_overlap=self.algorithm.aerial_patch_params.aerial_img_patch_overlap,
+            patch_side_len_m=self.loc.matcher.aerial_patch_params.aerial_img_patch_side_len_m,
+            patch_overlap=self.loc.matcher.aerial_patch_params.aerial_img_patch_overlap,
             fps=fps,
         )
 
     def _lookup_single_match(self, ground_key: str, aerial_key: str):
         """Memoized SingleMatchResult lookup; None if missing."""
-        details = self._match_details_per_submap.get(ground_key, {})
+        details = self.loc.match_details_per_submap.get(ground_key, {})
         sr_or_list = details.get(aerial_key)
         if sr_or_list is None:
             return None
@@ -1499,18 +836,13 @@ class CrossViewIncremental:
             T_aerial_ground_2d=T_aerial_ground_2d,
         )
 
-    # ------------------------------------------------------------------
-    # Setters used by entry-point glue
-    # ------------------------------------------------------------------
-
-    _params_path: str = field(default="", init=False, repr=False)
-
 
 # ---------------------------------------------------------------------------
 # Top-level entry point
 # ---------------------------------------------------------------------------
 
 
+# TODO: could be a shared util reused by the mapping pipeline.
 def _chunk_is_empty(data) -> bool:
     if data.img_data is None or len(data.img_data.times) == 0:
         return True
@@ -1532,6 +864,7 @@ def cross_view_incremental(
     live: bool = False,
 ):
     if not aerial_dir:
+        # TODO: enable setting aerial in a params file instead.
         raise ValueError(
             "--aerial is required: point to a directory containing segments/*.pkl "
             "(produced by `cross_view_matching --skip-match --skip-ground` or equivalent)."
@@ -1553,7 +886,6 @@ def cross_view_incremental(
     pipeline_params = CrossViewMatchingParams.load(params_path, run=run)
     aerial_patch_params = AerialPatchParams.load(params_path, run=run)
     primitive_match_params = PrimitiveMatchParams.load(params_path, run=run)
-    primitive_match_params.dim = 2
     register_params = RegisterParams.load(params_path, run=run)
     rpgo_params = CrossViewRPGOParams.load(params_path, run=run)
     incremental_params = CrossViewIncrementalParams.load(params_path, run=run)
@@ -1654,16 +986,21 @@ def cross_view_incremental(
         place_recognition=place_recognition,
     )
 
+    loc = IncrementalLocalization(
+        matcher=matching_pipeline.algorithm,
+        aerial_submaps=aerial_submaps,
+        rpgo_params=rpgo_params,
+        incremental_params=incremental_params,
+        context=context_from_data(loc_data),
+    )
+
     pipeline = CrossViewIncremental(
         mapping_params=mapping_params,
         segmenter=segmenter,
         mapper=mapper,
         conversion_params=conversion_params,
-        algorithm=matching_pipeline.algorithm,
-        aerial_submaps=aerial_submaps,
+        loc=loc,
         data=loc_data,
-        rpgo_params=rpgo_params,
-        incremental_params=incremental_params,
         viz_params=viz_params,
         output_dir=output_dir,
     )
