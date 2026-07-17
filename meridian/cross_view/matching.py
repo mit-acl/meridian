@@ -267,11 +267,12 @@ class CrossViewMatching:
         }
         for ground_key in ground_submaps_2d.keys():
             for segment in ground_submaps_2d[ground_key].segments:
-                segment.height = (
-                    ground_submaps[ground_key]
-                    .segments.get_segment_from_id(segment.id)
-                    .height
-                )
+                if hasattr(segment, "height"):
+                    segment.height = (
+                        ground_submaps[ground_key]
+                        .segments.get_segment_from_id(segment.id)
+                        .height
+                    )
         return ground_submaps_2d
 
     def _preprocess_submaps_2d(
