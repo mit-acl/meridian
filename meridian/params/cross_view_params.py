@@ -138,3 +138,5 @@ class CrossViewIncrementalParams(ParamsBase):
     # In other words, all hypotheses will remain for the n most recent lcs,
     # until newer loop closure distributions have been acquired.
     delay_most_recent_lc_commit_num: int = 2
+
+    ros_pose_history_dt_s: float = 1.0

@@ -155,6 +155,10 @@ class IncrementalLocalization:
     def last_optimized_trajectory(self) -> Optional[List[np.ndarray]]:
         return self._last_optimized_trajectory
 
+    @property
+    def ground_submaps(self) -> Dict[str, Submap]:
+        return self._ground_submaps
+
     # ------------------------------------------------------------------
     # Core update
     # ------------------------------------------------------------------
