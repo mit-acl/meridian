@@ -103,20 +103,28 @@ def _fast_alphashape(pts: np.ndarray, alpha: float):
     return unary_union(list(polygonize(m)))
 
 
-def _compute_alpha_shape(
+def _compute_segment_border(
     points: np.ndarray,
     alpha: float,
     grid_downsample: float,
     max_n_pts: int,
     alpha_ref_size: float,
     max_extent: float,
-    concave_hull_ratio: Optional[float] = None,
+    segment_border_type: str = "concave_hull",
+    concave_hull_ratio: float = 0.5,
 ) -> Optional[np.ndarray]:
-    """Compute the segment outline from raw points. Standalone for pickling.
+    """Compute the segment outline ("border") from raw points. Standalone for pickling.
 
-    Uses the (fast) alpha shape by default; if ``concave_hull_ratio`` is set, uses
-    ``shapely.concave_hull`` instead (experimental, different outline).
+    ``segment_border_type`` selects the method: "concave_hull" uses
+    ``shapely.concave_hull(ratio=concave_hull_ratio)`` (faster); "alpha_shape" uses
+    the (fast) alpha shape parametrized by ``alpha`` / ``alpha_ref_size``.
     """
+    if segment_border_type not in ("concave_hull", "alpha_shape"):
+        raise ValueError(
+            f"Unknown segment_border_type: {segment_border_type!r} "
+            "(expected 'concave_hull' or 'alpha_shape')"
+        )
+
     if alpha_ref_size is not None:
         alpha = alpha * min(1.0, alpha_ref_size / max(max_extent, 1e-6))
 
@@ -129,11 +137,11 @@ def _compute_alpha_shape(
             voxel *= 2.0
             pts = _grid_downsample_2d(points, voxel)
     try:
-        if concave_hull_ratio is not None:
+        if segment_border_type == "concave_hull":
             shape = shapely.concave_hull(
                 shapely.MultiPoint(pts), ratio=concave_hull_ratio
             )
-        else:
+        else:  # "alpha_shape"
             shape = _fast_alphashape(pts, alpha)
     except Exception:
         return None
@@ -179,23 +187,24 @@ def _classify_single_segment(
     def pt_within_border(pt):
         return x1_border <= pt[0] <= x2_border and y1_border <= pt[1] <= y2_border
 
-    # Compute the alpha shape once, up front. This folds in the separate
-    # (serial) alpha-shape filter pass that convert_submap_to_sparse_2d used to
-    # run — a None alpha shape drops the segment, exactly matching that filter —
-    # and provides the shape reused by the circle/line branches below, so alpha
-    # is computed exactly once per segment (previously once in the filter AND
-    # again here). Computed before the point/line short-circuits to preserve the
-    # filter's drop semantics for small/thin segments with a None alpha shape.
-    alpha_shape = _compute_alpha_shape(
+    # Compute the segment border once, up front. This folds in the separate
+    # (serial) border filter pass that convert_submap_to_sparse_2d used to
+    # run — a None border drops the segment, exactly matching that filter —
+    # and provides the shape reused by the circle/line branches below, so the
+    # border is computed exactly once per segment (previously once in the filter
+    # AND again here). Computed before the point/line short-circuits to preserve
+    # the filter's drop semantics for small/thin segments with a None border.
+    segment_border = _compute_segment_border(
         points,
         alpha=params.alpha_shape_alpha,
         grid_downsample=params.alpha_shape_grid_downsample,
         max_n_pts=params.alpha_shape_max_n_pts,
         alpha_ref_size=params.alpha_shape_ref_size_m,
         max_extent=max_extent,
-        concave_hull_ratio=params.alpha_shape_concave_hull_ratio,
+        segment_border_type=params.segment_border_type,
+        concave_hull_ratio=params.concave_hull_ratio,
     )
-    if alpha_shape is None:
+    if segment_border is None:
         return []
 
     if area < params.min_area_m_sq:
@@ -216,11 +225,11 @@ def _classify_single_segment(
             )
         ]
 
-    # Thin (essentially 1-D) clouds: skip alphashape (which would emit noisy
-    # "Singular matrix" warnings on colinear simplices and often drop the
-    # segment entirely) and emit a LinePrimitive directly via PCA. We gate on
+    # Thin (essentially 1-D) clouds: skip the border computation (which would
+    # emit noisy "Singular matrix" warnings on colinear simplices and often drop
+    # the segment entirely) and emit a LinePrimitive directly via PCA. We gate on
     # the raw minor-axis variance (in m²) so long-but-not-thin road segments
-    # still go through alphashape and can split into multiple lines.
+    # still go through the border and can split into multiple lines.
     if len(points) >= 2 and params.line_min_minor_axis_var_m2 > 0:
         mean_pt = points.mean(axis=0)
         centered = points - mean_pt
@@ -250,13 +259,13 @@ def _classify_single_segment(
 
     # Circle fit check for medium segments
     if area < params.circle_point_max_area:
-        alpha_pts = alpha_shape
-        if alpha_pts.size == 0:
+        border_pts = segment_border
+        if border_pts.size == 0:
             return []
-        if np.allclose(alpha_pts[0], alpha_pts[-1]):
-            alpha_pts = alpha_pts[:-1]
-        if len(alpha_pts) >= 3:
-            xc, yc, r, s = circle_fit.least_squares_circle(alpha_pts)
+        if np.allclose(border_pts[0], border_pts[-1]):
+            border_pts = border_pts[:-1]
+        if len(border_pts) >= 3:
+            xc, yc, r, s = circle_fit.least_squares_circle(border_pts)
             if (
                 r > 0
                 and s < params.circle_point_rad_frac_fit_err * r
@@ -276,10 +285,10 @@ def _classify_single_segment(
                     ]
                 return []
 
-    # Extract lines from alpha shape edges
+    # Extract lines from segment border edges
     lines = []
-    for i, pt0 in enumerate(alpha_shape):
-        pt1 = alpha_shape[i + 1 if i + 1 < len(alpha_shape) else 0]
+    for i, pt0 in enumerate(segment_border):
+        pt1 = segment_border[i + 1 if i + 1 < len(segment_border) else 0]
         keep = np.linalg.norm(pt1 - pt0) > params.line_min_length_m
         keep &= pt_within_border(pt0) and pt_within_border(pt1)
         if keep:
