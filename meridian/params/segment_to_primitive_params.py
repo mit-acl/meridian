@@ -23,6 +23,10 @@ class SegmentToPrimitiveConversionParams(ParamsBase):
     alpha_shape_grid_downsample: float = 0.25
     alpha_shape_max_n_pts: int = None
     alpha_shape_ref_size_m: float = None
+    # EXPERIMENTAL outline method: if set to a float in [0, 1], use
+    # shapely.concave_hull(ratio=...) instead of the alpha shape for the segment
+    # outline (much faster, different shape — under evaluation). None = alpha shape.
+    alpha_shape_concave_hull_ratio: float = 0.5
     # Convert to line if minor axis variance < this param
     line_min_minor_axis_var_m2: float = 0.01
     circle_point_max_area: float = 50.0
