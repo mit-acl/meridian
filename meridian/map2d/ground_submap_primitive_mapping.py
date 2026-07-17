@@ -225,7 +225,7 @@ class GroundSubmapPrimitiveMapping:
             return_intermediates: Whether to return intermediate results.
             timings: Optional dict; if provided, per-stage wall-clock durations
                 (seconds) are recorded under keys ``flatten_3d``, ``to_aerial``,
-                ``alpha_shape``, ``converter_convert``, ``line_filter``.
+                ``segment_border``, ``converter_convert``, ``line_filter``.
 
         Returns:
             (submap_2d, intermediate) tuple. intermediate is None if not requested.
@@ -252,15 +252,15 @@ class GroundSubmapPrimitiveMapping:
             timings["to_aerial"] = time.perf_counter() - _t0
 
         # Convert to sparse primitives (parallelized per-segment internally).
-        # The alpha-shape computation + None-drop that used to run as a separate
-        # serial filter pass here is now folded into the converter's parallel
-        # per-segment worker (_classify_single_segment), so alpha is computed
-        # exactly once per segment instead of twice.
+        # The segment-border computation + None-drop that used to run as a
+        # separate serial filter pass here is now folded into the converter's
+        # parallel per-segment worker (_classify_single_segment), so the border is
+        # computed exactly once per segment instead of twice.
         _t0 = time.perf_counter()
         general_segments = self.converter.convert(aerial_segments, timings=timings)
         if timings is not None:
             timings["converter_convert"] = time.perf_counter() - _t0
-            timings["alpha_shape"] = 0.0
+            timings["segment_border"] = 0.0
 
         sparse_general_segments = general_segments
 

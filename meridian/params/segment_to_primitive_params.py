@@ -19,14 +19,15 @@ class SegmentToPrimitiveConversionParams(ParamsBase):
     # aerial segments with minor axis length below param 0 and
     # major axis length above param 1 are rejected
     aerial_segment_line_rejection_thresh_m: Tuple[float, float] = (0.0, np.inf)
+    # Segment outline ("border") method: "concave_hull" (shapely.concave_hull —
+    # faster, the default) or "alpha_shape". concave_hull is parametrized by
+    # concave_hull_ratio; alpha_shape by the alpha_shape_* params below.
+    segment_border_type: str = "concave_hull"
+    concave_hull_ratio: float = 0.5
     alpha_shape_alpha: float = 1.0
     alpha_shape_grid_downsample: float = 0.25
     alpha_shape_max_n_pts: int = None
     alpha_shape_ref_size_m: float = None
-    # EXPERIMENTAL outline method: if set to a float in [0, 1], use
-    # shapely.concave_hull(ratio=...) instead of the alpha shape for the segment
-    # outline (much faster, different shape — under evaluation). None = alpha shape.
-    alpha_shape_concave_hull_ratio: float = 0.5
     # Convert to line if minor axis variance < this param
     line_min_minor_axis_var_m2: float = 0.01
     circle_point_max_area: float = 50.0

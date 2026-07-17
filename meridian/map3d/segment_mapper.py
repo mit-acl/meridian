@@ -710,7 +710,7 @@ class SegmentMapper:
         submap_3d.metadata = {"camera_pose": submap_pose}
 
         # Convert to sparse 2D. Pass the stats dict so the converter records its
-        # internal stages (flatten_3d, alpha_shape, converter_convert, ...).
+        # internal stages (flatten_3d, segment_border, converter_convert, ...).
         _t0 = time.perf_counter()
         submap_2d, intermediate = (
             self._ground_submap_mapping.convert_submap_to_sparse_2d(
