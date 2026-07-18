@@ -252,6 +252,8 @@ def viz_aerial_segments(
     alpha_shape_ref_size_m: float = None,
     downsample_factor: int = 5,
     line_width_m: float = 0.2,
+    segment_border_type: str = "concave_hull",
+    concave_hull_ratio: float = 0.5,
 ) -> np.ndarray:
     aerial_viz = img.copy()
     line_width_px = max(1, int(line_width_m / pixel_len_m))
@@ -264,19 +266,19 @@ def viz_aerial_segments(
         )
     )
     for seg in segments:
-        alpha_shape_px = seg.get_alpha_shape_pixels(
+        border_px = seg.get_segment_border_pixels(
             img_pixel_scale=pixel_len_m,
             grid_downsample=alpha_shape_grid_downsample,
             alpha=alpha_shape_alpha,
             img_origin_m=img_origin_m,
             max_n_pts=alpha_shape_max_n_pts,
             alpha_ref_size=alpha_shape_ref_size_m,
+            segment_border_type=segment_border_type,
+            concave_hull_ratio=concave_hull_ratio,
         )
-        if alpha_shape_px is None:
+        if border_px is None:
             continue
-        cv.polylines(
-            aerial_viz, [alpha_shape_px], True, seg.viz_color[::-1], line_width_px
-        )
+        cv.polylines(aerial_viz, [border_px], True, seg.viz_color[::-1], line_width_px)
 
     return downsample_aerial_viz(aerial_viz, downsample_factor)
 
@@ -345,6 +347,8 @@ def viz_ground_segments(
     alpha_shape_ref_size_m: float = None,
     show_origin: bool = False,
     origin_axis_len_m: float = 5.0,
+    segment_border_type: str = "concave_hull",
+    concave_hull_ratio: float = 0.5,
 ) -> Tuple[plt.Figure, plt.Axes]:
     # Plot just segment points (largest first so smallest draw on top)
     fig, ax = plt.subplots(3, 2, figsize=(10, 15))
@@ -364,19 +368,21 @@ def viz_ground_segments(
         )
     ax[0, 0].set_aspect("equal")
 
-    # Plot aerial segments (alpha shapes)
+    # Plot aerial segments (segment borders)
     for seg in aerial_segments:
-        alpha_shape = seg.get_alpha_shape(
+        border = seg.get_segment_border(
             alpha=alpha_shape_alpha,
             grid_downsample=alpha_shape_grid_downsample,
             max_n_pts=alpha_shape_max_n_pts,
             alpha_ref_size=alpha_shape_ref_size_m,
+            segment_border_type=segment_border_type,
+            concave_hull_ratio=concave_hull_ratio,
         )
-        if alpha_shape is None:
+        if border is None:
             continue
         ax[0, 1].plot(
-            alpha_shape[:, 0],
-            alpha_shape[:, 1],
+            border[:, 0],
+            border[:, 1],
             color=seg.color_from_id(num_type=float),
             linewidth=2,
         )

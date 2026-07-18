@@ -463,6 +463,8 @@ def segment_mapping(
                 conversion_params.alpha_shape_grid_downsample,
                 conversion_params.alpha_shape_max_n_pts,
                 conversion_params.alpha_shape_ref_size_m,
+                segment_border_type=conversion_params.segment_border_type,
+                concave_hull_ratio=conversion_params.concave_hull_ratio,
             )
             fig.savefig(os.path.join(viz_dir, f"{k}.png"), dpi=400)
             plt.close(fig)
