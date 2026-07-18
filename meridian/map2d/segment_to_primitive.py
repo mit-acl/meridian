@@ -319,6 +319,7 @@ class SegmentToPrimitiveConverter:
         border_dist_m: float = 0.5,
         convert_to_infinite: bool = True,
         timings: Optional[dict] = None,
+        parallel: bool = True,
     ) -> PrimitiveList:
         """Convert aerial segments to sparse point/line primitives.
 
@@ -328,6 +329,10 @@ class SegmentToPrimitiveConverter:
             crop: (x1, y1, x2, y2) pixel crop bounds for border filtering.
             border_dist_m: Minimum distance from border for segment inclusion.
             convert_to_infinite: Whether to convert long lines to infinite.
+            parallel: If False, classify segments serially (skip the persistent
+                process pool). Callers that are themselves running inside a process
+                pool (e.g. the aerial per-patch workers) pass False so we don't nest
+                pools into ``sparse_conversion_max_threads`` squared processes.
 
         Returns:
             PrimitiveList of sparse PointPrimitive and LinePrimitive primitives.
@@ -360,7 +365,7 @@ class SegmentToPrimitiveConverter:
             )
 
         _tc = _perf()
-        if max_workers > 1 and len(tasks) > 1:
+        if parallel and max_workers > 1 and len(tasks) > 1:
             # Classify segments in parallel across a reused ("persistent") process
             # pool. Separate processes give true parallelism (bypassing the GIL,
             # which alphashape/shapely otherwise hold); reusing the pool avoids
