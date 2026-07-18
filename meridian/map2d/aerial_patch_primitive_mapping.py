@@ -1,5 +1,7 @@
 import logging
 import math
+import os
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
 
@@ -64,6 +66,96 @@ def _compute_sub_patch_crops(patch_crop, seg_size_px):
                 (x1 + dx, y1 + dy, x1 + dx + seg_size_px, y1 + dy + seg_size_px)
             )
     return crops
+
+
+# ---------------------------------------------------------------------------
+# Per-patch conversion (parallelized across patches in Phase 2)
+# ---------------------------------------------------------------------------
+
+# Set once per patch-pool worker by the initializer so the converter is shipped
+# a single time per worker instead of re-pickled on every submitted patch.
+_WORKER_CONVERTER: Optional[SegmentToPrimitiveConverter] = None
+
+
+def _patch_worker_init(converter):
+    """ProcessPoolExecutor initializer for the per-patch conversion pool.
+
+    Caps BLAS/OpenMP intra-op threads to 1 so N patch workers don't each spin up a
+    full thread pool and oversubscribe the cores (the classify inside convert()
+    runs serially in workers, so 1 process per patch is the whole story), and
+    stashes the shared converter as a module global.
+    """
+    global _WORKER_CONVERTER
+    for var in (
+        "OMP_NUM_THREADS",
+        "OPENBLAS_NUM_THREADS",
+        "MKL_NUM_THREADS",
+        "NUMEXPR_NUM_THREADS",
+        "VECLIB_MAXIMUM_THREADS",
+    ):
+        os.environ[var] = "1"
+    _WORKER_CONVERTER = converter
+
+
+def _convert_patch(
+    converter: SegmentToPrimitiveConverter,
+    i_idx,
+    j_idx,
+    crop,
+    sub_patch_results,
+    pixel_len_m,
+    border_dist_m,
+    pose_flu,
+    patch_size_m,
+    parallel_classify,
+):
+    """Convert one patch's sub-crop segmentations into a sparse (descriptor-less)
+    Submap. Pure numpy/shapely — no CUDA — so it is safe to run in a process pool.
+
+    Returns ``(crop, submap, primitives)``; ``primitives`` is the
+    pre-sparsification PrimitiveList kept for optional intermediates. Place
+    recognition (GPU) is intentionally left to the caller / main process.
+    """
+    all_primitives = PrimitiveList()
+    for aerial_segments, sub_crop in sub_patch_results:
+        primitives = converter.convert(
+            aerial_segments,
+            pixel_len_m=pixel_len_m,
+            crop=sub_crop,
+            border_dist_m=border_dist_m,
+            convert_to_infinite=False,
+            parallel=parallel_classify,
+        )
+        all_primitives = all_primitives + primitives
+
+    # Merge across all sub-patches, then convert long lines to infinite
+    sparse_primitives = converter._cleanup_and_merge(
+        all_primitives, convert_to_infinite=True
+    )
+
+    submap = Submap(
+        id=(i_idx, j_idx),
+        time=0.0,
+        segments=sparse_primitives,
+        pose=pose_flu,
+        segment_frame=FrameType.IMG_PATCH_TOP_LEFT_CORNER,
+        descriptor=None,
+        metadata={
+            "crop_center_m": np.array(
+                [
+                    (i_idx + 0.5) * patch_size_m,
+                    -(j_idx + 0.5) * patch_size_m,
+                ]
+            )
+        },
+    )
+    return crop, submap, all_primitives
+
+
+def _convert_patch_worker(task):
+    """Pool entry point: convert one patch using the worker-global converter, with
+    the per-segment classify forced serial so we never nest process pools."""
+    return _convert_patch(_WORKER_CONVERTER, *task, parallel_classify=False)
 
 
 # ---------------------------------------------------------------------------
@@ -174,49 +266,62 @@ class AerialPatchPrimitiveMapping:
                 (j_idx, y1, i_idx, x1, crop, patch_img, sub_patch_results)
             )
 
-        # Phase 2: sparse conversion (per-segment parallelism within converter)
-        post_iterator = segmentation_results
-        if show_progress:
-            post_iterator = tqdm(
-                post_iterator,
-                total=len(segmentation_results),
-                desc="Aerial post-processing",
-            )
-        for j_idx, y1, i_idx, x1, crop, patch_img, sub_patch_results in post_iterator:
-            all_general_segments = PrimitiveList()
-            for aerial_segments, sub_crop in sub_patch_results:
-                general_segments = self.converter.convert(
-                    aerial_segments,
-                    pixel_len_m=pixel_len_m,
-                    crop=sub_crop,
-                    border_dist_m=self.patch_params.aerial_min_dist_to_border_m,
-                    convert_to_infinite=False,
-                )
-                all_general_segments = all_general_segments + general_segments
+        # Phase 2: sparse conversion. Each patch is an independent submap, so
+        # parallelize *across patches* (the CPU-bound line-merge dominates here),
+        # forcing the per-segment classify inside convert() to run serially so we
+        # use sparse_conversion_max_threads patch processes, not that many squared.
+        # patch_img is only needed for intermediates/viz, not conversion, so keep
+        # it main-side (keyed by crop) instead of shipping it through the pool.
+        border_dist_m = self.patch_params.aerial_min_dist_to_border_m
+        patch_img_by_crop = {r[4]: r[5] for r in segmentation_results}
+        sub_patch_by_crop = {r[4]: r[6] for r in segmentation_results}
 
-            # Merge across all sub-patches, then convert long lines to infinite
-            sparse_general_segments = self.converter._cleanup_and_merge(
-                all_general_segments, convert_to_infinite=True
+        def _task(r):
+            j_idx, y1, i_idx, x1, crop, patch_img, sub_patch_results = r
+            return (
+                i_idx,
+                j_idx,
+                crop,
+                sub_patch_results,
+                pixel_len_m,
+                border_dist_m,
+                pose_flu,
+                patch_size_m,
             )
 
-            submap = Submap(
-                id=(i_idx, j_idx),
-                time=0.0,
-                segments=sparse_general_segments,
-                pose=pose_flu,
-                segment_frame=FrameType.IMG_PATCH_TOP_LEFT_CORNER,
-                descriptor=None,
-                metadata={
-                    "crop_center_m": np.array(
-                        [
-                            (i_idx + 0.5) * patch_size_m,
-                            -(j_idx + 0.5) * patch_size_m,
-                        ]
+        max_workers = self.converter.params.sparse_conversion_max_threads
+        patch_results = []  # list of (crop, submap, primitives)
+        if max_workers > 1 and len(segmentation_results) > 1:
+            with ProcessPoolExecutor(
+                max_workers=max_workers,
+                initializer=_patch_worker_init,
+                initargs=(self.converter,),
+            ) as executor:
+                futures = [
+                    executor.submit(_convert_patch_worker, _task(r))
+                    for r in segmentation_results
+                ]
+                fut_iter = as_completed(futures)
+                if show_progress:
+                    fut_iter = tqdm(
+                        fut_iter, total=len(futures), desc="Aerial post-processing"
                     )
-                },
-            )
+                for fut in fut_iter:
+                    patch_results.append(fut.result())
+        else:
+            # One patch (or single worker): run serially but keep classify parallel
+            # so a lone large patch still uses all the cores.
+            seg_iterator = segmentation_results
+            if show_progress:
+                seg_iterator = tqdm(seg_iterator, desc="Aerial post-processing")
+            for r in seg_iterator:
+                patch_results.append(
+                    _convert_patch(self.converter, *_task(r), parallel_classify=True)
+                )
 
-            # Place recognition descriptor (may use GPU — keep serial)
+        # Place recognition (GPU) stays serial in the main process; then assemble
+        # submaps and (optionally) intermediates, reattaching main-side patch_img.
+        for crop, submap, primitives in patch_results:
             if self.place_recognition is not None:
                 submap.descriptor = self.place_recognition.aerial_descriptor(
                     submap,
@@ -224,16 +329,15 @@ class AerialPatchPrimitiveMapping:
                     img_bgr=img,
                     crop=crop,
                 )
-
             submaps[crop] = submap
             if return_intermediates:
                 all_aerial_segments = [
-                    seg for segs, _ in sub_patch_results for seg in segs
+                    seg for segs, _ in sub_patch_by_crop[crop] for seg in segs
                 ]
                 intermediates[crop] = AerialPatchIntermediates(
-                    patch_img=patch_img,
+                    patch_img=patch_img_by_crop[crop],
                     aerial_segments=all_aerial_segments,
-                    general_segments=all_general_segments,
+                    general_segments=primitives,
                 )
 
         return AerialSegmentationResult(submaps=submaps, intermediates=intermediates)
