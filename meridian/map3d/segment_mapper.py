@@ -706,8 +706,8 @@ class SegmentMapper:
         # convert_submap_to_sparse_2d transforms segments back to odom before
         # flattening, so the flattened_submap consumed by the ground viz is in
         # odom frame. Anchor coordinate-frame axes at the camera's odom pose
-        # (matches the metadata stamp at ground_submap_primitive_mapping.py:291).
-        submap_3d.metadata = {"camera_pose": submap_pose}
+        # (matches the camera_pose stamp at ground_submap_primitive_mapping.py:291).
+        submap_3d.camera_pose = submap_pose
 
         # Convert to sparse 2D. Pass the stats dict so the converter records its
         # internal stages (flatten_3d, segment_border, converter_convert, ...).
@@ -736,6 +736,7 @@ class SegmentMapper:
                 descriptor=self.place_recognition.ground_descriptor(
                     None, submap_segments=submap_2d.segments
                 ),
+                camera_pose=submap_2d.camera_pose,
                 metadata=submap_2d.metadata,
             )
             self._last_submap_comp_stats["spl_descriptor"] = time.perf_counter() - _t0

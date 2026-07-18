@@ -184,7 +184,7 @@ class CrossViewMatching:
                     ground_pose_gt = gt_trajectory.pose(ground_submaps[ground_key].time)
                 except Exception:
                     pass
-            T_ground_odom_ground_robot = ground_sm_i.metadata["camera_pose"]
+            T_ground_odom_ground_robot = ground_sm_i.camera_pose
 
             for aerial_key, aerial_sm_j in aerial_submaps_2d.items():
                 i_a, j_a = aerial_key_to_tuple(aerial_key)
@@ -693,7 +693,7 @@ class CrossViewMatching:
                     ground_pose_gt = gt_trajectory.pose(ground_submaps[ground_key].time)
                 except Exception:
                     pass
-            T_ground_odom_ground_robot = ground_sm_i.metadata["camera_pose"]
+            T_ground_odom_ground_robot = ground_sm_i.camera_pose
 
             for aerial_key in best_aerial_keys:
                 aerial_sm_j = aerial_submaps_2d[aerial_key]
