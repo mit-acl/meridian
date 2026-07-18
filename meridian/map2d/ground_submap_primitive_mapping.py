@@ -325,7 +325,7 @@ class GroundSubmapPrimitiveMapping:
             pose=np.eye(4),
             segment_frame=FrameType.ODOMETRY,
             descriptor=ground_descriptor,
-            metadata={"camera_pose": submap.pose},
+            camera_pose=submap.pose,
         )
 
         intermediate = None

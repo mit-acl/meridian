@@ -656,9 +656,7 @@ class CrossViewMatchingPipeline:
                         camera_pose = None
                         if ground_key in ground_submaps:
                             ground_segments_all = ground_submaps[ground_key].segments
-                            camera_pose = ground_submaps[ground_key].metadata.get(
-                                "camera_pose"
-                            )
+                            camera_pose = ground_submaps[ground_key].camera_pose
 
                         # Prepare pose viz args (pre-crop aerial image)
                         aerial_img_crop = None

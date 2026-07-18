@@ -63,7 +63,7 @@ def build_candidates_from_match_result(
         if ground_key not in ground_submaps:
             continue
         ground_submap = ground_submaps[ground_key]
-        ground_camera_pose = ground_submap.metadata["camera_pose"]
+        ground_camera_pose = ground_submap.camera_pose
 
         for idx in np.ndindex(results_matrix.shape):
             cell = results_matrix[idx]

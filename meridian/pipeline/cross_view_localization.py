@@ -388,7 +388,7 @@ class CrossViewLocalization:
                 )
                 continue
             ground_submap = Submap.load(ground_submap_path)
-            ground_camera_pose = ground_submap.metadata["camera_pose"]  # T_odom_camera
+            ground_camera_pose = ground_submap.camera_pose  # T_odom_camera
 
             # Load results matrix
             results_matrix = PoseEstimationResultMatrix.load(str(result_file))
