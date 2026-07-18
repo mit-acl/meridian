@@ -81,6 +81,8 @@ def _aerial_viz_worker(
     px_per_m,
     i,
     j,
+    segment_border_type="concave_hull",
+    concave_hull_ratio=0.5,
 ):
     """Render 3 aerial viz images for one patch. Returns list of (filename, bytes)."""
     results = []
@@ -96,6 +98,8 @@ def _aerial_viz_worker(
         alpha_shape_ref_size_m,
         aerial_viz_downsample,
         line_width_m=aerial_viz_line_width_m,
+        segment_border_type=segment_border_type,
+        concave_hull_ratio=concave_hull_ratio,
     )
     viz_bytes = downsample_to_target_size(aerial_viz, aerial_viz_target_size_kb)
     results.append((f"{i}_{j}_segments.jpg", viz_bytes))
@@ -135,6 +139,8 @@ def _ground_viz_worker(
     alpha_shape_max_n_pts,
     alpha_shape_ref_size_m,
     show_sm_origin,
+    segment_border_type="concave_hull",
+    concave_hull_ratio=0.5,
 ):
     """Render ground viz for one submap. Returns PNG bytes."""
     matplotlib.use("Agg")
@@ -150,6 +156,8 @@ def _ground_viz_worker(
         alpha_shape_max_n_pts,
         alpha_shape_ref_size_m,
         show_origin=show_sm_origin,
+        segment_border_type=segment_border_type,
+        concave_hull_ratio=concave_hull_ratio,
     )
     buf = io.BytesIO()
     fig.savefig(buf, format="png", dpi=400)
@@ -367,6 +375,8 @@ class CrossViewMatchingPipeline:
                     px_per_m,
                     i,
                     j,
+                    conv_params.segment_border_type,
+                    conv_params.concave_hull_ratio,
                 )
                 futures[future] = crop
 
@@ -438,6 +448,8 @@ class CrossViewMatchingPipeline:
                         conv_params.alpha_shape_max_n_pts,
                         conv_params.alpha_shape_ref_size_m,
                         ground_params.viz_show_sm_origin,
+                        conv_params.segment_border_type,
+                        conv_params.concave_hull_ratio,
                     )
                     futures[future] = k
 

@@ -4,7 +4,6 @@ from typing import Tuple
 import shapely
 from shapely.geometry import MultiPoint
 import open3d as o3d
-import alphashape
 from typing import Dict, Optional
 
 from meridian.utils import suppress_alphashape_singular_warnings
@@ -36,7 +35,7 @@ class Segment2D:
     semantic_descriptor: np.ndarray = None
     first_seen: float = None
     last_seen: float = None
-    alpha_shapes: Dict[(float, float)] = None  # (alpha, grid_downsample) -> alpha shape
+    segment_borders: Dict = None  # cache_key -> border coords
 
     def __post_init__(self):
         self._convex_hull = None
@@ -44,7 +43,7 @@ class Segment2D:
         self._eigvals = None
         self._pcd = None
         self._obb_extents = None
-        self.alpha_shapes = {}
+        self.segment_borders = {}
 
     @property
     def obb_extents(self) -> Tuple[float, float]:
@@ -93,47 +92,43 @@ class Segment2D:
             np.int32
         )
 
-    def get_alpha_shape(
+    def get_segment_border(
         self,
         alpha=0.5,
         grid_downsample=None,
         max_n_pts: Optional[int] = None,
         alpha_ref_size: float = None,
+        segment_border_type: str = "concave_hull",
+        concave_hull_ratio: float = 0.5,
     ):
-        if alpha_ref_size is not None:
-            alpha = alpha * min(1.0, alpha_ref_size / max(self.max_extent, 1e-6))
+        cache_key = (
+            alpha,
+            grid_downsample,
+            max_n_pts,
+            segment_border_type,
+            concave_hull_ratio,
+        )
+        if cache_key in self.segment_borders:
+            return self.segment_borders[cache_key]
 
-        cache_key = (alpha, grid_downsample, max_n_pts)
-        if cache_key in self.alpha_shapes:
-            return self.alpha_shapes[cache_key]
+        # Local import breaks the segment_to_primitive -> segment2d import cycle;
+        # viz and conversion now share the exact same border computation.
+        from meridian.map2d.segment_to_primitive import _compute_segment_border
 
-        points = self.points.copy()
-        if grid_downsample is not None:
-            points = _grid_downsample_2d(points, grid_downsample)
-        if max_n_pts is not None and len(points) > max_n_pts:
-            voxel = grid_downsample if grid_downsample is not None else 0.1
-            while len(points) > max_n_pts:
-                voxel *= 2.0
-                points = _grid_downsample_2d(self.points, voxel)
-        try:
-            alpha_shape = alphashape.alphashape(points, alpha=alpha)
-        except Exception as e:
-            print(
-                f"Error computing alpha shape for segment {self.id} with alpha={alpha}: {e}"
-            )
-            self.alpha_shapes[cache_key] = None
-            return None
-        if type(alpha_shape) is shapely.geometry.polygon.Polygon:
-            x, y = alpha_shape.exterior.xy
-            self.alpha_shapes[cache_key] = np.vstack([x, y]).T
-        elif type(alpha_shape) is shapely.geometry.MultiPolygon:
-            self.alpha_shapes[cache_key] = None
-        else:
-            self.alpha_shapes[cache_key] = None
+        border = _compute_segment_border(
+            self.points,
+            alpha=alpha,
+            grid_downsample=grid_downsample,
+            max_n_pts=max_n_pts,
+            alpha_ref_size=alpha_ref_size,
+            max_extent=self.max_extent,
+            segment_border_type=segment_border_type,
+            concave_hull_ratio=concave_hull_ratio,
+        )
+        self.segment_borders[cache_key] = border
+        return border
 
-        return self.alpha_shapes[cache_key]
-
-    def get_alpha_shape_pixels(
+    def get_segment_border_pixels(
         self,
         img_pixel_scale: float,
         img_origin_m: Tuple[float, float] = (0.0, 0.0),
@@ -141,16 +136,20 @@ class Segment2D:
         grid_downsample=None,
         max_n_pts: Optional[int] = None,
         alpha_ref_size: float = None,
+        segment_border_type: str = "concave_hull",
+        concave_hull_ratio: float = 0.5,
     ):
-        alpha_shape = self.get_alpha_shape(
-            alpha, grid_downsample, max_n_pts, alpha_ref_size=alpha_ref_size
+        border = self.get_segment_border(
+            alpha,
+            grid_downsample,
+            max_n_pts,
+            alpha_ref_size=alpha_ref_size,
+            segment_border_type=segment_border_type,
+            concave_hull_ratio=concave_hull_ratio,
         )
-        if alpha_shape is None:
+        if border is None:
             return None
-        alpha_shape_pixels = (
-            (alpha_shape - np.array(img_origin_m)) / img_pixel_scale
-        ).astype(np.int32)
-        return alpha_shape_pixels
+        return ((border - np.array(img_origin_m)) / img_pixel_scale).astype(np.int32)
 
     def calculate_area_from_convex_hull(self) -> float:
         self.area = MultiPoint(self.convex_hull).convex_hull.area

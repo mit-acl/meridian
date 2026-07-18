@@ -129,6 +129,8 @@ def aerial_patch_mapping(params, output_dir):
                 px_per_m,
                 i,
                 j,
+                conversion_params.segment_border_type,
+                conversion_params.concave_hull_ratio,
             )
             futures[future] = crop
 
