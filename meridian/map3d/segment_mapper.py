@@ -678,7 +678,7 @@ class SegmentMapper:
         # Attach place recognition descriptor (semantic-gem / anyloc)
         submap_descriptor = None
         if self.place_recognition is not None and self.place_recognition.method in (
-            "semantic-gem",
+            "dino-gem",
             "anyloc",
             "salad",
         ):
