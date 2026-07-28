@@ -31,6 +31,7 @@ class CrossViewMatchingParams(ParamsBase):
     match_trans_err_m: float = 5.0
     match_rot_err_deg: float = 10.0
 
+    sort_by_fitness: bool = False
     fitness_point_inlier_thresh_m: float = 2.0
     fitness_line_inlier_thresh_m: float = 2.0
     fitness_line_angle_thresh_deg: float = 15.0

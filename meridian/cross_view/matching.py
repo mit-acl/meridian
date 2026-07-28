@@ -524,15 +524,16 @@ class CrossViewMatching:
             result.pose_result.fitness = fitness_result.fitness
             result.pose_result.inlier_ratio = fitness_result.inlier_ratio
 
-        results.sort(
-            key=lambda r: (
-                r.pose_result.fitness
-                if not np.isnan(r.pose_result.fitness)
-                else -1.0,
-                r.pose_result.count,
-            ),
-            reverse=True,
-        )
+        if self.pipeline_params.sort_by_fitness:
+            results.sort(
+                key=lambda r: (
+                    r.pose_result.fitness
+                    if not np.isnan(r.pose_result.fitness)
+                    else -1.0,
+                    r.pose_result.count,
+                ),
+                reverse=True,
+            )
 
         # Set runtime on first result
         if results:
