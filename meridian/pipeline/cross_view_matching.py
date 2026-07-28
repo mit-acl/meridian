@@ -43,6 +43,7 @@ from meridian.map3d.submap import Submap
 from meridian.viz.cross_view_viz import (
     viz_cross_view_matches,
     viz_registration_alignment,
+    viz_alignment_fitness,
     viz_aerial_segments,
     viz_general_segments_img,
     viz_ground_segments,
@@ -175,6 +176,8 @@ def _match_viz_worker(
     aerial_viz_target_size_kb,
     line_width_px,
     T_align=None,
+    fitness_result=None,
+    T_aerial_ground_2d=None,
 ):
     """Render match + pose viz for one ground-aerial pair. Returns list of (tag, bytes)."""
     matplotlib.use("Agg")
@@ -260,6 +263,29 @@ def _match_viz_worker(
         )
         viz_bytes = downsample_to_target_size(img_array, match_viz_target_size_kb)
         results.append(("reg", viz_bytes))
+
+    if (
+        fitness_result is not None
+        and T_aerial_ground_2d is not None
+        and not np.any(np.isnan(T_aerial_ground_2d))
+    ):
+        viz_alignment_fitness(
+            aerial_segs_processed,
+            ground_segs_processed,
+            fitness_result,
+            T_aerial_ground_2d,
+            aerial_crop_img=aerial_crop,
+        )
+        fig = plt.gcf()
+        buf = io.BytesIO()
+        fig.savefig(buf, format="png", dpi=150)
+        plt.close(fig)
+        buf.seek(0)
+        img_array = cv.imdecode(
+            np.frombuffer(buf.getvalue(), dtype=np.uint8), cv.IMREAD_COLOR
+        )
+        viz_bytes = downsample_to_target_size(img_array, match_viz_target_size_kb)
+        results.append(("fitness", viz_bytes))
 
     return results
 
@@ -699,6 +725,8 @@ class CrossViewMatchingPipeline:
                             self._viz_params.aerial_viz_target_size_kb,
                             line_width_px,
                             T_align,
+                            single_result.alignment_fitness,
+                            single_result.T_aerial_ground_odom_2d,
                         )
                         viz_futures[future] = (ground_key, aerial_key)
 
@@ -710,6 +738,8 @@ class CrossViewMatchingPipeline:
                             fname = ground_sub_dir / f"ground_{gk}_aerial_{ak}.jpg"
                         elif tag == "reg":
                             fname = ground_sub_dir / f"ground_{gk}_aerial_{ak}_reg.jpg"
+                        elif tag == "fitness":
+                            fname = ground_sub_dir / f"ground_{gk}_aerial_{ak}_fitness.jpg"
                         else:
                             fname = ground_sub_dir / f"ground_{gk}_aerial_{ak}_pose.jpg"
                         with open(fname, "wb") as f:

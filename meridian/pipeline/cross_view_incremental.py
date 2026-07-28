@@ -79,7 +79,7 @@ from meridian.pipeline.data import (
 )
 from meridian.register.registerer import Registerer2D
 from meridian.utils import save_commit_hash, save_params
-from meridian.viz.cross_view_viz import viz_ground_segments
+from meridian.viz.cross_view_viz import viz_ground_segments, viz_alignment_fitness
 from meridian.viz.incremental import (
     make_utm_to_pixel,
     plot_error_vs_time,
@@ -480,6 +480,7 @@ class CrossViewIncremental:
 
         self._write_mapping_outputs()
         self._write_match_heatmaps()
+        self._write_fitness_viz()
         self._write_incremental_outputs()
         self._write_localization_outputs()
 
@@ -596,6 +597,42 @@ class CrossViewIncremental:
                 plt.close()
             except Exception as e:
                 logger.warning(f"Heatmap render failed for ground {ground_key}: {e}")
+
+    def _write_fitness_viz(self):
+        """Per-pair alignment-fitness panels (best hypothesis of each ground-
+        aerial pair). Gated on `self._submap_viz` (the -v flag) since it renders
+        one figure per matched pair."""
+        if not self._submap_viz:
+            return
+        out = pathlib.Path(self.output_dir)
+        fitness_viz_dir = out / "match" / "viz"
+        fitness_viz_dir.mkdir(parents=True, exist_ok=True)
+
+        for ground_key, per_aerial in self.loc.match_details_per_submap.items():
+            for aerial_key, single_results in per_aerial.items():
+                smr = single_results[0] if isinstance(single_results, list) else single_results
+                fr = smr.alignment_fitness
+                T = smr.T_aerial_ground_odom_2d
+                if fr is None or T is None or np.any(np.isnan(T)):
+                    continue
+                try:
+                    fig, _ = viz_alignment_fitness(
+                        smr.aerial_segs_processed,
+                        smr.ground_segs_processed,
+                        fr,
+                        T,
+                    )
+                    fig.savefig(
+                        fitness_viz_dir
+                        / f"ground_{ground_key}_aerial_{aerial_key}_fitness.jpg",
+                        dpi=150,
+                    )
+                    plt.close(fig)
+                except Exception as e:
+                    logger.warning(
+                        f"Fitness viz failed for ground {ground_key} "
+                        f"aerial {aerial_key}: {e}"
+                    )
 
     def _write_incremental_outputs(self):
         out = pathlib.Path(self.output_dir) / "incremental"

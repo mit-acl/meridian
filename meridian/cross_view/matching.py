@@ -19,6 +19,7 @@ from meridian.pipeline.result import (
 from meridian.register.registerer import (
     Registerer2D,
 )
+from meridian.map3d.similarity_metrics import AlignmentFitness, AlignmentFitnessResult
 from meridian.primitive.primitive_list import PrimitiveList
 
 logger = logging.getLogger(__name__)
@@ -46,6 +47,7 @@ class SingleMatchResult:
     matched_ground: PrimitiveList = None
     matched_aerial: PrimitiveList = None
     T_aerial_ground_odom_2d: "np.ndarray | None" = None
+    alignment_fitness: "AlignmentFitnessResult | None" = None
 
 
 @dataclass
@@ -503,6 +505,34 @@ class CrossViewMatching:
             results = [raw_results[0][0]]
         else:
             results = []
+
+        # Full-submap alignment fitness
+        for result in results:
+            fitness_result = AlignmentFitness.compute(
+                aerial_segments=result.aerial_segs_processed,
+                ground_segments=result.ground_segs_processed,
+                T_aerial_ground=result.T_aerial_ground_odom_2d,
+                point_inlier_thresh_m=self.pipeline_params.fitness_point_inlier_thresh_m,
+                line_inlier_thresh_m=self.pipeline_params.fitness_line_inlier_thresh_m,
+                line_angle_thresh_rad=np.deg2rad(
+                    self.pipeline_params.fitness_line_angle_thresh_deg
+                ),
+                min_in_patch=self.pipeline_params.fitness_min_in_patch,
+                wilson_z=self.pipeline_params.fitness_wilson_z,
+            )
+            result.alignment_fitness = fitness_result
+            result.pose_result.fitness = fitness_result.fitness
+            result.pose_result.inlier_ratio = fitness_result.inlier_ratio
+
+        results.sort(
+            key=lambda r: (
+                r.pose_result.fitness
+                if not np.isnan(r.pose_result.fitness)
+                else -1.0,
+                r.pose_result.count,
+            ),
+            reverse=True,
+        )
 
         # Set runtime on first result
         if results:
