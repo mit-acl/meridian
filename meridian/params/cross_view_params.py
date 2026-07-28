@@ -31,6 +31,13 @@ class CrossViewMatchingParams(ParamsBase):
     match_trans_err_m: float = 5.0
     match_rot_err_deg: float = 10.0
 
+    fitness_point_inlier_thresh_m: float = 2.0
+    fitness_line_inlier_thresh_m: float = 2.0
+    fitness_line_angle_thresh_deg: float = 15.0
+    fitness_min_in_patch: int = 3
+    # Wilson lower-bound confidence (standard errors)
+    fitness_wilson_z: float = 2.576
+
 
 @dataclass
 class CrossViewVisualizationParams(ParamsBase):

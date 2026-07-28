@@ -16,6 +16,7 @@ class PoseEstimationResult:
     associations: tuple = tuple([])
     association_types: tuple = tuple([])
     inlier_ratio: float = np.nan
+    fitness: float = np.nan
     T_i_j: np.ndarray = field(default_factory=lambda: np.full((4, 4), np.nan))
     T_i_j_hat: np.ndarray = field(default_factory=lambda: np.full((4, 4), np.nan))
     descriptor_similarity: float = np.nan
