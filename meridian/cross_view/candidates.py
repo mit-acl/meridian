@@ -52,6 +52,7 @@ def build_candidates_from_match_result(
     aerial_submaps: Dict[str, Submap],
     context: LocalizationContext,
     min_assoc: int,
+    use_fitness: bool = False,
 ) -> List[dict]:
     """Build candidate list from an in-memory CrossViewMatchResult."""
     first_aerial_key = next(iter(aerial_submaps))
@@ -135,6 +136,11 @@ def build_candidates_from_match_result(
                         "ground_submap_time": ground_submap.time,
                         "T_utm_odom_gt_se2": T_utm_odom_gt_se2,
                         "count": getattr(result, "count", 1),
+                        "fitness": (
+                            getattr(result, "fitness", np.nan)
+                            if use_fitness
+                            else np.nan
+                        ),
                     }
                 )
 

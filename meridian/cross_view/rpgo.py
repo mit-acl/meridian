@@ -374,20 +374,36 @@ class CrossViewRPGO:
     def _compute_lc_scores(self, candidates: List[dict]) -> np.ndarray:
         """Per-LC quality score in [0, 1].
 
-        Method "frequency-ratio" normalizes each candidate's particle count by
-        the max count among candidates that share the same (ground_key,
-        aerial_key) pair: top hypothesis per pair is 1.0, runners-up scale down.
+        Method "frequency-ratio" normalizes each candidate's weight by the max
+        weight among candidates that share the same (ground_key, aerial_key)
+        pair: top hypothesis per pair is 1.0, runners-up scale down.
+
+        The weight is the matcher's particle count, unless the candidates carry
+        a finite alignment fitness (see ``build_candidates_from_match_result``'s
+        ``use_fitness``), in which case fitness replaces the count so that
+        geometric verification, rather than particle mass, decides which
+        hypothesis CLIPPER prefers for a pair.
         """
         method = self.params.lc_score_method
         if method == "frequency-ratio":
+            # Back-compat check
+            use_fitness = bool(candidates) and all(
+                np.isfinite(c.get("fitness", np.nan)) for c in candidates
+            )
+
+            def _weight(c: dict) -> float:
+                if use_fitness:
+                    return float(c["fitness"])
+                return float(c.get("count", 1))
+
             pair_max: dict = {}
             for c in candidates:
                 key = (c["ground_key"], c["aerial_key"])
-                pair_max[key] = max(pair_max.get(key, 0), c.get("count", 1))
+                pair_max[key] = max(pair_max.get(key, 0.0), _weight(c))
             return np.array(
                 [
-                    c.get("count", 1)
-                    / max(pair_max[(c["ground_key"], c["aerial_key"])], 1)
+                    _weight(c)
+                    / max(pair_max[(c["ground_key"], c["aerial_key"])], 1e-12)
                     for c in candidates
                 ],
                 dtype=np.float64,
