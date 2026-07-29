@@ -231,7 +231,6 @@ class IncrementalLocalization:
             self.aerial_submaps,
             self.context,
             min_assoc,
-            use_fitness=self.matcher.pipeline_params.sort_by_fitness,
         )
         self._candidates.extend(new_candidates)
 
@@ -551,7 +550,6 @@ class IncrementalLocalization:
             self.aerial_submaps,
             self.context,
             min_assoc,
-            use_fitness=self.matcher.pipeline_params.sort_by_fitness,
         )
 
         # Step 5: CLIPPER on rerun candidates (still local, no commit yet).
