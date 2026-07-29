@@ -120,7 +120,6 @@ class CrossViewLocalization:
     viz_params: CrossViewVisualizationParams = field(
         default_factory=CrossViewVisualizationParams
     )
-    use_fitness: bool = False
 
     def localize(
         self,
@@ -478,11 +477,7 @@ class CrossViewLocalization:
                             "ground_submap_time": ground_submap.time,
                             "T_utm_odom_gt_se2": T_utm_odom_gt_se2,
                             "count": getattr(result, "count", 1),
-                            "fitness": (
-                                getattr(result, "fitness", np.nan)
-                                if self.use_fitness
-                                else np.nan
-                            ),
+                            "fitness": getattr(result, "fitness", np.nan),
                         }
                     )
 
@@ -508,7 +503,6 @@ class CrossViewLocalization:
             aerial_submaps,
             context_from_data(data),
             min_assoc,
-            use_fitness=self.use_fitness,
         )
 
     # ------------------------------------------------------------------
@@ -977,7 +971,6 @@ def cross_view_localization(
     runner = CrossViewLocalization(
         rpgo_params=rpgo_params,
         viz_params=viz_params,
-        use_fitness=_matching_params.sort_by_fitness,
     )
     loc_output_dir = os.path.join(output_dir, "localization")
     result = runner.localize(
@@ -1129,12 +1122,9 @@ if __name__ == "__main__":
         ground_submaps = pipeline.load_submaps_from_dir(ground_seg_dir)
 
     viz_params = CrossViewVisualizationParams.load(args.params)
-    from meridian.params import CrossViewMatchingParams as _CVMatchParams
-
     runner = CrossViewLocalization(
         rpgo_params=rpgo_params,
         viz_params=viz_params,
-        use_fitness=_CVMatchParams.load(args.params).sort_by_fitness,
     )
     loc_output_dir = os.path.join(args.output, "localization")
     runner.localize(

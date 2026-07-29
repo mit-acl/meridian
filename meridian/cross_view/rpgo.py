@@ -374,41 +374,50 @@ class CrossViewRPGO:
     def _compute_lc_scores(self, candidates: List[dict]) -> np.ndarray:
         """Per-LC quality score in [0, 1].
 
-        Method "frequency-ratio" normalizes each candidate's weight by the max
-        weight among candidates that share the same (ground_key, aerial_key)
-        pair: top hypothesis per pair is 1.0, runners-up scale down.
+        Both methods normalize each candidate's weight by the max weight among
+        candidates that share the same (ground_key, aerial_key) pair: top
+        hypothesis per pair is 1.0, runners-up scale down. They differ in the
+        weight:
 
-        The weight is the matcher's particle count, unless the candidates carry
-        a finite alignment fitness (see ``build_candidates_from_match_result``'s
-        ``use_fitness``), in which case fitness replaces the count so that
-        geometric verification, rather than particle mass, decides which
-        hypothesis CLIPPER prefers for a pair.
+        - "frequency-ratio": the matcher's particle count (hypothesis mass).
+        - "fitness-ratio": the full-submap alignment fitness, so geometric
+          verification rather than particle mass decides which hypothesis
+          CLIPPER prefers. Requires ``CrossViewMatchingParams.compute_fitness``;
+          if any candidate lacks a finite fitness (older match results, or
+          fitness disabled) the whole set falls back to the particle count.
         """
         method = self.params.lc_score_method
-        if method == "frequency-ratio":
-            # Back-compat check
-            use_fitness = bool(candidates) and all(
-                np.isfinite(c.get("fitness", np.nan)) for c in candidates
-            )
+        if method not in ("frequency-ratio", "fitness-ratio"):
+            raise ValueError(f"Unknown lc_score_method: {method}")
 
-            def _weight(c: dict) -> float:
-                if use_fitness:
-                    return float(c["fitness"])
-                return float(c.get("count", 1))
-
-            pair_max: dict = {}
-            for c in candidates:
-                key = (c["ground_key"], c["aerial_key"])
-                pair_max[key] = max(pair_max.get(key, 0.0), _weight(c))
-            return np.array(
-                [
-                    _weight(c)
-                    / max(pair_max[(c["ground_key"], c["aerial_key"])], 1e-12)
-                    for c in candidates
-                ],
-                dtype=np.float64,
+        use_fitness = method == "fitness-ratio"
+        if use_fitness and not all(
+            np.isfinite(c.get("fitness", np.nan)) for c in candidates
+        ):
+            logger.warning(
+                "lc_score_method='fitness-ratio' but not all candidates carry a "
+                "finite fitness; falling back to particle count. Enable "
+                "cross_view_matching.compute_fitness and regenerate the match "
+                "results to use fitness."
             )
-        raise ValueError(f"Unknown lc_score_method: {method}")
+            use_fitness = False
+
+        def _weight(c: dict) -> float:
+            if use_fitness:
+                return float(c["fitness"])
+            return float(c.get("count", 1))
+
+        pair_max: dict = {}
+        for c in candidates:
+            key = (c["ground_key"], c["aerial_key"])
+            pair_max[key] = max(pair_max.get(key, 0.0), _weight(c))
+        return np.array(
+            [
+                _weight(c) / max(pair_max[(c["ground_key"], c["aerial_key"])], 1e-12)
+                for c in candidates
+            ],
+            dtype=np.float64,
+        )
 
     def run_clipper_cpp(
         self,

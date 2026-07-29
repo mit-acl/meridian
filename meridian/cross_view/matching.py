@@ -507,25 +507,25 @@ class CrossViewMatching:
             results = []
 
         # Full-submap alignment fitness
-        for result in results:
-            fitness_result = AlignmentFitness.compute(
-                aerial_segments=result.aerial_segs_processed,
-                ground_segments=result.ground_segs_processed,
-                T_aerial_ground=result.T_aerial_ground_odom_2d,
-                point_inlier_thresh_m=self.pipeline_params.fitness_point_inlier_thresh_m,
-                line_inlier_thresh_m=self.pipeline_params.fitness_line_inlier_thresh_m,
-                line_angle_thresh_rad=np.deg2rad(
-                    self.pipeline_params.fitness_line_angle_thresh_deg
-                ),
-                line_min_overlap=self.pipeline_params.fitness_line_min_overlap,
-                min_in_patch=self.pipeline_params.fitness_min_in_patch,
-                wilson_z=self.pipeline_params.fitness_wilson_z,
-            )
-            result.alignment_fitness = fitness_result
-            result.pose_result.fitness = fitness_result.fitness
-            result.pose_result.inlier_ratio = fitness_result.inlier_ratio
+        if self.pipeline_params.compute_fitness:
+            for result in results:
+                fitness_result = AlignmentFitness.compute(
+                    aerial_segments=result.aerial_segs_processed,
+                    ground_segments=result.ground_segs_processed,
+                    T_aerial_ground=result.T_aerial_ground_odom_2d,
+                    point_inlier_thresh_m=self.pipeline_params.fitness_point_inlier_thresh_m,
+                    line_inlier_thresh_m=self.pipeline_params.fitness_line_inlier_thresh_m,
+                    line_angle_thresh_rad=np.deg2rad(
+                        self.pipeline_params.fitness_line_angle_thresh_deg
+                    ),
+                    line_min_overlap=self.pipeline_params.fitness_line_min_overlap,
+                    min_in_patch=self.pipeline_params.fitness_min_in_patch,
+                    wilson_z=self.pipeline_params.fitness_wilson_z,
+                )
+                result.alignment_fitness = fitness_result
+                result.pose_result.fitness = fitness_result.fitness
+                result.pose_result.inlier_ratio = fitness_result.inlier_ratio
 
-        if self.pipeline_params.sort_by_fitness:
             results.sort(
                 key=lambda r: (
                     r.pose_result.fitness

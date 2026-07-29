@@ -31,7 +31,9 @@ class CrossViewMatchingParams(ParamsBase):
     match_trans_err_m: float = 5.0
     match_rot_err_deg: float = 10.0
 
-    sort_by_fitness: bool = True
+    # Compute full-submap alignment fitness per hypothesis, rank by it, and make
+    # it available downstream (see CrossViewRPGOParams.lc_score_method).
+    compute_fitness: bool = True
     fitness_point_inlier_thresh_m: float = 1.0
     fitness_line_inlier_thresh_m: float = 1.5
     fitness_line_angle_thresh_deg: float = 5.0
@@ -78,6 +80,8 @@ class CrossViewRPGOParams(ParamsBase):
     single_lc_per_ground_sm: bool = True
     single_lc_per_ground_aerial_pair: bool = True
     fuse_lc_score: bool = True
+    # "frequency-ratio" (particle count) or "fitness-ratio" (alignment fitness,
+    # requires CrossViewMatchingParams.compute_fitness; falls back to count)
     lc_score_method: str = "frequency-ratio"
     min_num_associations: int = 3
     min_num_associations_rerun: Optional[int] = None
