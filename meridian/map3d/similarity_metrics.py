@@ -84,6 +84,49 @@ def _line_angle(a: LinePrimitive, b: LinePrimitive) -> float:
     return min(ang, np.pi - ang)
 
 
+def _line_extent_1d(line: LinePrimitive, d: np.ndarray) -> Tuple[float, float]:
+    """Extent (lo, hi) of a line projected onto unit direction ``d``, using
+    +/-inf for unbounded ends.
+
+    A segment gives a finite interval, an infinite line gives (-inf, inf), and a
+    ray -- which extends from its single endpoint along +direction -- gives a
+    half-bounded interval whose open side follows the sign of the ray's
+    direction along ``d``."""
+    ep0, ep1 = line.endpoints
+    if ep0 is not None and ep1 is not None:
+        s0 = float(np.dot(ep0[:2], d))
+        s1 = float(np.dot(ep1[:2], d))
+        return min(s0, s1), max(s0, s1)
+    if ep0 is None and ep1 is None:
+        return -np.inf, np.inf
+    ep = ep0 if ep0 is not None else ep1
+    s = float(np.dot(ep[:2], d))
+    step = float(np.dot(line.get_direction().flatten()[:2], d))
+    if step > 0.0:
+        return s, np.inf
+    if step < 0.0:
+        return -np.inf, s
+    return s, s
+
+
+def _line_overlap_ratio(a: LinePrimitive, b: LinePrimitive) -> float:
+    """Extent overlap of two lines projected onto ``a``'s direction, as
+    intersection over minimum length (IoM) in [0, 1]."""
+    d = a.get_direction().flatten()[:2]
+    d = d / np.linalg.norm(d)
+    a0, a1 = _line_extent_1d(a, d)
+    b0, b1 = _line_extent_1d(b, d)
+    intersection = min(a1, b1) - max(a0, b0)
+    if intersection <= 0.0:
+        return 0.0
+    shortest = min(a1 - a0, b1 - b0)
+    if shortest <= 0.0:
+        return 0.0
+    if np.isinf(shortest):  # both unbounded, and they do overlap
+        return 1.0
+    return float(min(1.0, intersection / shortest))
+
+
 def _aerial_patch_bounds(
     aerial_segments: PrimitiveList,
 ) -> Optional[Tuple[float, float, float, float]]:
@@ -167,16 +210,11 @@ class AlignmentFitness:
     patch are counted, so partial overlap is not penalized. Ground points are
     matched to aerial points and ground lines to aerial lines.
 
-    Each in-patch ground primitive is matched to at most one aerial primitive
-    (and vice versa) by greedy one-to-one assignment: all within-threshold
-    (ground, aerial) candidate pairs are ranked by a soft quality in [0, 1] that
-    decays linearly with residual distance (and, for lines, with the folded
-    angle), and pairs are accepted highest-quality-first while skipping any
-    whose ground or aerial primitive is already taken. Quality is used only to
-    resolve this assignment; the reported ``fitness`` is the Wilson lower bound
-    of the resulting inlier ratio, rewarding dense overlap while resisting
-    small-support inflation. Hypotheses with fewer than ``min_in_patch``
-    in-patch primitives score 0 (too little overlap to trust).
+    Quality only selects each ground primitive's best match; the reported
+    ``fitness`` is the Wilson lower bound of the resulting inlier ratio,
+    rewarding dense overlap while resisting small-support inflation. Hypotheses
+    with fewer than ``min_in_patch`` in-patch primitives score 0 (too little
+    overlap to trust).
     """
 
     @classmethod
@@ -188,9 +226,10 @@ class AlignmentFitness:
         point_inlier_thresh_m: float,
         line_inlier_thresh_m: float,
         line_angle_thresh_rad: float,
+        line_min_overlap: float,
         wilson_z: float,
+        min_in_patch: int,
         patch_bounds: Optional[Tuple[float, float, float, float]] = None,
-        min_in_patch: int = 3,
     ) -> AlignmentFitnessResult:
         _assert_2d(aerial_segments, "aerial_segments")
         _assert_2d(ground_segments, "ground_segments")
@@ -213,23 +252,26 @@ class AlignmentFitness:
             else np.zeros((0, 2))
         )
 
-        # Gather every within-threshold (quality, ground_id, aerial_id) pair,
-        # then resolve to a one-to-one matching greedily below.
+        # Each in-patch ground primitive claims its best aerial primitive
         n_in_patch = 0
-        candidates: List[Tuple[float, int, int]] = []
+        inlier_pairs: List[Tuple[int, int]] = []
+        qualities: List[float] = []
         for g in ground:
             if not _primitive_in_patch(g, patch_bounds):
                 continue
             n_in_patch += 1
 
+            best_id = None
+            best_quality = 0.0
             if isinstance(g, PointPrimitive):
                 if len(aerial_points) == 0:
                     continue
                 gp = g.get_point()[:2]
                 dists = np.linalg.norm(aerial_pts_xy - gp, axis=1)
-                for j in np.nonzero(dists < point_inlier_thresh_m)[0]:
-                    q = 1.0 - dists[j] / point_inlier_thresh_m
-                    candidates.append((float(q), g.id, aerial_points[j].id))
+                j = int(np.argmin(dists))
+                if dists[j] < point_inlier_thresh_m:
+                    best_quality = 1.0 - dists[j] / point_inlier_thresh_m
+                    best_id = aerial_points[j].id
             else:  # LinePrimitive
                 for a in aerial_lines:
                     ang = _line_angle(g, a)
@@ -238,25 +280,19 @@ class AlignmentFitness:
                     d = g.min_dist_to(a)
                     if d >= line_inlier_thresh_m:
                         continue
+                    overlap = _line_overlap_ratio(a, g)
+                    if overlap < line_min_overlap:
+                        continue
                     q_dist = 1.0 - d / line_inlier_thresh_m
                     q_ang = 1.0 - ang / line_angle_thresh_rad
-                    q = np.sqrt(q_dist * q_ang)  # geometric mean
-                    candidates.append((float(q), g.id, a.id))
+                    q = np.power(q_dist * q_ang * overlap, 1.0 / 3)  # geometric mean
+                    if q > best_quality:
+                        best_quality = q
+                        best_id = a.id
 
-        # Greedy one-to-one: take pairs best-first, skipping any primitive that
-        # has already been claimed on either side.
-        candidates.sort(key=lambda c: c[0], reverse=True)
-        used_ground: set = set()
-        used_aerial: set = set()
-        inlier_pairs: List[Tuple[int, int]] = []
-        qualities: List[float] = []
-        for q, gid, aid in candidates:
-            if gid in used_ground or aid in used_aerial:
-                continue
-            used_ground.add(gid)
-            used_aerial.add(aid)
-            inlier_pairs.append((gid, aid))
-            qualities.append(q)
+            if best_id is not None:
+                inlier_pairs.append((g.id, best_id))
+                qualities.append(float(best_quality))
 
         n_inliers = len(inlier_pairs)
         inlier_ratio = n_inliers / n_in_patch if n_in_patch > 0 else 0.0
