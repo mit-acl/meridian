@@ -517,6 +517,7 @@ class CrossViewMatching:
                 line_angle_thresh_rad=np.deg2rad(
                     self.pipeline_params.fitness_line_angle_thresh_deg
                 ),
+                line_min_overlap=self.pipeline_params.fitness_line_min_overlap,
                 min_in_patch=self.pipeline_params.fitness_min_in_patch,
                 wilson_z=self.pipeline_params.fitness_wilson_z,
             )
