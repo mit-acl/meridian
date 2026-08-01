@@ -458,7 +458,7 @@ class LinePrimitive(Primitive):
     def min_dist_to(self, other: "LinePrimitive") -> float:
         """Returns the minimum distance between two line segments."""
         if self.is_parallel_to(other):
-            if min(self.num_endpoints, other.num_endpoints) == 0:
+            if self.num_endpoints == 0 and other.num_endpoints == 0:
                 # both lines are infinite, so just compute distance from point to line
                 return self.min_dist_to_point(other.get_point())
             else:

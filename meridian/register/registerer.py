@@ -1,6 +1,6 @@
 import logging
 import numpy as np
-from typing import Any, List, Tuple
+from typing import Any, List, Optional, Tuple
 from dataclasses import dataclass
 
 logger = logging.getLogger(__name__)
@@ -191,6 +191,7 @@ class Registerer2D:
     def cluster_hypotheses(
         self,
         items: List[Tuple[Any, np.ndarray, int]],
+        max_hypotheses: Optional[int] = None,
     ) -> List[Any]:
         """Cluster hypotheses by transformation similarity, rank by particle count.
 
@@ -201,6 +202,9 @@ class Registerer2D:
 
         Args:
             items: List of (payload, T_hat_3x3, count) tuples.
+            max_hypotheses: Cap on returned clusters, overriding the
+                ``max_hypotheses`` param (0 = no limit). Lets a caller that
+                re-ranks the output ask for a deeper shortlist than it keeps.
 
         Returns:
             List of payload objects from the representative of each cluster.
@@ -242,7 +246,9 @@ class Registerer2D:
                 cluster_counts.append(int(counts_all[i]))
 
         order = sorted(range(len(rep_idxs)), key=lambda k: -cluster_counts[k])
-        max_hyp = self.params.max_hypotheses
+        max_hyp = (
+            self.params.max_hypotheses if max_hypotheses is None else max_hypotheses
+        )
         if max_hyp > 0:
             order = order[:max_hyp]
 

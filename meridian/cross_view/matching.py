@@ -497,9 +497,16 @@ class CrossViewMatching:
 
         runtime_s = time.time() - t0
 
-        # Cluster by transformation similarity if multiple hypotheses
+        # When fitness re-ranks hypotheses, keep a deeper shortlist (M) than we return (N),
+        n_keep = self.registerer.params.max_hypotheses
+        n_scored = n_keep
+        if self.pipeline_params.compute_fitness and n_keep > 0:
+            prescreen = self.pipeline_params.fitness_prescreen_hypotheses
+            n_scored = max(n_keep, prescreen) if prescreen > 0 else 0
         if len(raw_results) > 1:
-            results = self.registerer.cluster_hypotheses(raw_results)
+            results = self.registerer.cluster_hypotheses(
+                raw_results, max_hypotheses=n_scored
+            )
         elif len(raw_results) == 1:
             raw_results[0][0].pose_result.count = raw_results[0][2]
             results = [raw_results[0][0]]
@@ -535,6 +542,8 @@ class CrossViewMatching:
                 ),
                 reverse=True,
             )
+            if n_keep > 0:
+                results = results[:n_keep]
 
         # Set runtime on first result
         if results:
