@@ -11,7 +11,7 @@
 ###########################################################
 
 import numpy as np
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 from typing import List, Optional, Tuple
 
 from meridian.primitive.primitive import PointPrimitive, LinePrimitive
@@ -45,9 +45,6 @@ class AlignmentFitnessResult:
     patch_bounds: Optional[Tuple[float, float, float, float]] = None  # xmin, ymin, xmax, ymax
 
 
-_LINE_EXTENT_M = 1e5  # half-length used to treat infinite lines/rays as long segments
-
-
 def _wilson_lower_bound(k: int, n: int, z: float) -> float:
     """Lower bound of the Wilson score interval for a binomial proportion k/n.
 
@@ -77,128 +74,239 @@ def _assert_2d(primitives: PrimitiveList, name: str) -> None:
         break
 
 
-def _line_angle(a: LinePrimitive, b: LinePrimitive) -> float:
-    """Unsigned angle in [0, pi/2] between two lines, folded so that a line and
-    its direction-reversed twin (same geometric line) are treated as parallel."""
-    ang = a.angle_between(b)
-    return min(ang, np.pi - ang)
+@dataclass
+class _RawLines:
+    """Array-of-structs view of a LineList, straight out of the primitives.
+
+    ``ep0``/``ep1`` hold the present endpoints (``ep0`` first, so a ray always
+    stores its endpoint in ``ep0``) and are NaN where absent.
+    """
+
+    ids: np.ndarray  # (n,) int
+    pts: np.ndarray  # (n, 2) a point on the line
+    dirs: np.ndarray  # (n, 2) unit
+    ep0: np.ndarray  # (n, 2)
+    ep1: np.ndarray  # (n, 2)
+    n_eps: np.ndarray  # (n,) 0, 1 or 2
 
 
-def _line_extent_1d(line: LinePrimitive, d: np.ndarray) -> Tuple[float, float]:
-    """Extent (lo, hi) of a line projected onto unit direction ``d``, using
-    +/-inf for unbounded ends.
+@dataclass
+class _Lines:
+    """Lines reduced to finite segments clipped to the patch, so every pairwise
+    quantity below is one (n_ground x n_aerial) numpy expression over a uniform
+    representation -- no endpoint cases, no infinities.
+    """
 
-    A segment gives a finite interval, an infinite line gives (-inf, inf), and a
-    ray -- which extends from its single endpoint along +direction -- gives a
-    half-bounded interval whose open side follows the sign of the ray's
-    direction along ``d``."""
-    ep0, ep1 = line.endpoints
-    if ep0 is not None and ep1 is not None:
-        s0 = float(np.dot(ep0[:2], d))
-        s1 = float(np.dot(ep1[:2], d))
-        return min(s0, s1), max(s0, s1)
-    if ep0 is None and ep1 is None:
-        return -np.inf, np.inf
-    ep = ep0 if ep0 is not None else ep1
-    s = float(np.dot(ep[:2], d))
-    step = float(np.dot(line.get_direction().flatten()[:2], d))
-    if step > 0.0:
-        return s, np.inf
-    if step < 0.0:
-        return -np.inf, s
-    return s, s
+    ids: np.ndarray  # (n,) int
+    dirs: np.ndarray  # (n, 2) unit
+    seg0: np.ndarray  # (n, 2)
+    seg1: np.ndarray  # (n, 2)
 
 
-def _line_overlap_ratio(a: LinePrimitive, b: LinePrimitive) -> float:
-    """Extent overlap of two lines projected onto ``a``'s direction, as
-    intersection over minimum length (IoM) in [0, 1]."""
-    d = a.get_direction().flatten()[:2]
-    d = d / np.linalg.norm(d)
-    a0, a1 = _line_extent_1d(a, d)
-    b0, b1 = _line_extent_1d(b, d)
-    intersection = min(a1, b1) - max(a0, b0)
-    if intersection <= 0.0:
-        return 0.0
-    shortest = min(a1 - a0, b1 - b0)
-    if shortest <= 0.0:
-        return 0.0
-    if np.isinf(shortest):  # both unbounded, and they do overlap
-        return 1.0
-    return float(min(1.0, intersection / shortest))
+def _points_xy(points, R: np.ndarray, t: np.ndarray) -> np.ndarray:
+    """(n, 2) point coordinates under the rigid transform (R, t)."""
+    if len(points) == 0:
+        return np.zeros((0, 2))
+    xy = np.array([p.get_point().flatten()[:2] for p in points])
+    return xy @ R.T + t
+
+
+def _select_lines(lines: _Lines, mask: np.ndarray) -> _Lines:
+    return _Lines(*(getattr(lines, f.name)[mask] for f in fields(lines)))
+
+
+def _extract_lines(lines, R: np.ndarray, t: np.ndarray) -> _RawLines:
+    """Pack lines into arrays, applying the rigid transform (R, t) on the way."""
+    n = len(lines)
+    ids = np.zeros(n, dtype=np.int64)
+    pts = np.zeros((n, 2))
+    dirs = np.zeros((n, 2))
+    ep0 = np.full((n, 2), np.nan)
+    ep1 = np.full((n, 2), np.nan)
+    n_eps = np.zeros(n, dtype=np.int64)
+    for i, line in enumerate(lines):
+        ids[i] = line.id
+        pts[i] = line.get_point().flatten()[:2]
+        dirs[i] = line.get_direction().flatten()[:2]
+        present = [ep for ep in line.endpoints if ep is not None]
+        n_eps[i] = len(present)
+        if len(present) > 0:
+            ep0[i] = present[0][:2]
+        if len(present) > 1:
+            ep1[i] = present[1][:2]
+
+    pts = pts @ R.T + t
+    ep0 = ep0 @ R.T + t
+    ep1 = ep1 @ R.T + t
+    dirs = dirs @ R.T
+    norms = np.linalg.norm(dirs, axis=1, keepdims=True)
+    dirs = dirs / np.where(norms > 0.0, norms, 1.0)
+    return _RawLines(ids, pts, dirs, ep0, ep1, n_eps)
+
+
+def _clip_lines(raw: _RawLines, bounds: Tuple[float, float, float, float]) -> _Lines:
+    """Reduce every line to the finite segment lying inside ``bounds``.
+
+    Bounded segments keep their endpoints. Rays and infinite lines are clipped to
+    the box, so alignment is judged on the geometry the two submaps actually share
+    -- without this, two near-parallel unbounded lines that meet kilometers
+    outside the patch would register as touching. A line that misses the box
+    entirely collapses to a single point on it (its endpoint, or its defining
+    point), which is outside the box and so cannot be an inlier of anything in it.
+    """
+    lo = np.array([bounds[0], bounds[1]])
+    hi = np.array([bounds[2], bounds[3]])
+    origin = np.where((raw.n_eps > 0)[:, None], raw.ep0, raw.pts)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        ta = (lo - origin) / raw.dirs
+        tb = (hi - origin) / raw.dirs
+    # A slab the line is parallel to either contains it (no constraint) or rules
+    # it out entirely.
+    parallel = raw.dirs == 0.0
+    inside = (origin >= lo) & (origin <= hi)
+    t_lo = np.where(parallel, np.where(inside, -np.inf, np.inf), np.minimum(ta, tb))
+    t_hi = np.where(parallel, np.where(inside, np.inf, -np.inf), np.maximum(ta, tb))
+    t_lo = t_lo.max(axis=1)
+    t_hi = t_hi.min(axis=1)
+
+    # A ray extends from its endpoint along +direction only.
+    is_ray = raw.n_eps == 1
+    t_lo = np.where(is_ray, np.maximum(t_lo, 0.0), t_lo)
+    t_hi = np.where(is_ray, np.maximum(t_hi, 0.0), t_hi)
+
+    misses = t_lo > t_hi
+    t_lo = np.where(misses, 0.0, t_lo)
+    t_hi = np.where(misses, 0.0, t_hi)
+
+    bounded = (raw.n_eps > 1)[:, None]
+    seg0 = np.where(bounded, raw.ep0, origin + t_lo[:, None] * raw.dirs)
+    seg1 = np.where(bounded, raw.ep1, origin + t_hi[:, None] * raw.dirs)
+    return _Lines(raw.ids, raw.dirs, seg0, seg1)
+
+
+def _point_to_segment_dist2(
+    p: np.ndarray, a: np.ndarray, ab: np.ndarray, ab_len2: np.ndarray
+) -> np.ndarray:
+    """Squared distance from point ``p`` to segment ``a -> a + ab``. All arguments
+    broadcast against each other with xy on the last axis. Squared, so the caller
+    can take the minimum over several of these and pay for one sqrt."""
+    ap = p - a
+    with np.errstate(divide="ignore", invalid="ignore"):
+        s = np.clip((ap * ab).sum(-1) / ab_len2, 0.0, 1.0)
+    s = np.nan_to_num(s)  # zero-length segment: clamp to its start point
+    d = ap - s[..., None] * ab
+    return d[..., 0] ** 2 + d[..., 1] ** 2
+
+
+def _segment_dist_matrix(g: _Lines, a: _Lines) -> np.ndarray:
+    """(n_ground, n_aerial) minimum distance between every pair of lines.
+
+    Crossing segments are 0; otherwise the minimum is attained at one of the
+    four endpoints, which is what the endpoint terms below enumerate."""
+    u = g.seg1 - g.seg0  # (G, 2)
+    v = a.seg1 - a.seg0  # (A, 2)
+    w = a.seg0[None, :, :] - g.seg0[:, None, :]  # (G, A, 2)
+    cross_uv = np.outer(u[:, 0], v[:, 1]) - np.outer(u[:, 1], v[:, 0])
+    with np.errstate(divide="ignore", invalid="ignore"):
+        s = (w[..., 0] * v[None, :, 1] - w[..., 1] * v[None, :, 0]) / cross_uv
+        r = (w[..., 0] * u[:, None, 1] - w[..., 1] * u[:, None, 0]) / cross_uv
+    crossing = (
+        (cross_uv != 0.0) & (s >= 0.0) & (s <= 1.0) & (r >= 0.0) & (r <= 1.0)
+    )
+
+    u_len2 = (u * u).sum(-1)[:, None]
+    v_len2 = (v * v).sum(-1)[None, :]
+    dist2 = np.minimum(
+        np.minimum(
+            _point_to_segment_dist2(
+                g.seg0[:, None, :], a.seg0[None, :, :], v[None, :, :], v_len2
+            ),
+            _point_to_segment_dist2(
+                g.seg1[:, None, :], a.seg0[None, :, :], v[None, :, :], v_len2
+            ),
+        ),
+        np.minimum(
+            _point_to_segment_dist2(
+                a.seg0[None, :, :], g.seg0[:, None, :], u[:, None, :], u_len2
+            ),
+            _point_to_segment_dist2(
+                a.seg1[None, :, :], g.seg0[:, None, :], u[:, None, :], u_len2
+            ),
+        ),
+    )
+    return np.where(crossing, 0.0, np.sqrt(dist2))
+
+
+def _overlap_matrix(g: _Lines, a: _Lines) -> np.ndarray:
+    """(n_ground, n_aerial) extent overlap of each line pair projected onto the
+    aerial line's direction, as intersection over minimum length (IoM). IoM rather
+    than IoU, so a short ground fragment lying fully alongside a long aerial road
+    counts as complete overlap."""
+    g_s0 = g.seg0 @ a.dirs.T  # (G, A)
+    g_s1 = g.seg1 @ a.dirs.T
+    g_lo, g_hi = np.minimum(g_s0, g_s1), np.maximum(g_s0, g_s1)
+
+    a_s0 = (a.seg0 * a.dirs).sum(1)  # (A,); each projected onto its own direction
+    a_s1 = (a.seg1 * a.dirs).sum(1)
+    a_lo = np.minimum(a_s0, a_s1)[None, :]
+    a_hi = np.maximum(a_s0, a_s1)[None, :]
+
+    intersection = np.minimum(g_hi, a_hi) - np.maximum(g_lo, a_lo)
+    shortest = np.minimum(g_hi - g_lo, a_hi - a_lo)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        ratio = np.minimum(1.0, intersection / shortest)
+    return np.where((intersection <= 0.0) | (shortest <= 0.0), 0.0, ratio)
 
 
 def _aerial_patch_bounds(
-    aerial_segments: PrimitiveList,
+    points_xy: np.ndarray, lines: _RawLines
 ) -> Optional[Tuple[float, float, float, float]]:
     """Axis-aligned bounds (xmin, ymin, xmax, ymax) of the aerial submap's
     coverage, taken from point coordinates and finite line endpoints. Infinite
     lines (no endpoints) are skipped since they don't bound a region."""
-    xs: List[float] = []
-    ys: List[float] = []
-    for seg in aerial_segments.get_points():
-        p = seg.get_point()
-        xs.append(float(p[0]))
-        ys.append(float(p[1]))
-    for seg in aerial_segments.get_lines():
-        for ep in seg.endpoints:
-            if ep is not None:
-                xs.append(float(ep[0]))
-                ys.append(float(ep[1]))
-    if not xs:
+    xy = np.concatenate([points_xy, lines.ep0, lines.ep1])
+    xy = xy[~np.isnan(xy).any(axis=1)]
+    if len(xy) == 0:
         return None
-    return (min(xs), min(ys), max(xs), max(ys))
+    lo = xy.min(axis=0)
+    hi = xy.max(axis=0)
+    return (float(lo[0]), float(lo[1]), float(hi[0]), float(hi[1]))
 
 
-def _line_as_segment(line: LinePrimitive) -> Tuple[np.ndarray, np.ndarray]:
-    """Represent a line/ray/segment as a finite (p0, p1) segment so a single
-    segment-vs-box clip handles all endpoint configurations."""
-    d = line.get_direction().flatten()[:2]
-    if line.endpoints[0] is not None and line.endpoints[1] is not None:
-        return line.endpoints[0][:2], line.endpoints[1][:2]
-    if line.num_endpoints == 1:
-        ep = line.endpoints[0] if line.endpoints[0] is not None else line.endpoints[1]
-        ep = ep[:2]
-        return ep, ep + d * _LINE_EXTENT_M
-    pt = line.get_point().flatten()[:2]
-    return pt - d * _LINE_EXTENT_M, pt + d * _LINE_EXTENT_M
-
-
-def _segment_intersects_box(
-    p0: np.ndarray, p1: np.ndarray, bounds: Tuple[float, float, float, float]
-) -> bool:
-    """Liang-Barsky: True if segment p0->p1 at least partly lies in the box."""
+def _points_in_box(
+    points_xy: np.ndarray, bounds: Tuple[float, float, float, float]
+) -> np.ndarray:
     xmin, ymin, xmax, ymax = bounds
-    dx = p1[0] - p0[0]
-    dy = p1[1] - p0[1]
-    p = [-dx, dx, -dy, dy]
-    q = [p0[0] - xmin, xmax - p0[0], p0[1] - ymin, ymax - p0[1]]
-    t0, t1 = 0.0, 1.0
-    for pi, qi in zip(p, q):
-        if pi == 0.0:
-            if qi < 0.0:  # parallel to this edge and outside the slab
-                return False
-        else:
-            r = qi / pi
-            if pi < 0.0:
-                if r > t1:
-                    return False
-                t0 = max(t0, r)
-            else:
-                if r < t0:
-                    return False
-                t1 = min(t1, r)
+    return (
+        (points_xy[:, 0] >= xmin)
+        & (points_xy[:, 0] <= xmax)
+        & (points_xy[:, 1] >= ymin)
+        & (points_xy[:, 1] <= ymax)
+    )
+
+
+def _lines_in_box(
+    lines: _Lines, bounds: Tuple[float, float, float, float]
+) -> np.ndarray:
+    """Liang-Barsky slab clip: True where the line at least partly lies in the
+    box."""
+    xmin, ymin, xmax, ymax = bounds
+    lo_bound = np.array([xmin, ymin])
+    hi_bound = np.array([xmax, ymax])
+    p0 = lines.seg0
+    d = lines.seg1 - p0
+    with np.errstate(divide="ignore", invalid="ignore"):
+        ta = (lo_bound - p0) / d
+        tb = (hi_bound - p0) / d
+    # A slab the segment is parallel to either contains it (no constraint) or
+    # rules it out entirely.
+    inside = (p0 >= lo_bound) & (p0 <= hi_bound)
+    parallel = d == 0.0
+    lo = np.where(parallel, np.where(inside, -np.inf, np.inf), np.minimum(ta, tb))
+    hi = np.where(parallel, np.where(inside, np.inf, -np.inf), np.maximum(ta, tb))
+    t0 = np.maximum(0.0, lo.max(axis=1))
+    t1 = np.minimum(1.0, hi.min(axis=1))
     return t0 <= t1
-
-
-def _primitive_in_patch(
-    seg, bounds: Tuple[float, float, float, float]
-) -> bool:
-    xmin, ymin, xmax, ymax = bounds
-    if isinstance(seg, PointPrimitive):
-        p = seg.get_point()
-        return xmin <= p[0] <= xmax and ymin <= p[1] <= ymax
-    p0, p1 = _line_as_segment(seg)
-    return _segment_intersects_box(p0, p1, bounds)
 
 
 class AlignmentFitness:
@@ -215,6 +323,10 @@ class AlignmentFitness:
     rewarding dense overlap while resisting small-support inflation. Hypotheses
     with fewer than ``min_in_patch`` in-patch primitives score 0 (too little
     overlap to trust).
+
+    Everything is evaluated as whole-matrix numpy expressions over
+    (n_ground x n_aerial), since the per-pair Python geometry calls this
+    replaces dominated the matcher's runtime.
     """
 
     @classmethod
@@ -234,65 +346,83 @@ class AlignmentFitness:
         _assert_2d(aerial_segments, "aerial_segments")
         _assert_2d(ground_segments, "ground_segments")
 
+        eye = np.eye(2)
+        zero = np.zeros(2)
+        # Ground primitives are brought into the aerial frame as arrays rather
+        # than by copying and transforming the submap.
+        R = T_aerial_ground[:2, :2]
+        t = T_aerial_ground[:2, -1]
+
+        aerial_point_list = aerial_segments.get_points()
+        ground_point_list = ground_segments.get_points()
+        aerial_pts = _points_xy(aerial_point_list, eye, zero)
+        ground_pts = _points_xy(ground_point_list, R, t)
+        raw_aerial_lines = _extract_lines(aerial_segments.get_lines(), eye, zero)
+        raw_ground_lines = _extract_lines(ground_segments.get_lines(), R, t)
+
         if patch_bounds is None:
-            patch_bounds = _aerial_patch_bounds(aerial_segments)
+            patch_bounds = _aerial_patch_bounds(aerial_pts, raw_aerial_lines)
 
         if patch_bounds is None:
             return AlignmentFitnessResult(0.0, 0, 0)
 
-        # Transform a copy of the full ground map into the aerial frame.
-        ground = ground_segments.copy()
-        ground.transform(T_aerial_ground)
-
-        aerial_points = aerial_segments.get_points()
-        aerial_lines = aerial_segments.get_lines()
-        aerial_pts_xy = (
-            np.array([p.get_point()[:2] for p in aerial_points])
-            if len(aerial_points) > 0
-            else np.zeros((0, 2))
+        # Unbounded lines are clipped to the patch, widened by the inlier
+        # threshold so geometry that could still match something in the patch is
+        # kept. Beyond that, a line is too far away to align with anything here.
+        clip_bounds = (
+            patch_bounds[0] - line_inlier_thresh_m,
+            patch_bounds[1] - line_inlier_thresh_m,
+            patch_bounds[2] + line_inlier_thresh_m,
+            patch_bounds[3] + line_inlier_thresh_m,
         )
+        aerial_lines = _clip_lines(raw_aerial_lines, clip_bounds)
+        ground_lines = _clip_lines(raw_ground_lines, clip_bounds)
 
-        # Each in-patch ground primitive claims its best aerial primitive
-        n_in_patch = 0
+        # Each in-patch ground primitive claims its best aerial primitive.
+        pt_in_patch = _points_in_box(ground_pts, patch_bounds)
+        line_in_patch = _lines_in_box(ground_lines, patch_bounds)
+        n_in_patch = int(pt_in_patch.sum() + line_in_patch.sum())
+
         inlier_pairs: List[Tuple[int, int]] = []
         qualities: List[float] = []
-        for g in ground:
-            if not _primitive_in_patch(g, patch_bounds):
-                continue
-            n_in_patch += 1
 
-            best_id = None
-            best_quality = 0.0
-            if isinstance(g, PointPrimitive):
-                if len(aerial_points) == 0:
-                    continue
-                gp = g.get_point()[:2]
-                dists = np.linalg.norm(aerial_pts_xy - gp, axis=1)
-                j = int(np.argmin(dists))
-                if dists[j] < point_inlier_thresh_m:
-                    best_quality = 1.0 - dists[j] / point_inlier_thresh_m
-                    best_id = aerial_points[j].id
-            else:  # LinePrimitive
-                for a in aerial_lines:
-                    ang = _line_angle(g, a)
-                    if ang >= line_angle_thresh_rad:
-                        continue
-                    d = g.min_dist_to(a)
-                    if d >= line_inlier_thresh_m:
-                        continue
-                    overlap = _line_overlap_ratio(a, g)
-                    if overlap < line_min_overlap:
-                        continue
-                    q_dist = 1.0 - d / line_inlier_thresh_m
-                    q_ang = 1.0 - ang / line_angle_thresh_rad
-                    q = np.power(q_dist * q_ang * overlap, 1.0 / 3)  # geometric mean
-                    if q > best_quality:
-                        best_quality = q
-                        best_id = a.id
+        if pt_in_patch.any() and len(aerial_pts) > 0:
+            dists = np.linalg.norm(
+                ground_pts[pt_in_patch][:, None, :] - aerial_pts[None, :, :], axis=2
+            )
+            best = dists.argmin(axis=1)
+            best_dist = dists[np.arange(len(best)), best]
+            hit = best_dist < point_inlier_thresh_m
+            aerial_ids = np.array([p.id for p in aerial_point_list])
+            ground_ids = np.array([p.id for p in ground_point_list])[pt_in_patch]
+            inlier_pairs.extend(
+                zip(ground_ids[hit].tolist(), aerial_ids[best[hit]].tolist())
+            )
+            qualities.extend((1.0 - best_dist[hit] / point_inlier_thresh_m).tolist())
 
-            if best_id is not None:
-                inlier_pairs.append((g.id, best_id))
-                qualities.append(float(best_quality))
+        if line_in_patch.any() and len(aerial_lines.ids) > 0:
+            g_lines = _select_lines(ground_lines, line_in_patch)
+            cos_ang = np.abs(g_lines.dirs @ aerial_lines.dirs.T).clip(0.0, 1.0)
+            ang = np.arccos(cos_ang)
+            dist = _segment_dist_matrix(g_lines, aerial_lines)
+            overlap = _overlap_matrix(g_lines, aerial_lines)
+
+            q_dist = 1.0 - dist / line_inlier_thresh_m
+            q_ang = 1.0 - ang / line_angle_thresh_rad
+            quality = np.cbrt(q_dist * q_ang * overlap)  # geometric mean
+            quality[
+                (ang >= line_angle_thresh_rad)
+                | (dist >= line_inlier_thresh_m)
+                | (overlap < line_min_overlap)
+            ] = 0.0
+
+            best = quality.argmax(axis=1)
+            best_quality = quality[np.arange(len(best)), best]
+            hit = best_quality > 0.0
+            inlier_pairs.extend(
+                zip(g_lines.ids[hit].tolist(), aerial_lines.ids[best[hit]].tolist())
+            )
+            qualities.extend(best_quality[hit].tolist())
 
         n_inliers = len(inlier_pairs)
         inlier_ratio = n_inliers / n_in_patch if n_in_patch > 0 else 0.0
