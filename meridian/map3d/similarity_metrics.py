@@ -103,20 +103,19 @@ class _Lines:
     seg1: np.ndarray  # (n, 2)
 
 
-def _points_xy(points, R: np.ndarray, t: np.ndarray) -> np.ndarray:
-    """(n, 2) point coordinates under the rigid transform (R, t)."""
+def _points_xy(points) -> np.ndarray:
+    """(n, 2) point coordinates."""
     if len(points) == 0:
         return np.zeros((0, 2))
-    xy = np.array([p.get_point().flatten()[:2] for p in points])
-    return xy @ R.T + t
+    return np.array([p.get_point().flatten()[:2] for p in points])
 
 
 def _select_lines(lines: _Lines, mask: np.ndarray) -> _Lines:
     return _Lines(*(getattr(lines, f.name)[mask] for f in fields(lines)))
 
 
-def _extract_lines(lines, R: np.ndarray, t: np.ndarray) -> _RawLines:
-    """Pack lines into arrays, applying the rigid transform (R, t) on the way."""
+def _extract_lines(lines) -> _RawLines:
+    """Pack lines into arrays, in their own frame."""
     n = len(lines)
     ids = np.zeros(n, dtype=np.int64)
     pts = np.zeros((n, 2))
@@ -134,14 +133,22 @@ def _extract_lines(lines, R: np.ndarray, t: np.ndarray) -> _RawLines:
             ep0[i] = present[0][:2]
         if len(present) > 1:
             ep1[i] = present[1][:2]
+    return _RawLines(ids, pts, dirs, ep0, ep1, n_eps)
 
-    pts = pts @ R.T + t
-    ep0 = ep0 @ R.T + t
-    ep1 = ep1 @ R.T + t
-    dirs = dirs @ R.T
+
+def _transform_raw_lines(raw: _RawLines, R: np.ndarray, t: np.ndarray) -> _RawLines:
+    """Apply the rigid transform (R, t). Absent endpoints stay NaN."""
+    dirs = raw.dirs @ R.T
     norms = np.linalg.norm(dirs, axis=1, keepdims=True)
     dirs = dirs / np.where(norms > 0.0, norms, 1.0)
-    return _RawLines(ids, pts, dirs, ep0, ep1, n_eps)
+    return _RawLines(
+        raw.ids,
+        raw.pts @ R.T + t,
+        dirs,
+        raw.ep0 @ R.T + t,
+        raw.ep1 @ R.T + t,
+        raw.n_eps,
+    )
 
 
 def _clip_lines(raw: _RawLines, bounds: Tuple[float, float, float, float]) -> _Lines:
@@ -309,8 +316,108 @@ def _lines_in_box(
     return t0 <= t1
 
 
-class AlignmentFitness:
-    """ICP-style full-submap alignment fitness for point + line primitive maps.
+@dataclass
+class _Prepared:
+    """A submap's primitives unpacked into arrays, in their own frame."""
+
+    pts: np.ndarray  # (n, 2)
+    point_ids: np.ndarray  # (n,) int
+    raw_lines: _RawLines
+
+
+@dataclass
+class _Associations:
+    """One evaluation's correspondences, with the geometry needed to re-fit them."""
+
+    n_in_patch: int
+    pairs: List[Tuple[int, int]]  # (ground_id, aerial_id)
+    qualities: List[float]
+    pt_ground: np.ndarray  # (n_pt, 2) ground inlier points, in the aerial frame
+    pt_aerial: np.ndarray  # (n_pt, 2) the aerial point each one claimed
+    ln_ground: np.ndarray  # (n_ln, 2, 2) clipped ground segment endpoints
+    ln_normal: np.ndarray  # (n_ln, 2) unit normal of the claimed aerial line
+    ln_aerial_pt: np.ndarray  # (n_ln, 2) a point on the claimed aerial line
+
+
+def _prepare(segments: PrimitiveList, name: str) -> _Prepared:
+    _assert_2d(segments, name)
+    points = segments.get_points()
+    return _Prepared(
+        pts=_points_xy(points),
+        point_ids=np.array([p.id for p in points], dtype=np.int64),
+        raw_lines=_extract_lines(segments.get_lines()),
+    )
+
+
+def _rot2(theta: float) -> np.ndarray:
+    c, s = np.cos(theta), np.sin(theta)
+    return np.array([[c, -s], [s, c]])
+
+
+# Below these a step changes nothing downstream, so refinement stops.
+_REFINE_TRANS_TOL_M = 1e-4
+_REFINE_ROT_TOL_RAD = 1e-6
+
+_PERP = np.array([[0.0, -1.0], [1.0, 0.0]])  # d/dtheta of a 2D rotation at 0
+
+
+def _gauss_newton_step(assoc: _Associations) -> Optional[Tuple[float, np.ndarray]]:
+    """One linearized ICP step: the (dtheta, dt) best cancelling the residuals.
+
+    Points give point-to-point residuals, lines point-to-line ones, so a line
+    constrains only its perpendicular offset and angle. Rank-deficient systems
+    take the minimum-norm step, which does not move along the null direction.
+    """
+    rows: List[np.ndarray] = []
+    resid: List[np.ndarray] = []
+
+    if len(assoc.pt_ground) > 0:
+        p = assoc.pt_ground
+        lever = p @ _PERP.T
+        block = np.zeros((2 * len(p), 3))
+        block[0::2, 0] = lever[:, 0]
+        block[0::2, 1] = 1.0
+        block[1::2, 0] = lever[:, 1]
+        block[1::2, 2] = 1.0
+        rows.append(block)
+        resid.append(-(p - assoc.pt_aerial).reshape(-1))
+
+    if len(assoc.ln_ground) > 0:
+        n = assoc.ln_normal
+        for k in range(assoc.ln_ground.shape[1]):
+            p = assoc.ln_ground[:, k, :]
+            rows.append(
+                np.column_stack([(n * (p @ _PERP.T)).sum(1), n[:, 0], n[:, 1]])
+            )
+            resid.append(-((p - assoc.ln_aerial_pt) * n).sum(1))
+
+    if not rows:
+        return None
+    A = np.vstack(rows)
+    b = np.concatenate(resid)
+    if not (np.isfinite(A).all() and np.isfinite(b).all()):
+        return None
+    x, *_ = np.linalg.lstsq(A, b, rcond=None)
+    if not np.isfinite(x).all():
+        return None
+    return float(x[0]), x[1:]
+
+
+@dataclass
+class AlignmentRefinementResult:
+    """Outcome of refining one hypothesis; the fields are the originals when
+    ``applied`` is False, so callers can use them unconditionally."""
+
+    T_aerial_ground: np.ndarray
+    fitness: AlignmentFitnessResult
+    applied: bool
+    n_iterations: int = 0
+    correction_m: float = 0.0
+    correction_rad: float = 0.0
+
+
+class AlignmentEvaluator:
+    """ICP-style full-submap alignment scoring for point + line primitive maps.
 
     The ground submap is transformed into the aerial frame by the estimated
     transform and scored against the *full* aerial submap (not just the matched
@@ -326,8 +433,268 @@ class AlignmentFitness:
 
     Everything is evaluated as whole-matrix numpy expressions over
     (n_ground x n_aerial), since the per-pair Python geometry calls this
-    replaces dominated the matcher's runtime.
+    replaces dominated the matcher's runtime. The submaps are unpacked once per
+    evaluator, so scoring many hypotheses for a submap pair pays for it once.
     """
+
+    def __init__(
+        self,
+        aerial_segments: PrimitiveList,
+        ground_segments: PrimitiveList,
+        point_inlier_thresh_m: float,
+        line_inlier_thresh_m: float,
+        line_angle_thresh_rad: float,
+        line_min_overlap: float,
+        wilson_z: float,
+        min_in_patch: int,
+        patch_bounds: Optional[Tuple[float, float, float, float]] = None,
+    ):
+        self.point_inlier_thresh_m = point_inlier_thresh_m
+        self.line_inlier_thresh_m = line_inlier_thresh_m
+        self.line_angle_thresh_rad = line_angle_thresh_rad
+        self.line_min_overlap = line_min_overlap
+        self.wilson_z = wilson_z
+        self.min_in_patch = min_in_patch
+
+        self._aerial = _prepare(aerial_segments, "aerial_segments")
+        self._ground = _prepare(ground_segments, "ground_segments")
+
+        if patch_bounds is None:
+            patch_bounds = _aerial_patch_bounds(
+                self._aerial.pts, self._aerial.raw_lines
+            )
+        self.patch_bounds = patch_bounds
+        if patch_bounds is None:
+            return
+
+        # Unbounded lines are clipped to the patch, widened by the inlier
+        # threshold so geometry that could still match something in the patch is
+        # kept. Beyond that, a line is too far away to align with anything here.
+        self._clip_bounds = (
+            patch_bounds[0] - line_inlier_thresh_m,
+            patch_bounds[1] - line_inlier_thresh_m,
+            patch_bounds[2] + line_inlier_thresh_m,
+            patch_bounds[3] + line_inlier_thresh_m,
+        )
+        self._aerial_lines = _clip_lines(self._aerial.raw_lines, self._clip_bounds)
+
+    # ------------------------------------------------------------------
+    # Scoring
+    # ------------------------------------------------------------------
+
+    def fitness(self, T_aerial_ground: np.ndarray) -> AlignmentFitnessResult:
+        if self.patch_bounds is None:
+            return AlignmentFitnessResult(0.0, 0, 0)
+        return self._to_result(self._associate(T_aerial_ground))
+
+    def _associate(self, T_aerial_ground: np.ndarray) -> _Associations:
+        # Ground primitives are brought into the aerial frame as arrays rather
+        # than by copying and transforming the submap.
+        R = T_aerial_ground[:2, :2]
+        t = T_aerial_ground[:2, -1]
+        ground_pts = self._ground.pts @ R.T + t
+        ground_lines = _clip_lines(
+            _transform_raw_lines(self._ground.raw_lines, R, t), self._clip_bounds
+        )
+        aerial_lines = self._aerial_lines
+
+        # Each in-patch ground primitive claims its best aerial primitive.
+        pt_in_patch = _points_in_box(ground_pts, self.patch_bounds)
+        line_in_patch = _lines_in_box(ground_lines, self.patch_bounds)
+        n_in_patch = int(pt_in_patch.sum() + line_in_patch.sum())
+
+        inlier_pairs: List[Tuple[int, int]] = []
+        qualities: List[float] = []
+        pt_ground = np.zeros((0, 2))
+        pt_aerial = np.zeros((0, 2))
+        ln_ground = np.zeros((0, 2, 2))
+        ln_normal = np.zeros((0, 2))
+        ln_aerial_pt = np.zeros((0, 2))
+
+        if pt_in_patch.any() and len(self._aerial.pts) > 0:
+            in_patch_idx = np.flatnonzero(pt_in_patch)
+            dists = np.linalg.norm(
+                ground_pts[in_patch_idx][:, None, :] - self._aerial.pts[None, :, :],
+                axis=2,
+            )
+            best = dists.argmin(axis=1)
+            best_dist = dists[np.arange(len(best)), best]
+            hit = best_dist < self.point_inlier_thresh_m
+            g_idx = in_patch_idx[hit]
+            a_idx = best[hit]
+            pt_ground = ground_pts[g_idx]
+            pt_aerial = self._aerial.pts[a_idx]
+            inlier_pairs.extend(
+                zip(
+                    self._ground.point_ids[g_idx].tolist(),
+                    self._aerial.point_ids[a_idx].tolist(),
+                )
+            )
+            qualities.extend(
+                (1.0 - best_dist[hit] / self.point_inlier_thresh_m).tolist()
+            )
+
+        if line_in_patch.any() and len(aerial_lines.ids) > 0:
+            g_lines = _select_lines(ground_lines, line_in_patch)
+            cos_ang = np.abs(g_lines.dirs @ aerial_lines.dirs.T).clip(0.0, 1.0)
+            ang = np.arccos(cos_ang)
+            dist = _segment_dist_matrix(g_lines, aerial_lines)
+            overlap = _overlap_matrix(g_lines, aerial_lines)
+
+            q_dist = 1.0 - dist / self.line_inlier_thresh_m
+            q_ang = 1.0 - ang / self.line_angle_thresh_rad
+            quality = np.cbrt(q_dist * q_ang * overlap)  # geometric mean
+            quality[
+                (ang >= self.line_angle_thresh_rad)
+                | (dist >= self.line_inlier_thresh_m)
+                | (overlap < self.line_min_overlap)
+            ] = 0.0
+
+            best = quality.argmax(axis=1)
+            best_quality = quality[np.arange(len(best)), best]
+            hit = best_quality > 0.0
+            a_idx = best[hit]
+            ln_ground = np.stack([g_lines.seg0[hit], g_lines.seg1[hit]], axis=1)
+            a_dirs = aerial_lines.dirs[a_idx]
+            ln_normal = np.column_stack([-a_dirs[:, 1], a_dirs[:, 0]])
+            ln_aerial_pt = aerial_lines.seg0[a_idx]
+            inlier_pairs.extend(
+                zip(g_lines.ids[hit].tolist(), aerial_lines.ids[a_idx].tolist())
+            )
+            qualities.extend(best_quality[hit].tolist())
+
+        return _Associations(
+            n_in_patch=n_in_patch,
+            pairs=inlier_pairs,
+            qualities=qualities,
+            pt_ground=pt_ground,
+            pt_aerial=pt_aerial,
+            ln_ground=ln_ground,
+            ln_normal=ln_normal,
+            ln_aerial_pt=ln_aerial_pt,
+        )
+
+    def _to_result(self, assoc: _Associations) -> AlignmentFitnessResult:
+        n_inliers = len(assoc.pairs)
+        n_in_patch = assoc.n_in_patch
+        inlier_ratio = n_inliers / n_in_patch if n_in_patch > 0 else 0.0
+        mean_quality = float(np.mean(assoc.qualities)) if assoc.qualities else 0.0
+        if n_in_patch < self.min_in_patch:
+            fitness = 0.0
+        else:
+            fitness = _wilson_lower_bound(n_inliers, n_in_patch, self.wilson_z)
+        return AlignmentFitnessResult(
+            fitness=fitness,
+            n_inliers=n_inliers,
+            n_in_patch=n_in_patch,
+            inlier_ratio=inlier_ratio,
+            mean_inlier_quality=mean_quality,
+            inlier_pairs=assoc.pairs,
+            patch_bounds=self.patch_bounds,
+        )
+
+    # ------------------------------------------------------------------
+    # Refinement
+    # ------------------------------------------------------------------
+
+    def refine(
+        self,
+        T_aerial_ground: np.ndarray,
+        max_iters: int = 3,
+        min_inliers: int = 6,
+        max_correction_m: float = 0.0,
+    ) -> AlignmentRefinementResult:
+        """Re-fit the transform to its own fitness inliers, ICP style.
+
+        The registration only saw the primitives the matcher associated; this
+        re-solves against every full-submap inlier the transform earns,
+        re-associating each step. A local polish, not a search. Steps are proper
+        rigid motions on the left, preserving the rotation block's determinant.
+        The result is kept only if fitness does not drop (ties broken on mean
+        inlier quality) and it moves the patch center by at most
+        ``max_correction_m`` (0 = uncapped).
+        """
+        T_init = np.asarray(T_aerial_ground, dtype=np.float64)
+        if self.patch_bounds is None:
+            return AlignmentRefinementResult(
+                T_init, AlignmentFitnessResult(0.0, 0, 0), applied=False
+            )
+
+        assoc = self._associate(T_init)
+        initial = self._to_result(assoc)
+        R = np.array(T_init[:2, :2])
+        t = np.array(T_init[:2, -1])
+        n_iterations = 0
+        for i in range(max_iters):
+            if i > 0:
+                assoc = self._associate(_as_se2(T_init, R, t))
+            if len(assoc.pairs) < min_inliers:
+                break
+            step = _gauss_newton_step(assoc)
+            if step is None:
+                break
+            dtheta, dt = step
+            R_step = _rot2(dtheta)
+            R = R_step @ R
+            t = R_step @ t + dt
+            n_iterations += 1
+            if (
+                abs(dtheta) < _REFINE_ROT_TOL_RAD
+                and np.linalg.norm(dt) < _REFINE_TRANS_TOL_M
+            ):
+                break
+
+        if n_iterations == 0:
+            return AlignmentRefinementResult(T_init, initial, applied=False)
+
+        T_refined = _as_se2(T_init, R, t)
+        refined = self.fitness(T_refined)
+
+        R_rel = R @ T_init[:2, :2].T
+        t_rel = t - R_rel @ T_init[:2, -1]
+        center = np.array(
+            [
+                0.5 * (self.patch_bounds[0] + self.patch_bounds[2]),
+                0.5 * (self.patch_bounds[1] + self.patch_bounds[3]),
+            ]
+        )
+        correction_m = float(np.linalg.norm(R_rel @ center + t_rel - center))
+        correction_rad = float(abs(np.arctan2(R_rel[1, 0], R_rel[0, 0])))
+
+        improved = (refined.fitness, refined.mean_inlier_quality) > (
+            initial.fitness,
+            initial.mean_inlier_quality,
+        )
+        too_far = max_correction_m > 0.0 and correction_m > max_correction_m
+        if not improved or too_far:
+            return AlignmentRefinementResult(
+                T_init,
+                initial,
+                applied=False,
+                n_iterations=n_iterations,
+                correction_m=correction_m,
+                correction_rad=correction_rad,
+            )
+        return AlignmentRefinementResult(
+            T_refined,
+            refined,
+            applied=True,
+            n_iterations=n_iterations,
+            correction_m=correction_m,
+            correction_rad=correction_rad,
+        )
+
+
+def _as_se2(template: np.ndarray, R: np.ndarray, t: np.ndarray) -> np.ndarray:
+    """(R, t) written into a copy of ``template``, keeping the caller's 3x3/4x4."""
+    T = np.array(template, dtype=np.float64)
+    T[:2, :2] = R
+    T[:2, -1] = t
+    return T
+
+
+class AlignmentFitness:
+    """One-shot AlignmentEvaluator; reuse an evaluator for several hypotheses."""
 
     @classmethod
     def compute(
@@ -343,103 +710,17 @@ class AlignmentFitness:
         min_in_patch: int,
         patch_bounds: Optional[Tuple[float, float, float, float]] = None,
     ) -> AlignmentFitnessResult:
-        _assert_2d(aerial_segments, "aerial_segments")
-        _assert_2d(ground_segments, "ground_segments")
-
-        eye = np.eye(2)
-        zero = np.zeros(2)
-        # Ground primitives are brought into the aerial frame as arrays rather
-        # than by copying and transforming the submap.
-        R = T_aerial_ground[:2, :2]
-        t = T_aerial_ground[:2, -1]
-
-        aerial_point_list = aerial_segments.get_points()
-        ground_point_list = ground_segments.get_points()
-        aerial_pts = _points_xy(aerial_point_list, eye, zero)
-        ground_pts = _points_xy(ground_point_list, R, t)
-        raw_aerial_lines = _extract_lines(aerial_segments.get_lines(), eye, zero)
-        raw_ground_lines = _extract_lines(ground_segments.get_lines(), R, t)
-
-        if patch_bounds is None:
-            patch_bounds = _aerial_patch_bounds(aerial_pts, raw_aerial_lines)
-
-        if patch_bounds is None:
-            return AlignmentFitnessResult(0.0, 0, 0)
-
-        # Unbounded lines are clipped to the patch, widened by the inlier
-        # threshold so geometry that could still match something in the patch is
-        # kept. Beyond that, a line is too far away to align with anything here.
-        clip_bounds = (
-            patch_bounds[0] - line_inlier_thresh_m,
-            patch_bounds[1] - line_inlier_thresh_m,
-            patch_bounds[2] + line_inlier_thresh_m,
-            patch_bounds[3] + line_inlier_thresh_m,
-        )
-        aerial_lines = _clip_lines(raw_aerial_lines, clip_bounds)
-        ground_lines = _clip_lines(raw_ground_lines, clip_bounds)
-
-        # Each in-patch ground primitive claims its best aerial primitive.
-        pt_in_patch = _points_in_box(ground_pts, patch_bounds)
-        line_in_patch = _lines_in_box(ground_lines, patch_bounds)
-        n_in_patch = int(pt_in_patch.sum() + line_in_patch.sum())
-
-        inlier_pairs: List[Tuple[int, int]] = []
-        qualities: List[float] = []
-
-        if pt_in_patch.any() and len(aerial_pts) > 0:
-            dists = np.linalg.norm(
-                ground_pts[pt_in_patch][:, None, :] - aerial_pts[None, :, :], axis=2
-            )
-            best = dists.argmin(axis=1)
-            best_dist = dists[np.arange(len(best)), best]
-            hit = best_dist < point_inlier_thresh_m
-            aerial_ids = np.array([p.id for p in aerial_point_list])
-            ground_ids = np.array([p.id for p in ground_point_list])[pt_in_patch]
-            inlier_pairs.extend(
-                zip(ground_ids[hit].tolist(), aerial_ids[best[hit]].tolist())
-            )
-            qualities.extend((1.0 - best_dist[hit] / point_inlier_thresh_m).tolist())
-
-        if line_in_patch.any() and len(aerial_lines.ids) > 0:
-            g_lines = _select_lines(ground_lines, line_in_patch)
-            cos_ang = np.abs(g_lines.dirs @ aerial_lines.dirs.T).clip(0.0, 1.0)
-            ang = np.arccos(cos_ang)
-            dist = _segment_dist_matrix(g_lines, aerial_lines)
-            overlap = _overlap_matrix(g_lines, aerial_lines)
-
-            q_dist = 1.0 - dist / line_inlier_thresh_m
-            q_ang = 1.0 - ang / line_angle_thresh_rad
-            quality = np.cbrt(q_dist * q_ang * overlap)  # geometric mean
-            quality[
-                (ang >= line_angle_thresh_rad)
-                | (dist >= line_inlier_thresh_m)
-                | (overlap < line_min_overlap)
-            ] = 0.0
-
-            best = quality.argmax(axis=1)
-            best_quality = quality[np.arange(len(best)), best]
-            hit = best_quality > 0.0
-            inlier_pairs.extend(
-                zip(g_lines.ids[hit].tolist(), aerial_lines.ids[best[hit]].tolist())
-            )
-            qualities.extend(best_quality[hit].tolist())
-
-        n_inliers = len(inlier_pairs)
-        inlier_ratio = n_inliers / n_in_patch if n_in_patch > 0 else 0.0
-        mean_quality = float(np.mean(qualities)) if qualities else 0.0
-        if n_in_patch < min_in_patch:
-            fitness = 0.0
-        else:
-            fitness = _wilson_lower_bound(n_inliers, n_in_patch, wilson_z)
-        return AlignmentFitnessResult(
-            fitness=fitness,
-            n_inliers=n_inliers,
-            n_in_patch=n_in_patch,
-            inlier_ratio=inlier_ratio,
-            mean_inlier_quality=mean_quality,
-            inlier_pairs=inlier_pairs,
+        return AlignmentEvaluator(
+            aerial_segments=aerial_segments,
+            ground_segments=ground_segments,
+            point_inlier_thresh_m=point_inlier_thresh_m,
+            line_inlier_thresh_m=line_inlier_thresh_m,
+            line_angle_thresh_rad=line_angle_thresh_rad,
+            line_min_overlap=line_min_overlap,
+            wilson_z=wilson_z,
+            min_in_patch=min_in_patch,
             patch_bounds=patch_bounds,
-        )
+        ).fitness(T_aerial_ground)
 
 
 class Wasserstein:

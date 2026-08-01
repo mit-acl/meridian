@@ -45,6 +45,15 @@ class CrossViewMatchingParams(ParamsBase):
     # Wilson lower-bound confidence (standard errors)
     fitness_wilson_z: float = 2.576
 
+    # ICP re-fit of each returned hypothesis to its own fitness inliers, for
+    # sub-meter alignment. Requires compute_fitness; ~1 fitness eval per iter.
+    refine_hypotheses: bool = False
+    refine_max_iters: int = 3
+    # Below this many correspondences the hypothesis is left alone.
+    refine_min_inliers: int = 6
+    # Reject a refinement moving the patch center further than this. 0 = uncapped.
+    refine_max_correction_m: float = 2.0
+
 
 @dataclass
 class CrossViewVisualizationParams(ParamsBase):

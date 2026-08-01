@@ -3,7 +3,7 @@ import time
 import numpy as np
 import pytest
 
-from meridian.map3d.similarity_metrics import AlignmentFitness
+from meridian.map3d.similarity_metrics import AlignmentEvaluator, AlignmentFitness
 from meridian.primitive.primitive import LinePrimitive, PointPrimitive
 from meridian.primitive.primitive_list import PrimitiveList
 
@@ -268,6 +268,138 @@ class TestFitnessValue:
         aerial = PrimitiveList([PointPrimitive(id=0, point=np.zeros(3))])
         with pytest.raises(ValueError, match="2D matching frame"):
             compute(aerial, aerial)
+
+
+def evaluator(aerial, ground, **overrides):
+    params = dict(PARAMS)
+    params.update(overrides)
+    return AlignmentEvaluator(aerial_segments=aerial, ground_segments=ground, **params)
+
+
+def perturbed(T, trans_m, rot_deg):
+    """``T`` displaced by a rigid motion in the aerial frame."""
+    th = np.deg2rad(rot_deg)
+    R = np.array([[np.cos(th), -np.sin(th)], [np.sin(th), np.cos(th)]])
+    out = np.array(T, dtype=float)
+    out[:2, :2] = R @ T[:2, :2]
+    out[:2, -1] = R @ T[:2, -1] + np.array([trans_m, 0.0])
+    return out
+
+
+class TestRefinement:
+    def test_recovers_a_perturbed_transform(self, real_size_submaps):
+        aerial, ground, T = real_size_submaps
+        ev = evaluator(aerial, ground)
+        start = perturbed(T, 1.0, 2.0)
+
+        refined = ev.refine(start, max_correction_m=2.0)
+
+        assert refined.applied
+        err_before = np.linalg.norm((start - T)[:2, -1])
+        err_after = np.linalg.norm((refined.T_aerial_ground - T)[:2, -1])
+        assert err_before > 1.0 and err_after < 0.15
+        assert refined.fitness.fitness > ev.fitness(start).fitness
+
+    def test_converges_to_the_same_pose_from_either_side(self, real_size_submaps):
+        aerial, ground, T = real_size_submaps
+        ev = evaluator(aerial, ground)
+        a = ev.refine(perturbed(T, 0.5, 1.0)).T_aerial_ground
+        b = ev.refine(perturbed(T, -0.5, -1.0)).T_aerial_ground
+        assert np.linalg.norm((a - b)[:2, -1]) < 0.05
+
+    def test_already_optimal_pose_is_left_essentially_alone(self, real_size_submaps):
+        aerial, ground, T = real_size_submaps
+        ev = evaluator(aerial, ground)
+        settled = ev.refine(T).T_aerial_ground
+        again = ev.refine(settled)
+        assert again.correction_m < 0.05
+
+    def test_preserves_the_aerial_ground_reflection(self, real_size_submaps):
+        aerial, ground, T = real_size_submaps
+        flipped = np.array(T)
+        flipped[:2, 1] *= -1.0  # improper, as aerial-to-ground registration is
+        assert np.linalg.det(flipped[:2, :2]) < 0
+        refined = evaluator(aerial, ground).refine(flipped)
+        assert np.linalg.det(refined.T_aerial_ground[:2, :2]) < 0
+
+    def test_returns_the_matrix_convention_it_was_given(self, real_size_submaps):
+        aerial, ground, T = real_size_submaps
+        ev = evaluator(aerial, ground)
+        T_2d = np.eye(3)
+        T_2d[:2, :2] = T[:2, :2]
+        T_2d[:2, 2] = T[:2, 3]
+        assert ev.refine(T_2d).T_aerial_ground.shape == (3, 3)
+        assert ev.refine(T).T_aerial_ground.shape == (4, 4)
+
+    def test_correction_cap_rejects_a_large_move(self, real_size_submaps):
+        aerial, ground, T = real_size_submaps
+        ev = evaluator(aerial, ground)
+        start = perturbed(T, 1.0, 2.0)
+        refined = ev.refine(start, max_correction_m=0.1)
+        assert not refined.applied
+        assert np.array_equal(refined.T_aerial_ground, start)
+        assert refined.correction_m > 0.1
+
+    def test_too_few_inliers_leaves_the_hypothesis_untouched(self):
+        aerial = box_submap()
+        aerial.append(PointPrimitive(id=2, point=np.array([10.0, 10.0])))
+        ground = PrimitiveList([PointPrimitive(id=0, point=np.array([10.4, 10.0]))])
+        refined = evaluator(aerial, ground, min_in_patch=1).refine(
+            np.eye(4), min_inliers=6
+        )
+        assert not refined.applied and refined.n_iterations == 0
+        assert refined.fitness.n_inliers == 1
+
+    def test_empty_aerial_map_is_not_refined(self):
+        ground = PrimitiveList([PointPrimitive(id=0, point=np.zeros(2))])
+        refined = evaluator(PrimitiveList(), ground).refine(np.eye(4))
+        assert not refined.applied and refined.fitness.fitness == 0.0
+
+    def test_single_road_does_not_slide_along_itself(self):
+        """Lines constrain only their perpendicular offset, so the minimum-norm
+        step must not invent motion along the road."""
+        aerial = PrimitiveList(
+            [
+                segment(0, [0.0, 0.0], [40.0, 0.0]),
+                segment(1, [0.0, 20.0], [40.0, 20.0]),
+                # widen the patch so both offset ground roads fall inside it
+                PointPrimitive(id=2, point=np.array([0.0, -5.0])),
+                PointPrimitive(id=3, point=np.array([40.0, 25.0])),
+            ]
+        )
+        ground = PrimitiveList(
+            [segment(0, [5.0, 0.6], [35.0, 0.6]), segment(1, [5.0, 20.6], [35.0, 20.6])]
+        )
+        ev = evaluator(aerial, ground, min_in_patch=1)
+        refined = ev.refine(np.eye(4), min_inliers=2)
+
+        assert refined.applied
+        t = refined.T_aerial_ground[:2, -1]
+        assert abs(t[1] + 0.6) < 1e-6  # pulled onto the roads
+        assert abs(t[0]) < 1e-6  # but not along them
+
+    def test_runtime_at_real_submap_size(self, real_size_submaps):
+        """Re-association each iteration costs ~1 fitness eval, plus 1 to score."""
+        aerial, ground, T = real_size_submaps
+        ev = evaluator(aerial, ground)
+        start = perturbed(T, 0.5, 1.0)
+        ev.refine(start)  # warm up
+        elapsed_ms = (
+            min(
+                (lambda t0: (ev.refine(start), time.perf_counter() - t0)[1])(
+                    time.perf_counter()
+                )
+                for _ in range(3)
+            )
+            * 1e3
+        )
+        assert elapsed_ms < 60.0, f"refinement took {elapsed_ms:.1f} ms"
+
+
+def test_evaluator_reuse_matches_one_shot_compute(real_size_submaps):
+    aerial, ground, T = real_size_submaps
+    ev = evaluator(aerial, ground)
+    assert ev.fitness(T).fitness == compute(aerial, ground, T).fitness
 
 
 def test_runtime_at_real_submap_size(real_size_submaps):
