@@ -389,29 +389,31 @@ class CrossViewRPGO:
           way, so geometric verification rather than particle mass picks each
           pair's preferred hypothesis while the per-pair scale stays as
           frequency-ratio had it.
-        - "fitness": the alignment fitness as-is. It is already a Wilson-bounded
-          inlier ratio in [0, 1] and is directly comparable across submaps, so
-          leaving it unnormalized keeps what the ratio forms discard: that a weak
-          match is weak in absolute terms, not merely relative to its own pair.
+        - "fitness-norm": the alignment fitness divided by
+          ``lc_score_fitness_ref`` and clamped to 1.0, so it stays comparable
+          across submaps instead of only within a pair.
 
         Both fitness methods require ``CrossViewMatchingParams.compute_fitness``;
         if any candidate lacks a finite fitness (older match results, or fitness
         disabled) the whole set falls back to "frequency-ratio".
         """
         method = self.params.lc_score_method
-        if method not in ("frequency-ratio", "fitness-ratio", "fitness"):
+        if method not in ("frequency-ratio", "fitness-ratio", "fitness-norm"):
             raise ValueError(f"Unknown lc_score_method: {method}")
 
         weights = np.array(
             [float(c.get("count", 1)) for c in candidates], dtype=np.float64
         )
-        if method in ("fitness-ratio", "fitness"):
+        if method in ("fitness-ratio", "fitness-norm"):
             fitness = np.array(
                 [c.get("fitness", np.nan) for c in candidates], dtype=np.float64
             )
             if np.all(np.isfinite(fitness)):
-                if method == "fitness":
-                    return fitness
+                if method == "fitness-norm":
+                    # Clamp: an off-diagonal above CLIPPER's unit diagonal
+                    # would break the densest-clique objective.
+                    ref = max(self.params.lc_score_fitness_ref, 1e-12)
+                    return np.clip(fitness / ref, 0.0, 1.0)
                 weights = fitness
             else:
                 logger.warning(

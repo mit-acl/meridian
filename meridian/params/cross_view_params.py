@@ -93,10 +93,13 @@ class CrossViewRPGOParams(ParamsBase):
     single_lc_per_ground_aerial_pair: bool = True
     fuse_lc_score: bool = True
     # "frequency-ratio" (particle count) or "fitness-ratio" (alignment fitness),
-    # both normalized per aerial-ground pair, or "fitness" (alignment fitness
-    # unnormalized, so it stays comparable across submaps). The fitness methods
-    # require CrossViewMatchingParams.compute_fitness, else they fall back.
-    lc_score_method: str = "fitness"
+    # both normalized per aerial-ground pair, or "fitness-norm" (fitness scaled
+    # by lc_score_fitness_ref, so it stays comparable across submaps). The
+    # fitness methods require CrossViewMatchingParams.compute_fitness.
+    lc_score_method: str = "fitness-norm"
+    # Fitness mapping to a score of 1.0. Raw fitness tops out near 0.29, which
+    # sits far below CLIPPER's unit diagonal and collapses the densest clique.
+    lc_score_fitness_ref: float = 0.3
     min_num_associations: int = 3
     min_num_associations_rerun: Optional[int] = None
 
