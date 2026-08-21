@@ -63,6 +63,9 @@ class AttemptDiagnostics:
     rerun_lc_obj: Optional[float]
     T_utm_odom_local: Optional[np.ndarray]
     optimized_trajectory_local: Optional[List[np.ndarray]]
+    # Free-rotation initial PGO trajectory (before the known-rotation rerun),
+    # surfaced for the gate-1-passed / gate-2-not diagnostic viz.
+    initial_trajectory_local: Optional[List[np.ndarray]]
 
 
 @dataclass
@@ -601,6 +604,7 @@ class IncrementalLocalization:
             rerun_lc_obj=rerun_lc_obj,
             T_utm_odom_local=T_utm_odom_local,
             optimized_trajectory_local=optimized_trajectory_local,
+            initial_trajectory_local=initial_result.optimized_trajectory,
         )
 
         # Step 6: gate #2 check. Guard against eventual inlier accumulation in
