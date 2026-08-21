@@ -1,5 +1,7 @@
+import atexit
 import itertools
 import logging
+import signal
 from concurrent.futures import ProcessPoolExecutor
 from time import perf_counter as _perf
 from typing import List, Optional, Tuple
@@ -32,12 +34,33 @@ _PERSISTENT_POOL = None
 _PERSISTENT_POOL_WORKERS = None
 
 
+def _ignore_sigint():
+    """Pool-worker initializer: ignore SIGINT so a Ctrl-C on the process group
+    is handled only by the parent. Otherwise every idle worker (blocked in
+    call_queue.get) raises KeyboardInterrupt and dumps an identical traceback.
+    Workers are pure CPU (numpy/shapely) with no state to flush, so it's safe
+    for the parent to tear them down instead."""
+    signal.signal(signal.SIGINT, signal.SIG_IGN)
+
+
+def _shutdown_persistent_pool():
+    global _PERSISTENT_POOL
+    if _PERSISTENT_POOL is not None:
+        _PERSISTENT_POOL.shutdown(wait=False, cancel_futures=True)
+        _PERSISTENT_POOL = None
+
+
+atexit.register(_shutdown_persistent_pool)
+
+
 def _get_persistent_pool(max_workers):
     global _PERSISTENT_POOL, _PERSISTENT_POOL_WORKERS
     if _PERSISTENT_POOL is None or _PERSISTENT_POOL_WORKERS != max_workers:
         if _PERSISTENT_POOL is not None:
             _PERSISTENT_POOL.shutdown(wait=False)
-        _PERSISTENT_POOL = ProcessPoolExecutor(max_workers=max_workers)
+        _PERSISTENT_POOL = ProcessPoolExecutor(
+            max_workers=max_workers, initializer=_ignore_sigint
+        )
         _PERSISTENT_POOL_WORKERS = max_workers
     return _PERSISTENT_POOL
 
