@@ -78,7 +78,8 @@ class AnyLocPipeline(torch.nn.Module):
             img_rgb = np.ascontiguousarray(img_rgb)
         img_pt = self.transform(img_rgb)[None, ...]
         gd = self.forward(img_pt).float()
-        return gd.squeeze(0).cpu().numpy()
+        desc = gd.squeeze(0).cpu().numpy()
+        return desc.astype(np.float16) if self.fp16 else desc
 
     @torch.no_grad()
     def extract(self, img: torch.Tensor) -> torch.Tensor:
@@ -149,6 +150,7 @@ class MeridianVprPipeline(torch.nn.Module):
         from vpr.models.cvmnet import CVMNetHead
 
         self.device = torch.device(device)
+        self.fp16 = fp16
         self.dtype = torch.float16 if fp16 else torch.float32
 
         ckpt = torch.load(resolve_vpr_checkpoint(ckpt_path), map_location="cpu",
@@ -210,4 +212,5 @@ class MeridianVprPipeline(torch.nn.Module):
         tokens = self.backbone(img_pt).float()
         encode = (self.head.encode_ground if view == "ground"
                   else self.head.encode_satellite)
-        return encode(tokens).squeeze(0).cpu().numpy()
+        desc = encode(tokens).squeeze(0).cpu().numpy()
+        return desc.astype(np.float16) if self.fp16 else desc

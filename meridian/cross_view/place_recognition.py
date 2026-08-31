@@ -213,7 +213,8 @@ class CrossViewPlaceRecognition:
             return np.nan
 
         if self.method in IMAGE_METHODS:
-            g = ground_desc
+            g = np.asarray(ground_desc, dtype=np.float32)
+            aerial_desc = np.asarray(aerial_desc, dtype=np.float32)
             if g.ndim == 1:
                 g = g.reshape(1, -1)
             g_norms = np.linalg.norm(g, axis=1, keepdims=True)
