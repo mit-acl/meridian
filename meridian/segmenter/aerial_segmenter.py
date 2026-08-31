@@ -8,10 +8,13 @@ from typing import List
 
 from meridian.map2d.segment2d import Segment2D
 from meridian.params import AerialSegmenterParams
+from meridian.params.cross_view_params import STANDALONE_DESCRIPTORS
 from meridian.segmenter.segmenter_base import SegmenterBase
 
 
 class AerialSegmenter(SegmenterBase):
+    VIEW = "satellite"
+
     def __init__(self, params: AerialSegmenterParams):
         import copy
 
@@ -26,12 +29,16 @@ class AerialSegmenter(SegmenterBase):
 
         Returns:
             Normalized 1-D numpy descriptor array, or None if semantics is
-            disabled and frame_descriptor is not "anyloc".
+            disabled and frame_descriptor is not an image descriptor.
         """
         if crop is not None:
             img_bgr = img_bgr[crop[1] : crop[3], crop[0] : crop[2]]
 
-        if self.params.downsample_factor > 1:
+        # meridian-vpr resizes the crop to its fixed trained size
+        if (
+            self.frame_descriptor_type != "meridian-vpr"
+            and self.params.downsample_factor > 1
+        ):
             img_bgr = cv.resize(
                 img_bgr,
                 (
@@ -41,10 +48,8 @@ class AerialSegmenter(SegmenterBase):
                 interpolation=cv.INTER_LINEAR,
             )
 
-        if self.frame_descriptor_type == "anyloc":
-            return self._compute_anyloc_descriptor(img_bgr)
-        elif self.frame_descriptor_type == "salad":
-            return self._compute_salad_descriptor(img_bgr)
+        if self.frame_descriptor_type in STANDALONE_DESCRIPTORS:
+            return self.image_descriptor(img_bgr)
 
         self._ensure_semantics_model()
         if self.semantics_model is None:

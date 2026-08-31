@@ -13,6 +13,7 @@ from meridian.map3d.dense3d_to_dense2d import (
     flatten_3d_submap,
     submap_2d_to_aerial,
 )
+from meridian.params.cross_view_params import IMAGE_METHODS
 from meridian.map3d.submap import FrameType, Submap
 from meridian.params.ground_segmenter_params import GroundSegmenterParams
 from meridian.params.segment_to_primitive_params import GroundSubmapParams
@@ -106,12 +107,11 @@ class GroundSubmapPrimitiveMapping:
                 sampled_indices.append(i)
                 last_position = position
 
-        # Precompute ground map data for semantic-gem descriptors
-        _attach_gem_descriptors = (
+        _attach_frame_descriptors = (
             self.place_recognition is not None
-            and self.place_recognition.method in ("semantic-gem", "anyloc")
+            and self.place_recognition.method in IMAGE_METHODS
         )
-        if _attach_gem_descriptors:
+        if _attach_frame_descriptors:
             self.place_recognition.precompute_ground_map_data(ground_map)
 
         # For each sampled pose, collect segments with dense points within radius
@@ -178,9 +178,8 @@ class GroundSubmapPrimitiveMapping:
             if len(submap_segments) == 0:
                 continue
 
-            # Attach semantic-gem descriptors if available
             submap_descriptor = None
-            if _attach_gem_descriptors:
+            if _attach_frame_descriptors:
                 submap_descriptor = self.place_recognition.ground_descriptor(
                     None,
                     submap_segments=submap_segments,

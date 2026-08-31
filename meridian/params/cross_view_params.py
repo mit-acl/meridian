@@ -45,12 +45,21 @@ class CrossViewVisualizationParams(ParamsBase):
     estimated_trajectory_color: str = "#fa5ff7"  # light magenta
     gt_trajectory_color: str = "#89fe05"  # lime green
 
+# Place-recognition methods that compare image-level descriptors (one vector
+# per frame); the alternative is segment-level "semantic-point-line".
+IMAGE_METHODS = ("dino-gem", "anyloc", "meridian-vpr", "salad")
+
+# The subset that runs its own model on the raw image
+STANDALONE_DESCRIPTORS = ("anyloc", "meridian-vpr", "salad")
+
 
 @dataclass
 class CrossViewPlaceRecognitionParams(ParamsBase):
     params_key: ClassVar[str] = "cross_view_place_recognition"
 
-    method: str = "anyloc"  # "semantic-gem", "anyloc", or "semantic-point-line"
+    # One of IMAGE_METHODS, or "semantic-point-line". Must match the
+    # segmenters' frame_descriptor for the image methods.
+    method: str = "meridian-vpr"
     ground_descriptor_dist_m: float = 5.0
     k_nearest_neighbors: int = 25
 

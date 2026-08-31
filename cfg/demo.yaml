@@ -4,7 +4,7 @@ segment_mapping:
   fastsam_conf: 0.4
 
 segmenter:
-  frame_descriptor: dino-gem
+  frame_descriptor: meridian-vpr
 
 segment_mapping_data:
 
@@ -69,8 +69,8 @@ cross_view_matching:
   matching_mode: vpr
 
 aerial_segmenter: 
-  downsample_factor: 5
-  frame_descriptor: dino-gem
+  downsample_factor: 5 # not used by vpr, which resizes to trained res
+  frame_descriptor: meridian-vpr
 
 primitive_match: {}
 register: {}

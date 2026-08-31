@@ -43,11 +43,32 @@ After installation, set the following environment variable in your `bashrc` or `
 export MERIDIAN_WEIGHTS=<path to meridian repo>/weights
 ```
 
-<!-- Clone this repo and `pip install .`
-
-Additionally follow the instructions for installing AnyLoc [here](git@github.com:AnyLoc/AnyLoc.git). -->
-
 <!-- For use beyond the vanilla install, check out the [optional set up steps](#optional-set-up) -->
+
+### Place recognition weights
+
+Weights ship in `third_party/vpr/weights/`; `$VPR_CKPT` overrides with
+another file.
+
+| `frame_descriptor` | bundled weights | notes |
+|---|---|---|
+| `meridian-vpr` | `cvmnet_k64.pt` | default; trained for this task |
+| `anyloc` | `anyloc_c_centers.pt` | AnyLoc's urban `l31_value_c32` vocabulary |
+| `dino-gem` | — | no weights, weakest on large maps |
+
+**meridian-vpr** is a two-tower NetVLAD head trained on VIGOR and CVUSA
+cross-view pairs, over the frozen DINOv2 ViT-G/14 layer-31 value facet AnyLoc
+also uses. The checkpoint carries its backbone and head configs, so it
+is the whole model. From the [`vpr`](https://github.com/liqyn/vpr) submodule:
+
+```
+git submodule update --init third_party/vpr
+pip install -e third_party/vpr
+```
+
+To switch backends, set `segmenter.frame_descriptor`,
+`aerial_segmenter.frame_descriptor`, and `cross_view_place_recognition.method`
+together.
 
 ## Pipeline Demo
 

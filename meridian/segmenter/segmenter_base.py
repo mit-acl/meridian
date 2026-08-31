@@ -8,6 +8,7 @@ from fastsam import FastSAMPrompt, FastSAM
 from segment_anything import sam_model_registry, SamAutomaticMaskGenerator
 from transformers import AutoImageProcessor, AutoModel
 
+from meridian.params.cross_view_params import STANDALONE_DESCRIPTORS
 from meridian.params.segmenter_params import SegmenterParamsBase
 
 # Patch torch.load to disable weights_only loading for torch>2.4. FastSAM's
@@ -53,6 +54,10 @@ class SegmenterBase:
     (DINO/DINOv3/DINOv3-HF), feature extraction, and frame descriptors.
     """
 
+    # Which side of the cross-view pair this segmenter's images come from.
+    # Only the two-tower descriptors read it; AerialSegmenter overrides it.
+    VIEW = "ground"
+
     def __init__(self, params: SegmenterParamsBase):
         self.params = params
         self.semantic_patches_shape = None
@@ -62,6 +67,7 @@ class SegmenterBase:
         self._semantics_model_loaded = False
         self._anyloc_loaded = False
         self._salad_loaded = False
+        self._meridian_vpr_loaded = False
 
         self.model = None
         self.semantics_model = None
@@ -69,15 +75,16 @@ class SegmenterBase:
 
         self.frame_descriptor_type = params.frame_descriptor
         self._anyloc_pipeline = None
+        self._meridian_vpr_pipeline = None
         self._salad_model = None
         self._salad_transform = None
         if params.frame_descriptor is not None:
-            assert params.semantics in (
-                "dino",
-                "dinov3",
-                "dinov3-hf",
-            ) or params.frame_descriptor in ("anyloc", "salad"), (
-                "Frame descriptor only supported with DINO, DINOv3, DINOv3-HF semantics, or 'anyloc'/'salad'."
+            assert (
+                params.semantics in ("dino", "dinov3", "dinov3-hf")
+                or params.frame_descriptor in STANDALONE_DESCRIPTORS
+            ), (
+                "Frame descriptor only supported with DINO, DINOv3, DINOv3-HF "
+                f"semantics, or one of {STANDALONE_DESCRIPTORS}."
             )
 
     def _fp16_enabled(self, flag: bool) -> bool:
@@ -103,6 +110,11 @@ class SegmenterBase:
         if not self._salad_loaded:
             self._init_salad()
             self._salad_loaded = True
+
+    def _ensure_meridian_vpr(self):
+        if not self._meridian_vpr_loaded:
+            self._init_meridian_vpr()
+            self._meridian_vpr_loaded = True
 
     def _init_segmentation_model(self):
         if self.params.get_model_type() == "fastsam":
@@ -478,11 +490,12 @@ class SegmenterBase:
     ) -> np.ndarray:
         """Compute a frame-level descriptor from patch features.
 
-        Supports 'dino-gap', 'dino-gmp', 'dino-gem', 'anyloc', and 'salad'.
+        Supports 'dino-gap', 'dino-gmp', 'dino-gem', and everything in
+        STANDALONE_DESCRIPTORS.
 
         Args:
             dino_features: Patch features tensor.
-            img_bgr: BGR image (only needed for 'anyloc' or 'salad').
+            img_bgr: BGR image (only needed for the STANDALONE_DESCRIPTORS).
 
         Returns:
             Normalized 1-D numpy descriptor, or None if no frame_descriptor configured.
@@ -490,10 +503,8 @@ class SegmenterBase:
         if self.frame_descriptor_type is None:
             return None
 
-        if self.frame_descriptor_type == "anyloc":
-            return self._compute_anyloc_descriptor(img_bgr)
-        elif self.frame_descriptor_type == "salad":
-            return self._compute_salad_descriptor(img_bgr)
+        if self.frame_descriptor_type in STANDALONE_DESCRIPTORS:
+            return self.image_descriptor(img_bgr)
 
         with torch.no_grad():
             dino_features_flat = dino_features.view(-1, dino_features.shape[-1])
@@ -508,37 +519,73 @@ class SegmenterBase:
                 )
             else:
                 raise ValueError(
-                    "frame descriptor must be one of 'dino-gap', 'dino-gmp', 'dino-gem', 'anyloc', or 'salad'."
+                    "frame descriptor must be one of 'dino-gap', 'dino-gmp', "
+                    f"'dino-gem', or {STANDALONE_DESCRIPTORS}."
                 )
 
             frame_descriptor /= torch.norm(frame_descriptor)
 
         return frame_descriptor.cpu().detach().numpy()
 
+    # Weights shipped in third_party/vpr, used when $VPR_CKPT is unset.
+    _BUNDLED_WEIGHTS = {
+        "anyloc": "anyloc_c_centers.pt",
+        "meridian-vpr": "cvmnet_k64.pt",
+    }
+
+    def _vpr_ckpt(self):
+        """`params.vpr_ckpt` if set, else the weights bundled with `vpr`."""
+        path = self.params.vpr_ckpt
+        if path is None:
+            name = self._BUNDLED_WEIGHTS.get(self.frame_descriptor_type)
+            if name is None:
+                raise ValueError(
+                    f"frame_descriptor={self.frame_descriptor_type!r} has no "
+                    f"bundled weights -- set $VPR_CKPT "
+                    f"(params.vpr_ckpt = {path!r})."
+                )
+            try:
+                import vpr
+            except ImportError as e:
+                raise ImportError(
+                    f"frame_descriptor={self.frame_descriptor_type!r} needs "
+                    f"the vpr package: pip install -e third_party/vpr"
+                ) from e
+            path = os.path.join(
+                os.path.dirname(os.path.dirname(os.path.abspath(vpr.__file__))),
+                "weights", name,
+            )
+        if not os.path.exists(path):
+            raise FileNotFoundError(
+                f"frame_descriptor={self.frame_descriptor_type!r} weights not "
+                f"found at {path}"
+            )
+        return path
+
+    def image_descriptor(self, img_bgr):
+        """Global descriptor for a raw BGR image, for the STANDALONE_DESCRIPTORS.
+
+        Shared by `get_frame_descriptor` (ground) and `get_crop_descriptor`
+        (aerial); the two differ only in `self.VIEW`.
+        """
+        if self.frame_descriptor_type == "anyloc":
+            return self._compute_anyloc_descriptor(img_bgr)
+        if self.frame_descriptor_type == "meridian-vpr":
+            return self._compute_meridian_vpr_descriptor(img_bgr)
+        if self.frame_descriptor_type == "salad":
+            return self._compute_salad_descriptor(img_bgr)
+        raise ValueError(
+            f"{self.frame_descriptor_type!r} is not one of {STANDALONE_DESCRIPTORS}"
+        )
+
     def _init_anyloc(self):
-        """Initialize the AnyLoc DINOv2 + VLAD pipeline and vocabulary."""
+        """Initialize the AnyLoc DINOv2 + VLAD pipeline."""
         from meridian.segmenter.vpr_pipeline import AnyLocPipeline
 
-        ext_specifier = (
-            f"{self.params.anyloc_dino_model}/"
-            f"l{self.params.anyloc_layer}_{self.params.anyloc_facet}"
-            f"_c{self.params.anyloc_num_clusters}"
-        )
-        c_centers_file = os.path.join(
-            self.params.anyloc_vocab_dir,
-            "vocabulary",
-            ext_specifier,
-            self.params.anyloc_domain,
-            "c_centers.pt",
-        )
-        assert os.path.isfile(c_centers_file), (
-            f"AnyLoc vocabulary not found: {c_centers_file}"
-        )
-
         self._anyloc_pipeline = AnyLocPipeline.from_cached_centers(
-            c_centers_file,
+            self._vpr_ckpt(),
             desc_layer=self.params.anyloc_layer,
-            fp16=self._fp16_enabled(self.params.anyloc_fp16),
+            fp16=self._fp16_enabled(self.params.vpr_fp16),
             device=self.params.device,
         )
 
@@ -555,6 +602,32 @@ class SegmenterBase:
         img_rgb = cv.cvtColor(img_bgr, cv.COLOR_BGR2RGB)
         return self._anyloc_pipeline.describe(img_rgb)
 
+    def _init_meridian_vpr(self):
+        """Initialize the trained cross-view head from third_party/vpr."""
+        from meridian.segmenter.vpr_pipeline import MeridianVprPipeline
+
+        self._meridian_vpr_pipeline = MeridianVprPipeline(
+            self._vpr_ckpt(),
+            fp16=self._fp16_enabled(self.params.vpr_fp16),
+            device=self.params.device,
+        )
+
+    def _compute_meridian_vpr_descriptor(self, img_bgr):
+        """Compute the trained cross-view descriptor from a BGR image.
+
+        `self.VIEW` picks the branch. Both views land in one embedding space --
+        their cosine is the retrieval score.
+
+        Args:
+            img_bgr: BGR image as numpy array.
+
+        Returns:
+            Normalized 1-D numpy array of shape (num_clusters * feature_dim,).
+        """
+        self._ensure_meridian_vpr()
+        img_rgb = cv.cvtColor(img_bgr, cv.COLOR_BGR2RGB)
+        return self._meridian_vpr_pipeline.describe(img_rgb, self.VIEW)
+
     def _init_salad(self):
         """Initialize SALAD (DINOv2 + optimal transport aggregation) model."""
         import sys
@@ -565,7 +638,7 @@ class SegmenterBase:
 
         self._salad_model = dinov2_salad(backbone="dinov2_vitb14", pretrained=True)
         self._salad_model.eval().to(self.params.device)
-        if self._fp16_enabled(self.params.salad_fp16):
+        if self._fp16_enabled(self.params.vpr_fp16):
             self._salad_model.half()
         self._salad_transform = tvf.Compose(
             [
@@ -595,7 +668,7 @@ class SegmenterBase:
         h_new = (h // 14) * 14
         w_new = (w // 14) * 14
         img_pt = tvf.CenterCrop((h_new, w_new))(img_pt)[None, ...]
-        if self._fp16_enabled(self.params.salad_fp16):
+        if self._fp16_enabled(self.params.vpr_fp16):
             img_pt = img_pt.half()
 
         with torch.no_grad():

@@ -22,6 +22,7 @@ from meridian.map3d.map_segment import MapSegment
 from meridian.map3d.observation import Observation
 from meridian.map3d.global_nearest_neighbor import global_nearest_neighbor
 from meridian.params.segment_mapping_params import SegmentMappingParams
+from meridian.params.cross_view_params import IMAGE_METHODS
 from meridian.map3d.submap import FrameType, Submap
 from meridian.primitive.primitive_list import PrimitiveList
 from meridian.primitive.dense_segment import (
@@ -663,14 +664,13 @@ class SegmentMapper:
         if not dense_segments:
             return
 
-        # Attach place recognition descriptor (semantic-gem / anyloc)
+        # Attach place recognition descriptor (any image-level method)
         submap_descriptor = None
-        if self.place_recognition is not None and self.place_recognition.method in (
-            "semantic-gem",
-            "anyloc",
-            "salad",
+        if (
+            self.place_recognition is not None
+            and self.place_recognition.method in IMAGE_METHODS
         ):
-            submap_descriptor = self._compute_gem_descriptor_from_history(
+            submap_descriptor = self._stacked_frame_descriptors_from_history(
                 dense_segments, center=center, max_dist_m=rad_m
             )
 
@@ -730,17 +730,11 @@ class SegmentMapper:
             f"{len(submap_2d.segments)} primitives at t={submap_time:.2f}"
         )
 
-    def _compute_gem_descriptor_from_history(
+    def _stacked_frame_descriptors_from_history(
         self, submap_segments, center=None, max_dist_m=None
     ):
-        """Compute semantic-gem descriptor from frame descriptor history.
-
-        Replicates the logic of CrossViewPlaceRecognition._ground_descriptor_gem()
-        but reads directly from the mapper's live history arrays. When
-        ``center`` and ``max_dist_m`` are provided, frames captured from camera
-        poses farther than ``max_dist_m`` from ``center`` are excluded so the
-        descriptor reflects only the area inside the submap radius.
-        """
+        """CrossViewPlaceRecognition._stacked_frame_descriptors, but reading
+        the mapper's live history arrays instead of a precomputed cache."""
         seg_first = [s.first_seen for s in submap_segments if s.first_seen is not None]
         seg_last = [s.last_seen for s in submap_segments if s.last_seen is not None]
         if not seg_first or not seg_last:

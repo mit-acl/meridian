@@ -1,0 +1,4 @@
+[submodule "third_party/vpr"]
+	path = third_party/vpr
+	url = https://github.com/liqyn/vpr.git
+	branch = meridian

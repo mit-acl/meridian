@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from typing import ClassVar, List, Tuple
+from typing import ClassVar, List, Optional, Tuple
 
 import numpy as np
 
@@ -33,20 +33,15 @@ class SegmenterParamsBase(ParamsBase):
     triangle_ignore_masks: List[
         Tuple[Tuple[int, int], Tuple[int, int], Tuple[int, int]]
     ] = None
-    frame_descriptor: str = "anyloc"  # anyloc, dino-gem, salad
+    frame_descriptor: str = "meridian-vpr"  # meridian-vpr, anyloc, dino-gem, salad
 
-    # AnyLoc params (used when frame_descriptor == "anyloc")
-    anyloc_vocab_dir: str = "${ANYLOC_VOCAB_DIR}"
-    anyloc_domain: str = "urban"
-    anyloc_num_clusters: int = 32
-    anyloc_dino_model: str = "dinov2_vitg14"
-    anyloc_layer: int = 31
-    anyloc_facet: str = "value"
-    anyloc_fp16: bool = True
+    # Weights override; unset -> the third_party/vpr/weights bundle.
+    vpr_ckpt: Optional[str] = "${VPR_CKPT}"
+    vpr_fp16: bool = True  # fp16 for whichever frame descriptor is selected
+    anyloc_layer: int = 31 # DINOv2 block for AnyLoc vocabulary
 
     # SALAD params (used when frame_descriptor == "salad")
     salad_path: str = "${SALAD_PATH}"
-    salad_fp16: bool = True
 
     def get_model_type(self):
         return self.model_type.lower()
@@ -63,7 +58,11 @@ class SegmenterParamsBase(ParamsBase):
         self.dinov3_path = expandvars_recursive(self.dinov3_path)
         if self.dinov3_weights is not None:
             self.dinov3_weights = expandvars_recursive(self.dinov3_weights)
-        self.anyloc_vocab_dir = expandvars_recursive(self.anyloc_vocab_dir)
+        # Unset $VPR_CKPT survives expansion as the literal "${VPR_CKPT}".
+        if self.vpr_ckpt is not None:
+            self.vpr_ckpt = expandvars_recursive(self.vpr_ckpt)
+            if self.vpr_ckpt.startswith("$"):
+                self.vpr_ckpt = None
         self.salad_path = expandvars_recursive(self.salad_path)
 
 
