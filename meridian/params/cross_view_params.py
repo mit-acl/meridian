@@ -31,6 +31,29 @@ class CrossViewMatchingParams(ParamsBase):
     match_trans_err_m: float = 5.0
     match_rot_err_deg: float = 10.0
 
+    # Compute full-submap alignment fitness per hypothesis, rank by it, and make
+    # it available downstream (see CrossViewRPGOParams.lc_score_method).
+    compute_fitness: bool = True
+    # Score this many count-ranked clusters with fitness before keeping the
+    # best RegisterParams.max_hypotheses of them. 0 = score all.
+    fitness_prescreen_hypotheses: int = 40
+    fitness_point_inlier_thresh_m: float = 1.0
+    fitness_line_inlier_thresh_m: float = 1.5
+    fitness_line_angle_thresh_deg: float = 5.0
+    fitness_line_min_overlap: float = 0.25
+    fitness_min_in_patch: int = 10
+    # Wilson lower-bound confidence (standard errors)
+    fitness_wilson_z: float = 2.576
+
+    # ICP re-fit of each returned hypothesis to its own fitness inliers, for
+    # sub-meter alignment. Requires compute_fitness; ~1 fitness eval per iter.
+    refine_hypotheses: bool = False
+    refine_max_iters: int = 3
+    # Below this many correspondences the hypothesis is left alone.
+    refine_min_inliers: int = 6
+    # Reject a refinement moving the patch center further than this. 0 = uncapped.
+    refine_max_correction_m: float = 2.0
+
 
 @dataclass
 class CrossViewVisualizationParams(ParamsBase):
@@ -78,7 +101,14 @@ class CrossViewRPGOParams(ParamsBase):
     single_lc_per_ground_sm: bool = True
     single_lc_per_ground_aerial_pair: bool = True
     fuse_lc_score: bool = True
-    lc_score_method: str = "frequency-ratio"
+    # "frequency-ratio" (particle count) or "fitness-ratio" (alignment fitness),
+    # both normalized per aerial-ground pair, or "fitness-norm" (fitness scaled
+    # by lc_score_fitness_ref, so it stays comparable across submaps). The
+    # fitness methods require CrossViewMatchingParams.compute_fitness.
+    lc_score_method: str = "fitness-norm"
+    # Fitness mapping to a score of 1.0. Raw fitness tops out near 0.29, which
+    # sits far below CLIPPER's unit diagonal and collapses the densest clique.
+    lc_score_fitness_ref: float = 0.3
     min_num_associations: int = 3
     min_num_associations_rerun: Optional[int] = None
 

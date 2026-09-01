@@ -372,27 +372,68 @@ class CrossViewRPGO:
         return np.array(clipper.get_solution().nodes)
 
     def _compute_lc_scores(self, candidates: List[dict]) -> np.ndarray:
-        """Per-LC quality score in [0, 1].
+        """Per-LC quality score, written to D[18] and fused into the affinity
+        matrix as cbrt(pairwise * s_i * s_j) when ``fuse_lc_score`` is set.
 
-        Method "frequency-ratio" normalizes each candidate's particle count by
-        the max count among candidates that share the same (ground_key,
-        aerial_key) pair: top hypothesis per pair is 1.0, runners-up scale down.
+        Must be in [0, 1]: CLIPPER's affinity matrix carries an implicit unit
+        diagonal, so the densest-clique objective only means "clique size" while
+        off-diagonal entries stay below it. A score at or below CLIPPER's
+        ``affinityeps`` (1e-4) drops that candidate from the graph entirely.
+
+        - "frequency-ratio": the matcher's particle count, normalized by the
+          largest weight among candidates sharing the same (ground_key,
+          aerial_key) pair. Counts are unbounded, so only their ratio within a
+          pair is usable -- which means the top hypothesis of every pair scores
+          1.0 no matter how poor the pair is.
+        - "fitness-ratio": the full-submap alignment fitness, normalized the same
+          way, so geometric verification rather than particle mass picks each
+          pair's preferred hypothesis while the per-pair scale stays as
+          frequency-ratio had it.
+        - "fitness-norm": the alignment fitness divided by
+          ``lc_score_fitness_ref`` and clamped to 1.0, so it stays comparable
+          across submaps instead of only within a pair.
+
+        Both fitness methods require ``CrossViewMatchingParams.compute_fitness``;
+        if any candidate lacks a finite fitness (older match results, or fitness
+        disabled) the whole set falls back to "frequency-ratio".
         """
         method = self.params.lc_score_method
-        if method == "frequency-ratio":
-            pair_max: dict = {}
-            for c in candidates:
-                key = (c["ground_key"], c["aerial_key"])
-                pair_max[key] = max(pair_max.get(key, 0), c.get("count", 1))
-            return np.array(
-                [
-                    c.get("count", 1)
-                    / max(pair_max[(c["ground_key"], c["aerial_key"])], 1)
-                    for c in candidates
-                ],
-                dtype=np.float64,
+        if method not in ("frequency-ratio", "fitness-ratio", "fitness-norm"):
+            raise ValueError(f"Unknown lc_score_method: {method}")
+
+        weights = np.array(
+            [float(c.get("count", 1)) for c in candidates], dtype=np.float64
+        )
+        if method in ("fitness-ratio", "fitness-norm"):
+            fitness = np.array(
+                [c.get("fitness", np.nan) for c in candidates], dtype=np.float64
             )
-        raise ValueError(f"Unknown lc_score_method: {method}")
+            if np.all(np.isfinite(fitness)):
+                if method == "fitness-norm":
+                    # Clamp: an off-diagonal above CLIPPER's unit diagonal
+                    # would break the densest-clique objective.
+                    ref = max(self.params.lc_score_fitness_ref, 1e-12)
+                    return np.clip(fitness / ref, 0.0, 1.0)
+                weights = fitness
+            else:
+                logger.warning(
+                    f"lc_score_method={method!r} but not all candidates carry a "
+                    "finite fitness; falling back to frequency-ratio. Enable "
+                    "cross_view_matching.compute_fitness and regenerate the match "
+                    "results to use fitness."
+                )
+
+        pair_max: dict = {}
+        for c, w in zip(candidates, weights):
+            key = (c["ground_key"], c["aerial_key"])
+            pair_max[key] = max(pair_max.get(key, 0.0), w)
+        return np.array(
+            [
+                w / max(pair_max[(c["ground_key"], c["aerial_key"])], 1e-12)
+                for c, w in zip(candidates, weights)
+            ],
+            dtype=np.float64,
+        )
 
     def run_clipper_cpp(
         self,

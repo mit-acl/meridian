@@ -19,6 +19,11 @@ from meridian.pipeline.result import (
 from meridian.register.registerer import (
     Registerer2D,
 )
+from meridian.map3d.similarity_metrics import (
+    AlignmentEvaluator,
+    AlignmentFitnessResult,
+    AlignmentRefinementResult,
+)
 from meridian.primitive.primitive_list import PrimitiveList
 
 logger = logging.getLogger(__name__)
@@ -46,6 +51,7 @@ class SingleMatchResult:
     matched_ground: PrimitiveList = None
     matched_aerial: PrimitiveList = None
     T_aerial_ground_odom_2d: "np.ndarray | None" = None
+    alignment_fitness: "AlignmentFitnessResult | None" = None
 
 
 @dataclass
@@ -495,14 +501,57 @@ class CrossViewMatching:
 
         runtime_s = time.time() - t0
 
-        # Cluster by transformation similarity if multiple hypotheses
+        # When fitness re-ranks hypotheses, keep a deeper shortlist (M) than we return (N),
+        n_keep = self.registerer.params.max_hypotheses
+        n_scored = n_keep
+        if self.pipeline_params.compute_fitness and n_keep > 0:
+            prescreen = self.pipeline_params.fitness_prescreen_hypotheses
+            n_scored = max(n_keep, prescreen) if prescreen > 0 else 0
         if len(raw_results) > 1:
-            results = self.registerer.cluster_hypotheses(raw_results)
+            results = self.registerer.cluster_hypotheses(
+                raw_results, max_hypotheses=n_scored
+            )
         elif len(raw_results) == 1:
             raw_results[0][0].pose_result.count = raw_results[0][2]
             results = [raw_results[0][0]]
         else:
             results = []
+
+        # Full-submap alignment fitness
+        if self.pipeline_params.compute_fitness and results:
+            evaluator = AlignmentEvaluator(
+                aerial_segments=aerial_segs_j,
+                ground_segments=ground_segs_i,
+                point_inlier_thresh_m=self.pipeline_params.fitness_point_inlier_thresh_m,
+                line_inlier_thresh_m=self.pipeline_params.fitness_line_inlier_thresh_m,
+                line_angle_thresh_rad=np.deg2rad(
+                    self.pipeline_params.fitness_line_angle_thresh_deg
+                ),
+                line_min_overlap=self.pipeline_params.fitness_line_min_overlap,
+                min_in_patch=self.pipeline_params.fitness_min_in_patch,
+                wilson_z=self.pipeline_params.fitness_wilson_z,
+            )
+            for result in results:
+                self._store_fitness(
+                    result, evaluator.fitness(result.T_aerial_ground_odom_2d)
+                )
+
+            results.sort(key=self._fitness_sort_key, reverse=True)
+            if n_keep > 0:
+                results = results[:n_keep]
+
+            # Only the hypotheses we return are worth polishing.
+            if self.pipeline_params.refine_hypotheses:
+                for result in results:
+                    refinement = evaluator.refine(
+                        result.T_aerial_ground_odom_2d,
+                        max_iters=self.pipeline_params.refine_max_iters,
+                        min_inliers=self.pipeline_params.refine_min_inliers,
+                        max_correction_m=self.pipeline_params.refine_max_correction_m,
+                    )
+                    if refinement.applied:
+                        self._apply_refinement(result, refinement)
+                results.sort(key=self._fitness_sort_key, reverse=True)
 
         # Set runtime on first result
         if results:
@@ -522,6 +571,40 @@ class CrossViewMatching:
             ]
 
         return results
+
+    @staticmethod
+    def _store_fitness(
+        result: SingleMatchResult, fitness_result: AlignmentFitnessResult
+    ) -> None:
+        result.alignment_fitness = fitness_result
+        result.pose_result.fitness = fitness_result.fitness
+        result.pose_result.inlier_ratio = fitness_result.inlier_ratio
+
+    @staticmethod
+    def _fitness_sort_key(result: SingleMatchResult) -> Tuple[float, int]:
+        fitness = result.pose_result.fitness
+        return (
+            -1.0 if np.isnan(fitness) else fitness,
+            result.pose_result.count,
+        )
+
+    @classmethod
+    def _apply_refinement(
+        cls, result: SingleMatchResult, refinement: AlignmentRefinementResult
+    ) -> None:
+        """Carry a refined 2D transform through to the SE(3) estimate.
+
+        The refinement is a left-multiplied motion in the aerial frame, so it
+        composes onto T_i_j_hat without the extrinsics folded into it.
+        """
+        delta_2d = refinement.T_aerial_ground @ np.linalg.inv(
+            result.T_aerial_ground_odom_2d
+        )
+        result.pose_result.T_i_j_hat = (
+            cls._se2_to_se3(delta_2d) @ result.pose_result.T_i_j_hat
+        )
+        result.T_aerial_ground_odom_2d = refinement.T_aerial_ground
+        cls._store_fitness(result, refinement.fitness)
 
     @staticmethod
     def _se3_to_se2(T_4x4: np.ndarray) -> np.ndarray:
