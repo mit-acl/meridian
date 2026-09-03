@@ -13,7 +13,6 @@ from meridian.map3d.dense3d_to_dense2d import (
     flatten_3d_submap,
     submap_2d_to_aerial,
 )
-from meridian.params.cross_view_params import IMAGE_METHODS
 from meridian.map3d.submap import FrameType, Submap
 from meridian.params.ground_segmenter_params import GroundSegmenterParams
 from meridian.params.segment_to_primitive_params import GroundSubmapParams
@@ -109,7 +108,7 @@ class GroundSubmapPrimitiveMapping:
 
         _attach_frame_descriptors = (
             self.place_recognition is not None
-            and self.place_recognition.method in IMAGE_METHODS
+            and self.place_recognition.comparison == "image"
         )
         if _attach_frame_descriptors:
             self.place_recognition.precompute_ground_map_data(ground_map)
@@ -195,6 +194,8 @@ class GroundSubmapPrimitiveMapping:
                 segment_frame=FrameType.CAMERA,
                 descriptor=submap_descriptor,
             )
+            if self.place_recognition is not None:
+                self.place_recognition.tag(submap)
 
             # Transform segments from odom frame to submap-local frame
             T_submap_odom = np.linalg.inv(submap.pose)
@@ -286,7 +287,7 @@ class GroundSubmapPrimitiveMapping:
         ground_descriptor = submap.descriptor
         if (
             self.place_recognition is not None
-            and self.place_recognition.method == "semantic-point-line"
+            and self.place_recognition.comparison == "semantic-point-line"
         ):
             ground_descriptor = self.place_recognition.ground_descriptor(
                 None, submap_segments=sparse_general_segments
@@ -301,6 +302,8 @@ class GroundSubmapPrimitiveMapping:
             descriptor=ground_descriptor,
             metadata={"camera_pose": submap.pose},
         )
+        if self.place_recognition is not None:
+            self.place_recognition.tag(submap_2d)
 
         intermediate = None
         if return_intermediates:

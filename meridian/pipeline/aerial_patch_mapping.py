@@ -50,8 +50,16 @@ def aerial_patch_mapping(params, output_dir):
     except Exception:
         pr_params = None
     from meridian.cross_view.place_recognition import CrossViewPlaceRecognition
+    from meridian.params.cross_view_params import check_frame_descriptors_match
 
-    place_recognition = CrossViewPlaceRecognition(pr_params) if pr_params else None
+    descriptor_type = (
+        check_frame_descriptors_match(params, pr_params.comparison)
+        if pr_params is not None
+        else None
+    )
+    place_recognition = (
+        CrossViewPlaceRecognition(pr_params, descriptor_type) if pr_params else None
+    )
 
     # Load aerial image
     print("Loading aerial image...")

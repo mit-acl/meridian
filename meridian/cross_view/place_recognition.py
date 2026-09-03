@@ -2,10 +2,7 @@ import logging
 
 import numpy as np
 
-from meridian.params.cross_view_params import (
-    IMAGE_METHODS,
-    CrossViewPlaceRecognitionParams,
-)
+from meridian.params.cross_view_params import CrossViewPlaceRecognitionParams
 
 logger = logging.getLogger(__name__)
 
@@ -13,19 +10,23 @@ logger = logging.getLogger(__name__)
 class CrossViewPlaceRecognition:
     """Descriptor computation and similarity for cross-view place recognition.
 
-    Supports five methods:
-    - "dino-gem": DINO-GeM image-level descriptors
-    - "anyloc": AnyLoc (DINOv2 + VLAD) image-level descriptors
-    - "meridian-vpr": trained two-tower cross-view NetVLAD (third_party/vpr)
-    - "salad": SALAD (DINOv2 + optimal transport) image-level descriptors
-    - "semantic-point-line": segment-level cosine features (mean point + mean line)
+    `params.comparison` selects what is compared, not which model runs:
+    - "image": the segmenters' frame/crop descriptors, max cosine over the
+      submap's frame stack
+    - "semantic-point-line": segment cos_features (mean point + mean line),
+      plain cosine
     """
 
-    def __init__(self, params: CrossViewPlaceRecognitionParams):
+    def __init__(
+        self,
+        params: CrossViewPlaceRecognitionParams,
+        descriptor_type: str = None,
+    ):
         self.params = params
-        self.method = params.method
+        self.comparison = params.comparison
+        self.descriptor_type = descriptor_type
 
-        # Frame cache for the image methods; filled by precompute_ground_map_data.
+        # Frame cache for the image comparison; filled by precompute_ground_map_data.
         self._map_times = None
         self._map_descriptors = None
         self._map_positions = None
@@ -41,6 +42,7 @@ class CrossViewPlaceRecognition:
         self._map_times = self._map_descriptors = self._map_positions = None
         if ground_map.descriptors is None:
             return
+        self._check_source("Ground map", getattr(ground_map, "descriptor_type", None))
         valid_mask = np.array([d is not None for d in ground_map.descriptors])
         if not valid_mask.any():
             return
@@ -59,19 +61,19 @@ class CrossViewPlaceRecognition:
 
         Args:
             aerial_submap: Submap with .segments (semantic-point-line)
-            aerial_segmenter: AerialSegmenter (required for the image methods)
-            img_bgr: BGR image (required for the image methods)
-            crop: (x1, y1, x2, y2) pixel crop (required for the image methods)
+            aerial_segmenter: AerialSegmenter (required for "image")
+            img_bgr: BGR image (required for "image")
+            crop: (x1, y1, x2, y2) pixel crop (required for "image")
 
         Returns:
             np.ndarray descriptor, or None
         """
-        if self.method in IMAGE_METHODS:
+        if self.comparison == "image":
             return aerial_segmenter.get_crop_descriptor(img_bgr, crop=crop)
-        elif self.method == "semantic-point-line":
+        elif self.comparison == "semantic-point-line":
             return self._segment_cos_descriptor(aerial_submap.segments)
         else:
-            raise ValueError(f"Unknown method: {self.method}")
+            raise ValueError(f"Unknown comparison: {self.comparison}")
 
     def ground_descriptor(
         self,
@@ -84,7 +86,7 @@ class CrossViewPlaceRecognition:
 
         Args:
             ground_submap: Submap, or None if submap_segments is provided
-            submap_segments: segments for this submap. Image methods take
+            submap_segments: segments for this submap. "image" takes
                 DenseSegments (time-window extraction); semantic-point-line a
                 PrimitiveList.
             center: optional 3D submap center (odom frame)
@@ -94,11 +96,11 @@ class CrossViewPlaceRecognition:
         Returns:
             np.ndarray descriptor, or None
         """
-        if self.method in IMAGE_METHODS:
+        if self.comparison == "image":
             return self._stacked_frame_descriptors(
                 submap_segments, center=center, max_dist_m=max_dist_m
             )
-        elif self.method == "semantic-point-line":
+        elif self.comparison == "semantic-point-line":
             segments = (
                 submap_segments
                 if submap_segments is not None
@@ -106,12 +108,12 @@ class CrossViewPlaceRecognition:
             )
             return self._segment_cos_descriptor(segments)
         else:
-            raise ValueError(f"Unknown method: {self.method}")
+            raise ValueError(f"Unknown comparison: {self.comparison}")
 
     def _stacked_frame_descriptors(self, submap_segments, center=None,
                                    max_dist_m=None):
         """Stack cached frame descriptors for a ground submap. Works for every
-        image method -- frames hold whatever backend the segmenter ran.
+        model -- frames hold whatever backend the segmenter ran.
 
         Args:
             submap_segments: segments with .first_seen/.last_seen
@@ -199,7 +201,7 @@ class CrossViewPlaceRecognition:
     def similarity(self, ground_desc, aerial_desc):
         """Similarity between a ground and an aerial descriptor.
 
-        Image methods: max cosine over the ground frame stack (N, D) vs the
+        "image": max cosine over the ground frame stack (N, D) vs the
         aerial (D,). semantic-point-line: plain cosine.
 
         Args:
@@ -212,7 +214,7 @@ class CrossViewPlaceRecognition:
         if ground_desc is None or aerial_desc is None:
             return np.nan
 
-        if self.method in IMAGE_METHODS:
+        if self.comparison == "image":
             g = np.asarray(ground_desc, dtype=np.float32)
             aerial_desc = np.asarray(aerial_desc, dtype=np.float32)
             if g.ndim == 1:
@@ -228,14 +230,14 @@ class CrossViewPlaceRecognition:
 
             dots = g_norm @ a_norm
             return float(np.max(dots))
-        elif self.method == "semantic-point-line":
+        elif self.comparison == "semantic-point-line":
             g_norm_val = np.linalg.norm(ground_desc)
             a_norm_val = np.linalg.norm(aerial_desc)
             if g_norm_val < 1e-12 or a_norm_val < 1e-12:
                 return np.nan
             return float(np.dot(ground_desc / g_norm_val, aerial_desc / a_norm_val))
         else:
-            raise ValueError(f"Unknown method: {self.method}")
+            raise ValueError(f"Unknown comparison: {self.comparison}")
 
     def compute_similarity_matrix(self, ground_submaps, aerial_submaps):
         """Pairwise `similarity` over precomputed submap.descriptor values.
@@ -248,7 +250,20 @@ class CrossViewPlaceRecognition:
             sim_matrix: (num_ground, num_aerial) ndarray
             ground_keys: sorted ground submap keys
             aerial_keys: sorted aerial submap keys
+
+        Raises:
+            ValueError: either side's descriptors came from another model
         """
+        ground_tag = self._tag_of(ground_submaps)
+        aerial_tag = self._tag_of(aerial_submaps)
+        self._check_source("Ground submaps", ground_tag)
+        self._check_source("Aerial submaps", aerial_tag)
+        if None not in (ground_tag, aerial_tag) and ground_tag != aerial_tag:
+            raise ValueError(
+                f"Ground submap descriptors came from {ground_tag!r} and aerial "
+                f"from {aerial_tag!r}; rebuild one side."
+            )
+
         ground_keys = sorted(ground_submaps.keys(), key=lambda k: int(k))
         aerial_keys = sorted(aerial_submaps.keys())
 
@@ -261,3 +276,32 @@ class CrossViewPlaceRecognition:
                 sim_matrix[gi, ai] = self.similarity(g_desc, a_desc)
 
         return sim_matrix, ground_keys, aerial_keys
+
+    def tag(self, submap):
+        """Record which model made `submap.descriptor`, for the disk round trip."""
+        if submap.descriptor is None or self.descriptor_type is None:
+            return
+        if submap.metadata is None:
+            submap.metadata = {}
+        submap.metadata["descriptor_type"] = self.descriptor_type
+
+    @staticmethod
+    def _tag_of(submaps):
+        """First stamped descriptor_type among `submaps`, or None if untagged."""
+        for submap in submaps.values():
+            if submap.descriptor is not None and submap.metadata:
+                tag = submap.metadata.get("descriptor_type")
+                if tag is not None:
+                    return tag
+        return None
+
+    def _check_source(self, what, found):
+        """Raise if `found` contradicts the configured model. None = untagged."""
+        if found is None or self.descriptor_type is None:
+            return
+        if found != self.descriptor_type:
+            raise ValueError(
+                f"{what} descriptors came from {found!r} but this run uses "
+                f"{self.descriptor_type!r}. Rebuild them, or set "
+                "frame_descriptor to match."
+            )

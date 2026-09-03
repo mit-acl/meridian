@@ -41,6 +41,8 @@ class ParamsBase:
 
         try:
             return cls(**params)
+        except ValueError:
+            raise
         except Exception:
             import warnings
 

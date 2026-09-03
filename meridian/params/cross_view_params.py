@@ -1,7 +1,10 @@
+import os
+import warnings
 from dataclasses import dataclass
 from typing import ClassVar, Optional, Tuple
 
 import numpy as np
+import yaml
 
 from meridian.params.params_base import ParamsBase
 
@@ -45,23 +48,49 @@ class CrossViewVisualizationParams(ParamsBase):
     estimated_trajectory_color: str = "#fa5ff7"  # light magenta
     gt_trajectory_color: str = "#89fe05"  # lime green
 
-# Place-recognition methods that compare image-level descriptors (one vector
-# per frame); the alternative is segment-level "semantic-point-line".
-IMAGE_METHODS = ("dino-gem", "anyloc", "meridian-vpr", "salad")
-
-# The subset that runs its own model on the raw image
+# Values `frame_descriptor` accepts, on either segmenter.
+# Pooled from the segmenter's DINO patch features
+POOLED_DESCRIPTORS = ("dino-gap", "dino-gmp", "dino-gem")
+# Own model, run on the raw image
 STANDALONE_DESCRIPTORS = ("anyloc", "meridian-vpr", "salad")
+FRAME_DESCRIPTORS = POOLED_DESCRIPTORS + STANDALONE_DESCRIPTORS
+
+COMPARISONS = ("image", "semantic-point-line")
+
+# Old `method:` values; every image one only ever selected "image".
+_LEGACY_METHODS = {name: "image" for name in FRAME_DESCRIPTORS}
+_LEGACY_METHODS["semantic-point-line"] = "semantic-point-line"
 
 
 @dataclass
 class CrossViewPlaceRecognitionParams(ParamsBase):
     params_key: ClassVar[str] = "cross_view_place_recognition"
 
-    # One of IMAGE_METHODS, or "semantic-point-line". Must match the
-    # segmenters' frame_descriptor for the image methods.
-    method: str = "meridian-vpr"
+    # What to compare. One of COMPARISONS.
+    comparison: str = "image"
     ground_descriptor_dist_m: float = 5.0
     k_nearest_neighbors: int = 25
+
+    method: Optional[str] = None  # deprecated spelling of `comparison`
+
+    def __post_init__(self):
+        if self.method is not None:
+            mapped = _LEGACY_METHODS.get(self.method)
+            if mapped is None:
+                raise ValueError(f"Unknown legacy method: {self.method!r}")
+            warnings.warn(
+                f"`method: {self.method}` is deprecated; use "
+                f"`comparison: {mapped}`. The model comes from "
+                "frame_descriptor, not from here.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+            self.comparison = mapped
+            self.method = None
+        if self.comparison not in COMPARISONS:
+            raise ValueError(
+                f"comparison={self.comparison!r} must be one of {COMPARISONS}."
+            )
 
 
 @dataclass
@@ -147,3 +176,55 @@ class CrossViewIncrementalParams(ParamsBase):
     # In other words, all hypotheses will remain for the n most recent lcs,
     # until newer loop closure distributions have been acquired.
     delay_most_recent_lc_commit_num: int = 2
+
+
+def check_frame_descriptors_match(params_source, comparison=None, run=None):
+    """Ground and aerial descriptors must come from the same model.
+
+    Args:
+        params_source: params YAML path or directory
+        comparison: CrossViewPlaceRecognitionParams.comparison, if known
+        run: run key within the YAML
+
+    Returns:
+        The agreed frame_descriptor, to stamp onto whatever it produces, or
+        None if neither block is present.
+    """
+    from meridian.params.segmenter_params import (
+        AerialSegmenterParams,
+        SegmenterParams,
+    )
+
+    found = {
+        key: cls.load(params_source, run=run).frame_descriptor
+        for key, cls in (
+            ("segmenter", SegmenterParams),
+            ("aerial_segmenter", AerialSegmenterParams),
+        )
+        if _block_present(params_source, key)
+    }
+    if len(set(found.values())) > 1:
+        pairs = ", ".join(f"{k}.frame_descriptor={v!r}" for k, v in found.items())
+        raise ValueError(
+            f"{pairs}; cross-view similarity between two different models is "
+            "meaningless."
+        )
+    if not found:
+        return None
+
+    descriptor = next(iter(found.values()))
+    if comparison == "image" and descriptor is None:
+        raise ValueError(
+            "cross_view_place_recognition.comparison='image' compares frame "
+            "descriptors, but frame_descriptor is unset; every similarity "
+            "would be nan."
+        )
+    return descriptor
+
+
+def _block_present(params_source, key):
+    """Whether `key` is configured in `params_source` at all."""
+    if os.path.isdir(params_source):
+        return os.path.exists(os.path.join(params_source, f"{key}.yaml"))
+    with open(params_source, "r") as f:
+        return key in (yaml.full_load(f) or {})

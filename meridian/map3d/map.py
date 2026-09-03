@@ -14,6 +14,7 @@ class SegmentMap:
     trajectory: List[np.ndarray]  # 4x4 poses (FLU frame)
     times: List[float]
     descriptors: List[np.ndarray] = None
+    descriptor_type: str = None
 
     def __post_init__(self):
         assert len(self.trajectory) == len(self.times), (
@@ -70,6 +71,7 @@ class SegmentMap:
                 descriptors=reference.descriptors + other.descriptors
                 if reference.descriptors is not None and other.descriptors is not None
                 else None,
+                descriptor_type=reference.descriptor_type or other.descriptor_type,
             )
         else:
             while len(maps) > 1:

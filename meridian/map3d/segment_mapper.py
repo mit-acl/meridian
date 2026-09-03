@@ -22,7 +22,6 @@ from meridian.map3d.map_segment import MapSegment
 from meridian.map3d.observation import Observation
 from meridian.map3d.global_nearest_neighbor import global_nearest_neighbor
 from meridian.params.segment_mapping_params import SegmentMappingParams
-from meridian.params.cross_view_params import IMAGE_METHODS
 from meridian.map3d.submap import FrameType, Submap
 from meridian.primitive.primitive_list import PrimitiveList
 from meridian.primitive.dense_segment import (
@@ -664,11 +663,11 @@ class SegmentMapper:
         if not dense_segments:
             return
 
-        # Attach place recognition descriptor (any image-level method)
+        # Attach place recognition descriptor (image comparison)
         submap_descriptor = None
         if (
             self.place_recognition is not None
-            and self.place_recognition.method in IMAGE_METHODS
+            and self.place_recognition.comparison == "image"
         ):
             submap_descriptor = self._stacked_frame_descriptors_from_history(
                 dense_segments, center=center, max_dist_m=rad_m
@@ -705,7 +704,7 @@ class SegmentMapper:
         # Recompute descriptor for semantic-point-line
         if (
             self.place_recognition is not None
-            and self.place_recognition.method == "semantic-point-line"
+            and self.place_recognition.comparison == "semantic-point-line"
         ):
             submap_2d = Submap(
                 id=submap_2d.id,

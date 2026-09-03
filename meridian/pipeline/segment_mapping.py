@@ -221,6 +221,9 @@ class SegmentMapping:
             trajectory=self.mapper.poses_cam_history,
             times=self.mapper.times_history,
             descriptors=descriptors,
+            descriptor_type=(
+                self.segmenter.frame_descriptor_type if descriptors else None
+            ),
         )
 
 
@@ -294,14 +297,23 @@ def segment_mapping(
         # Place recognition is optional
         try:
             from meridian.params import CrossViewPlaceRecognitionParams
+            from meridian.params.cross_view_params import (
+                check_frame_descriptors_match,
+            )
             from meridian.cross_view.place_recognition import (
                 CrossViewPlaceRecognition,
             )
 
             pr_params = CrossViewPlaceRecognitionParams.load(params_path, run=run)
-            place_recognition = CrossViewPlaceRecognition(pr_params)
         except Exception:
-            place_recognition = None
+            pr_params = None
+        if pr_params is not None:
+            place_recognition = CrossViewPlaceRecognition(
+                pr_params,
+                check_frame_descriptors_match(
+                    params_path, pr_params.comparison, run=run
+                ),
+            )
 
         ground_submap_mapping = GroundSubmapPrimitiveMapping(
             ground_submap_params,

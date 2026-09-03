@@ -25,6 +25,7 @@ from meridian.params import (
     GroundSegmenterParams,
 )
 from meridian.cross_view.place_recognition import CrossViewPlaceRecognition
+from meridian.params.cross_view_params import check_frame_descriptors_match
 from meridian.pipeline.data import CrossViewLocalizationData
 from meridian.utils import expandvars_recursive
 from meridian.segmenter.aerial_segmenter import AerialSegmenter
@@ -835,7 +836,14 @@ def cross_view_matching(
         pr_params = None
     if pr_params is None and pipeline_params.matching_mode == "vpr":
         pr_params = CrossViewPlaceRecognitionParams()
-    place_recognition = CrossViewPlaceRecognition(pr_params) if pr_params else None
+    descriptor_type = (
+        check_frame_descriptors_match(params, pr_params.comparison)
+        if pr_params is not None
+        else None
+    )
+    place_recognition = (
+        CrossViewPlaceRecognition(pr_params, descriptor_type) if pr_params else None
+    )
 
     aerial_segmenter = AerialSegmenter(AerialSegmenterParams.load(params))
     converter = SegmentToPrimitiveConverter(conversion_params)
