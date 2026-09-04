@@ -66,9 +66,12 @@ git submodule update --init third_party/vpr
 pip install -e third_party/vpr
 ```
 
-To switch backends, set `segmenter.frame_descriptor`,
-`aerial_segmenter.frame_descriptor`, and `cross_view_place_recognition.method`
-together.
+To switch backends, set `segmenter.frame_descriptor` and
+`aerial_segmenter.frame_descriptor` to the same value.
+
+`cross_view_place_recognition.comparison` picks what is compared: 
+`image` (default) uses the frame descriptors, `semantic-point-line`
+uses segment `cos_feature`s.
 
 ## Pipeline Demo
 

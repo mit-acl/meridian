@@ -14,6 +14,7 @@ from meridian.pipeline.cross_view_matching import (
 )
 from meridian.params import CrossViewPlaceRecognitionParams
 from meridian.cross_view.place_recognition import CrossViewPlaceRecognition
+from meridian.params.cross_view_params import check_frame_descriptors_match
 
 logger = logging.getLogger(__name__)
 
@@ -324,7 +325,9 @@ def cross_view_place_recognition(
     pr_output_dir = os.path.join(output_dir, "place_recognition")
 
     # Use the descriptor class for similarity computation
-    pr_descriptor = CrossViewPlaceRecognition(pr_params)
+    pr_descriptor = CrossViewPlaceRecognition(
+        pr_params, check_frame_descriptors_match(params, pr_params.comparison)
+    )
     sim_matrix, ground_keys, aerial_keys = pr_descriptor.compute_similarity_matrix(
         ground_submaps, aerial_submaps
     )

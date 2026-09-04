@@ -224,6 +224,7 @@ class AerialPatchPrimitiveMapping:
                     img_bgr=img,
                     crop=crop,
                 )
+                self.place_recognition.tag(submap)
 
             submaps[crop] = submap
             if return_intermediates:

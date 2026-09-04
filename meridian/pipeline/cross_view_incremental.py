@@ -43,6 +43,7 @@ from robotdatapy.data.robot_data import NoDataNearTimeException
 from meridian.cross_view.incremental_localization import IncrementalLocalization
 from meridian.cross_view.matching import CrossViewMatching
 from meridian.cross_view.place_recognition import CrossViewPlaceRecognition
+from meridian.params.cross_view_params import check_frame_descriptors_match
 from meridian.map2d.ground_submap_primitive_mapping import (
     GroundSubmapPrimitiveMapping,
 )
@@ -500,6 +501,9 @@ class CrossViewIncremental:
             trajectory=self.mapper.poses_cam_history,
             times=self.mapper.times_history,
             descriptors=descriptors,
+            descriptor_type=(
+                self.segmenter.frame_descriptor_type if descriptors else None
+            ),
         )
         segment_map.save(str(out / "segment_map.pkl"))
 
@@ -939,8 +943,15 @@ def cross_view_incremental(
         pr_params = None
     if pr_params is None and pipeline_params.matching_mode == "vpr":
         pr_params = CrossViewPlaceRecognitionParams()
+    descriptor_type = (
+        check_frame_descriptors_match(params_path, pr_params.comparison, run=run)
+        if pr_params is not None
+        else None
+    )
     place_recognition = (
-        CrossViewPlaceRecognition(pr_params) if pr_params is not None else None
+        CrossViewPlaceRecognition(pr_params, descriptor_type)
+        if pr_params is not None
+        else None
     )
 
     os.makedirs(output_dir, exist_ok=True)
