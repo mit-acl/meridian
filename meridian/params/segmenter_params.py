@@ -18,7 +18,7 @@ class SegmenterParamsBase(ParamsBase):
     conf: float = 0.2
     iou: float = 0.9
     device: str = "cuda"
-    segmentation_fp16: bool = False
+    segmentation_fp16: bool = True
 
     # Semantics
     semantics: str = "dino"
