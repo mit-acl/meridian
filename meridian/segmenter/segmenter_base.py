@@ -580,7 +580,7 @@ class SegmenterBase:
 
     def _init_anyloc(self):
         """Initialize the AnyLoc DINOv2 + VLAD pipeline."""
-        from meridian.segmenter.vpr_pipeline import AnyLocPipeline
+        from meridian.vpr import AnyLocPipeline
 
         self._anyloc_pipeline = AnyLocPipeline.from_cached_centers(
             self._vpr_ckpt(),
@@ -604,7 +604,7 @@ class SegmenterBase:
 
     def _init_meridian_vpr(self):
         """Initialize the trained cross-view head from third_party/vpr."""
-        from meridian.segmenter.vpr_pipeline import MeridianVprPipeline
+        from meridian.vpr import MeridianVprPipeline
 
         self._meridian_vpr_pipeline = MeridianVprPipeline(
             self._vpr_ckpt(),
