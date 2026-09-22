@@ -517,7 +517,7 @@ class SegmenterBase:
 
     def _init_anyloc(self):
         """Initialize the AnyLoc DINOv2 + VLAD pipeline and vocabulary."""
-        from meridian.segmenter.vpr_pipeline import AnyLocPipeline
+        from meridian.vpr import AnyLocPipeline
 
         ext_specifier = (
             f"{self.params.anyloc_dino_model}/"

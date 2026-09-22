@@ -1,4 +1,4 @@
-"""Minimal AnyLoc-free VPR pipeline: torch.hub DINOv2 + vpr cosine VLAD.
+"""Minimal AnyLoc-free VPR pipeline: torch.hub DINOv2 + cosine VLAD.
 
 Reproduces AnyLoc's front-end (truncated backbone, layer-DESC_LAYER "value"
 facet) and aggregation (cosine VLAD over AnyLoc's cached centers).
@@ -19,7 +19,7 @@ import torch.hub  # stop torch.hub's GitHub check from hanging when offline
 import torch.nn.functional as F
 import torchvision.transforms as tvf
 
-from meridian.segmenter.vlad import VLAD as VprVLAD
+from meridian.vpr.vlad import VLAD
 
 torch.hub._validate_not_a_forked_repo = lambda *a, **k: True
 
@@ -66,7 +66,7 @@ class AnyLocPipeline(torch.nn.Module):
         self.backbone.blocks[desc_layer].attn.qkv.register_forward_hook(
             lambda _m, _i, out: setattr(self, "_qkv", out))
 
-        self.vlad = VprVLAD(centers, metric="cosine").to(self.device).eval()
+        self.vlad = VLAD(centers, metric="cosine").to(self.device).eval()
 
         self.transform = tvf.Compose(
             [tvf.ToTensor(), tvf.Normalize(mean=_IMAGENET_MEAN, std=_IMAGENET_STD)]
