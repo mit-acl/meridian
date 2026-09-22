@@ -18,12 +18,13 @@ class SegmenterParamsBase(ParamsBase):
     conf: float = 0.2
     iou: float = 0.9
     device: str = "cuda"
+    segmentation_fp16: bool = True
 
     # Semantics
     semantics: str = "dino"
     semantics_dim: int = 1024
     semantics_size: str = "large"
-    dino_half: bool = False
+    semantics_fp16: bool = True
     dinov3_path: str = "~/code/dinov3"
     dinov3_weights: str = None
     subtract_frame_descriptor: bool = False
@@ -35,16 +36,17 @@ class SegmenterParamsBase(ParamsBase):
     frame_descriptor: str = "anyloc"  # anyloc, dino-gem, salad
 
     # AnyLoc params (used when frame_descriptor == "anyloc")
-    anyloc_path: str = "${ANYLOC_PATH}"
     anyloc_vocab_dir: str = "${ANYLOC_VOCAB_DIR}"
     anyloc_domain: str = "urban"
     anyloc_num_clusters: int = 32
     anyloc_dino_model: str = "dinov2_vitg14"
     anyloc_layer: int = 31
     anyloc_facet: str = "value"
+    anyloc_fp16: bool = True
 
     # SALAD params (used when frame_descriptor == "salad")
     salad_path: str = "${SALAD_PATH}"
+    salad_fp16: bool = True
 
     def get_model_type(self):
         return self.model_type.lower()
@@ -61,7 +63,6 @@ class SegmenterParamsBase(ParamsBase):
         self.dinov3_path = expandvars_recursive(self.dinov3_path)
         if self.dinov3_weights is not None:
             self.dinov3_weights = expandvars_recursive(self.dinov3_weights)
-        self.anyloc_path = expandvars_recursive(self.anyloc_path)
         self.anyloc_vocab_dir = expandvars_recursive(self.anyloc_vocab_dir)
         self.salad_path = expandvars_recursive(self.salad_path)
 

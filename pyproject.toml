@@ -20,7 +20,7 @@ dependencies = [
     "numba",
     "yolov7-package",
     "robotdatapy",
-    "gdown"
+    "gdown",
     # for dinov3
     #"torchmetrics",
     #"termcolor",

@@ -68,9 +68,7 @@ class SegmenterBase:
         self.semantics_preprocess = None
 
         self.frame_descriptor_type = params.frame_descriptor
-        self._anyloc_extractor = None
-        self._anyloc_vlad = None
-        self._anyloc_transform = None
+        self._anyloc_pipeline = None
         self._salad_model = None
         self._salad_transform = None
         if params.frame_descriptor is not None:
@@ -81,6 +79,10 @@ class SegmenterBase:
             ) or params.frame_descriptor in ("anyloc", "salad"), (
                 "Frame descriptor only supported with DINO, DINOv3, DINOv3-HF semantics, or 'anyloc'/'salad'."
             )
+
+    def _fp16_enabled(self, flag: bool) -> bool:
+        """fp16 only on CUDA — half precision is unreliable/unsupported on CPU."""
+        return bool(flag) and "cuda" in str(self.params.device)
 
     def _ensure_segmentation_model(self):
         if not self._segmentation_model_loaded:
@@ -141,7 +143,7 @@ class SegmenterBase:
             self.semantics_model = AutoModel.from_pretrained(dino_model_name)
             self.semantics_model.eval()
             self.semantics_model.to(self.params.device)
-            if self.params.dino_half:
+            if self._fp16_enabled(self.params.semantics_fp16):
                 self.semantics_model.half()
             self._num_register_tokens = 0
         elif self.params.semantics.lower() == "dinov3-hf":
@@ -162,7 +164,7 @@ class SegmenterBase:
             self.semantics_model = AutoModel.from_pretrained(hf_name)
             self.semantics_model.eval()
             self.semantics_model.to(self.params.device)
-            if self.params.dino_half:
+            if self._fp16_enabled(self.params.semantics_fp16):
                 self.semantics_model.half()
             self._num_register_tokens = self.semantics_model.config.num_register_tokens
         elif self.params.semantics.lower() == "dinov3":
@@ -187,7 +189,7 @@ class SegmenterBase:
             )
             self.semantics_model.eval()
             self.semantics_model.to(self.params.device)
-            if self.params.dino_half:
+            if self._fp16_enabled(self.params.semantics_fp16):
                 self.semantics_model.half()
             self.dinov3_transform = T.Compose(
                 [
@@ -230,6 +232,7 @@ class SegmenterBase:
                 overrides["iou"] = self.params.iou
                 overrides["mode"] = "predict"
                 overrides["save"] = False
+                overrides["half"] = self._fp16_enabled(self.params.segmentation_fp16)
                 self._fastsam_predictor = FastSAMPredictor(overrides=overrides)
                 self._fastsam_predictor.setup_model(
                     model=self.model.model, verbose=False
@@ -259,7 +262,9 @@ class SegmenterBase:
             )
             masks = prompt_process.everything_prompt()
         elif self.params.get_model_type() == "segment_anything":
-            masks_output = self.model.generate(image_rgb)
+            use_fp16 = self._fp16_enabled(self.params.segmentation_fp16)
+            with torch.autocast("cuda", dtype=torch.float16, enabled=use_fp16):
+                masks_output = self.model.generate(image_rgb)
             mask_list = []
             for obj in masks_output:
                 mask_list.append(obj["segmentation"].astype(np.uint8))
@@ -293,11 +298,11 @@ class SegmenterBase:
             preprocessed = self.semantics_preprocess(
                 images=img_rgb, return_tensors="pt"
             ).to(self.params.device)
-            if self.params.dino_half:
+            if self._fp16_enabled(self.params.semantics_fp16):
                 preprocessed["pixel_values"] = preprocessed["pixel_values"].half()
             dino_output = self.semantics_model(**preprocessed)
             output_patches = self.get_output_patches(
-                model_output=dino_output.last_hidden_state,
+                model_output=dino_output.last_hidden_state.float(),
                 img_shape=img_bgr.shape,
                 feature_dim=self.params.semantics_dim,
             )
@@ -310,12 +315,12 @@ class SegmenterBase:
             img_tensor = (
                 self.dinov3_transform(img_rgb).unsqueeze(0).to(self.params.device)
             )
-            if self.params.dino_half:
+            if self._fp16_enabled(self.params.semantics_fp16):
                 img_tensor = img_tensor.half()
             with torch.no_grad():
                 features = self.semantics_model.get_intermediate_layers(
                     img_tensor, n=1, reshape=True, return_class_token=False, norm=True
-                )[0]  # (B, C, H_patches, W_patches)
+                )[0].float()  # (B, C, H_patches, W_patches)
             output_patches = features.permute(0, 2, 3, 1)  # (1, H, W, C)
             per_pixel = torch.nn.functional.interpolate(
                 features,
@@ -511,25 +516,8 @@ class SegmenterBase:
         return frame_descriptor.cpu().detach().numpy()
 
     def _init_anyloc(self):
-        """Initialize AnyLoc DINOv2 extractor and VLAD vocabulary."""
-        import sys
-        import torchvision.transforms as tvf
-
-        sys.path.insert(0, os.path.join(self.params.anyloc_path, "demo"))
-        from utilities import DinoV2ExtractFeatures, VLAD
-
-        self._anyloc_extractor = DinoV2ExtractFeatures(
-            self.params.anyloc_dino_model,
-            self.params.anyloc_layer,
-            self.params.anyloc_facet,
-            device=self.params.device,
-        )
-        self._anyloc_transform = tvf.Compose(
-            [
-                tvf.ToTensor(),
-                tvf.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
-            ]
-        )
+        """Initialize the AnyLoc DINOv2 + VLAD pipeline and vocabulary."""
+        from meridian.vpr import AnyLocPipeline
 
         ext_specifier = (
             f"{self.params.anyloc_dino_model}/"
@@ -547,12 +535,12 @@ class SegmenterBase:
             f"AnyLoc vocabulary not found: {c_centers_file}"
         )
 
-        self._anyloc_vlad = VLAD(
-            self.params.anyloc_num_clusters,
-            desc_dim=None,
-            cache_dir=os.path.dirname(c_centers_file),
+        self._anyloc_pipeline = AnyLocPipeline.from_cached_centers(
+            c_centers_file,
+            desc_layer=self.params.anyloc_layer,
+            fp16=self._fp16_enabled(self.params.anyloc_fp16),
+            device=self.params.device,
         )
-        self._anyloc_vlad.fit(None)
 
     def _compute_anyloc_descriptor(self, img_bgr):
         """Compute AnyLoc (DINOv2 + VLAD) descriptor from a BGR image.
@@ -564,23 +552,8 @@ class SegmenterBase:
             Normalized 1-D numpy array of shape (num_clusters * desc_dim,).
         """
         self._ensure_anyloc()
-        import torchvision.transforms as tvf
-        from PIL import Image as PILImage
-
         img_rgb = cv.cvtColor(img_bgr, cv.COLOR_BGR2RGB)
-        pil_img = PILImage.fromarray(img_rgb)
-        img_pt = self._anyloc_transform(pil_img).to(self.params.device)
-
-        c, h, w = img_pt.shape
-        h_new = (h // 14) * 14
-        w_new = (w // 14) * 14
-        img_pt = tvf.CenterCrop((h_new, w_new))(img_pt)[None, ...]
-
-        with torch.no_grad():
-            ret = self._anyloc_extractor(img_pt)
-            gd = self._anyloc_vlad.generate(ret.cpu().squeeze())
-
-        return gd.numpy()
+        return self._anyloc_pipeline.describe(img_rgb)
 
     def _init_salad(self):
         """Initialize SALAD (DINOv2 + optimal transport aggregation) model."""
@@ -592,6 +565,8 @@ class SegmenterBase:
 
         self._salad_model = dinov2_salad(backbone="dinov2_vitb14", pretrained=True)
         self._salad_model.eval().to(self.params.device)
+        if self._fp16_enabled(self.params.salad_fp16):
+            self._salad_model.half()
         self._salad_transform = tvf.Compose(
             [
                 tvf.ToTensor(),
@@ -620,9 +595,11 @@ class SegmenterBase:
         h_new = (h // 14) * 14
         w_new = (w // 14) * 14
         img_pt = tvf.CenterCrop((h_new, w_new))(img_pt)[None, ...]
+        if self._fp16_enabled(self.params.salad_fp16):
+            img_pt = img_pt.half()
 
         with torch.no_grad():
-            descriptor = self._salad_model(img_pt)
+            descriptor = self._salad_model(img_pt).float()
 
         descriptor = descriptor.cpu().squeeze().numpy()
         norm = np.linalg.norm(descriptor)
