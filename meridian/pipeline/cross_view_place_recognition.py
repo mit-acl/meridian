@@ -6,6 +6,7 @@ import pathlib
 import matplotlib.patches as mpatches
 import matplotlib.pyplot as plt
 import numpy as np
+import yaml
 
 from meridian.pipeline.cross_view_matching import (
     CrossViewMatching,
@@ -18,9 +19,12 @@ from meridian.params.cross_view_params import check_frame_descriptors_match
 
 logger = logging.getLogger(__name__)
 
+# Recall@K operating points; the configured k_nearest_neighbors is added too.
+RECALL_KS = (1, 5, 10, 15, 25, 50)
+
 
 class CrossViewPlaceRecognitionPipeline:
-    """Pipeline for place recognition visualization and results."""
+    """Pipeline for place-recognition retrieval metrics: Recall@K, mAP, PR-AUC."""
 
     @staticmethod
     def compute_gt_patches(
@@ -203,57 +207,222 @@ class CrossViewPlaceRecognitionPipeline:
         plt.close(fig)
 
     @staticmethod
-    def save_results(sim_matrix, ground_keys, aerial_keys, output_dir):
-        """Save similarity matrix as .npy and a text summary."""
+    def labels(ground_keys, aerial_keys, gt_patches):
+        """Boolean (num_ground, num_aerial) matrix: patch contains the GT position."""
+        aerial_tuples = [tuple(int(x) for x in ak.split("_")) for ak in aerial_keys]
+        y = np.zeros((len(ground_keys), len(aerial_keys)), dtype=bool)
+        for gi, gk in enumerate(ground_keys):
+            gt = gt_patches.get(gk, set())
+            for ai, at in enumerate(aerial_tuples):
+                y[gi, ai] = at in gt
+        return y
+
+    @staticmethod
+    def valid_mask(sim_matrix):
+        """Pairs that were actually scored; nan means a missing descriptor."""
+        return ~np.isnan(sim_matrix)
+
+    @staticmethod
+    def rank(scores, y):
+        """Sort descending and return the end index of each tied score group."""
+        order = np.argsort(-scores, kind="stable")
+        scores, y = scores[order], y[order]
+        # Cut only where the score changes, so tied pairs share one curve point.
+        last = np.r_[np.nonzero(np.diff(scores))[0], scores.size - 1]
+        return scores, y, last
+
+    @staticmethod
+    def pr_curve(sim_matrix, y_true):
+        """Precision and recall over every threshold on similarity, pooled.
+
+        One point per (ground submap, aerial patch) pair. This scores a single
+        global threshold, which matching does not use; it is a calibration
+        diagnostic, not the retrieval metric.
+
+        Returns:
+            precision, recall, thresholds: parallel arrays, recall ascending.
+        """
+        valid = CrossViewPlaceRecognitionPipeline.valid_mask(sim_matrix)
+        scores = sim_matrix[valid]
+        y = y_true[valid]
+        n_pos = int(y.sum())
+        if n_pos == 0 or scores.size == 0:
+            return np.array([]), np.array([]), np.array([])
+
+        scores, y, last = CrossViewPlaceRecognitionPipeline.rank(scores, y)
+        tp = np.cumsum(y)[last]
+        return tp / (last + 1), tp / n_pos, scores[last]
+
+    @staticmethod
+    def per_query(sim_matrix, y_true):
+        """Per-ground-submap average precision and rank of its first correct patch.
+
+        Rows with no correct patch are skipped: the GT position lies outside the
+        aerial map, so nothing there is recallable. Recall is normalized by the
+        row's total positives, so a positive lost to a missing descriptor caps
+        AP below 1 instead of being quietly dropped.
+
+        Returns:
+            aps, first_ranks: arrays over scorable rows; rank is inf if the row
+            is unrecoverable (no scored pair, or every positive unscored).
+        """
+        aps, first_ranks = [], []
+        for row, y_row in zip(sim_matrix, y_true):
+            n_pos = int(y_row.sum())
+            if n_pos == 0:
+                continue
+            valid = CrossViewPlaceRecognitionPipeline.valid_mask(row)
+            scores, y = row[valid], y_row[valid]
+            if scores.size == 0 or not y.any():
+                aps.append(0.0)
+                first_ranks.append(np.inf)
+                continue
+            scores, y, last = CrossViewPlaceRecognitionPipeline.rank(scores, y)
+            tp = np.cumsum(y)[last]
+            precision = tp / (last + 1)
+            recall = tp / n_pos
+            aps.append(float(np.sum(np.diff(np.r_[0.0, recall]) * precision)))
+            # Pessimistic: the whole tie group holding the first hit is admitted.
+            first_ranks.append(float(last[int(np.argmax(tp > 0))] + 1))
+        return np.array(aps), np.array(first_ranks)
+
+    @staticmethod
+    def recall_at_k(first_ranks, ks):
+        """Fraction of queries with a correct patch in the top k, for each k."""
+        if first_ranks.size == 0:
+            return {int(k): float("nan") for k in ks}
+        return {int(k): float(np.mean(first_ranks <= k)) for k in ks}
+
+    @staticmethod
+    def mean_average_precision(aps):
+        """mAP: one vote per query, so no cross-query score calibration is involved."""
+        if aps.size == 0:
+            return float("nan")
+        return float(np.mean(aps))
+
+    @staticmethod
+    def average_precision(precision, recall):
+        """Area under the curve as the recall-weighted mean precision."""
+        if precision.size == 0:
+            return float("nan")
+        return float(np.sum(np.diff(np.r_[0.0, recall]) * precision))
+
+    @staticmethod
+    def save_results(precision, recall, thresholds, y_true, sim_matrix, aps,
+                     first_ranks, recalls, k_config, output_dir, run=None):
+        """Write similarity_matrix.npy, metrics.npz, the plots and results.yaml/.txt.
+
+        Counts come off the same scored-pair mask the pooled curve uses, so the
+        reported chance line shares its denominators.
+        """
         output_dir = pathlib.Path(output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
-
         np.save(output_dir / "similarity_matrix.npy", sim_matrix)
 
-        lines = ["Cross-View Place Recognition Results", "=" * 40, ""]
-        for gi, gk in enumerate(ground_keys):
-            row = sim_matrix[gi]
-            valid = ~np.isnan(row)
-            if not np.any(valid):
-                lines.append(f"Ground {gk}: no valid similarities")
-                continue
-            best_idx = np.nanargmax(row)
-            best_key = aerial_keys[best_idx]
-            best_sim = row[best_idx]
-            mean_sim = np.nanmean(row)
-            lines.append(
-                f"Ground {gk}: best={best_key} (sim={best_sim:.4f}), "
-                f"mean={mean_sim:.4f}, valid={np.sum(valid)}/{len(row)}"
-            )
+        valid = CrossViewPlaceRecognitionPipeline.valid_mask(sim_matrix)
+        auc = CrossViewPlaceRecognitionPipeline.average_precision(precision, recall)
+        n_scored = int(valid.sum())
+        n_pos = int(y_true[valid].sum())
+        n_aerial = int(y_true.shape[1])
+        results = {"run": run}
+        # Recall at the configured k is the number matching actually depends on.
+        results.update({f"recall@{k}": v for k, v in recalls.items()})
+        results.update({
+            "mean_average_precision": CrossViewPlaceRecognitionPipeline.mean_average_precision(
+                aps
+            ),
+            "k_nearest_neighbors": int(k_config),
+            "candidate_fraction": k_config / float(n_aerial) if n_aerial else
+            float("nan"),
+            "num_queries": int(aps.size),
+            "num_unrecoverable_queries": int(np.isinf(first_ranks).sum()),
+            "num_ground_submaps": int(y_true.shape[0]),
+            "num_aerial_patches": n_aerial,
+            "num_scored_pairs": n_scored,
+            "num_unscored_pairs": int(y_true.size - n_scored),
+            "num_positive_pairs": n_pos,
+            "pooled_pr_auc": auc,
+            "chance_pr_auc": n_pos / float(n_scored) if n_scored else float("nan"),
+        })
+        with open(output_dir / "results.yaml", "w") as f:
+            yaml.safe_dump(results, f, sort_keys=False)
 
-        lines.append("")
-        overall_valid = ~np.isnan(sim_matrix)
-        if np.any(overall_valid):
-            lines.append(f"Overall mean similarity: {np.nanmean(sim_matrix):.4f}")
-            lines.append(f"Overall max similarity: {np.nanmax(sim_matrix):.4f}")
+        # The thresholds are the operating points, so keep them with the curve.
+        np.savez(
+            output_dir / "metrics.npz",
+            precision=precision,
+            recall=recall,
+            thresholds=thresholds,
+            average_precisions=aps,
+            first_ranks=first_ranks,
+            recall_ks=np.array(list(recalls.keys())),
+            recall_values=np.array(list(recalls.values())),
+        )
 
+        lines = [f"{k}: {v}" for k, v in results.items()]
         results_str = "\n".join(lines)
         print(results_str)
         with open(output_dir / "results.txt", "w") as f:
             f.write(results_str + "\n")
 
+        ks = np.array(list(recalls.keys()), dtype=float)
+        vs = np.array(list(recalls.values()), dtype=float)
+        if np.isfinite(vs).any():
+            fig, ax = plt.subplots(figsize=(5, 5))
+            ax.plot(ks, vs, marker="o", lw=1.5)
+            ax.axvline(k_config, color="gray", ls="--", lw=1,
+                       label=f"k = {k_config}")
+            ax.set_xscale("log")
+            ax.set_xlabel("k (candidates kept per query)")
+            ax.set_ylabel("recall@k")
+            ax.set_ylim(0, 1.02)
+            ax.set_title(f"{run or 'place recognition'}  "
+                         f"R@{int(k_config)} = {recalls.get(int(k_config), float('nan')):.4f}")
+            ax.legend(loc="lower right")
+            fig.tight_layout()
+            fig.savefig(output_dir / "recall_at_k.png", dpi=150)
+            plt.close(fig)
+
+        if precision.size:
+            fig, ax = plt.subplots(figsize=(5, 5))
+            ax.plot(recall, precision, lw=1.5)
+            ax.axhline(results["chance_pr_auc"], color="gray", ls="--", lw=1,
+                       label="chance")
+            ax.set_xlabel("recall")
+            ax.set_ylabel("precision")
+            ax.set_xlim(0, 1)
+            ax.set_ylim(0, 1.02)
+            ax.set_title(f"{run or 'place recognition'}  pooled PR-AUC = {auc:.4f}")
+            ax.legend(loc="upper right")
+            fig.tight_layout()
+            fig.savefig(output_dir / "pr_curve.png", dpi=150)
+            plt.close(fig)
+
+        return results
+
 
 def cross_view_place_recognition(
     params,
     output_dir,
+    run=None,
     skip_segmentation=False,
     skip_aerial=False,
     skip_ground=False,
+    skip_viz=False,
     aerial_dir=None,
     ground_dir=None,
 ):
-    """Run place recognition pipeline.
+    """Run the place-recognition pipeline: retrieval metrics and heatmaps.
 
     1. If not skip_segmentation: run cross_view_matching with skip_match=True
        to create submaps with descriptors.
     2. Load submaps from disk.
-    3. Compute similarity matrix from descriptors already on submaps.
-    4. Save results and heatmaps.
+    3. Compute the similarity matrix and the GT patch labels.
+    4. Save Recall@K, mAP and the pooled PR curve with their plots.
+    5. If not skip_viz: save per-submap similarity heatmaps with GT boxes and
+       top-k circles.
+
+    The dataset is whatever the params name, so a run key selects it.
     """
     output_dir = str(output_dir)
 
@@ -268,7 +437,6 @@ def cross_view_place_recognition(
             ground_dir=ground_dir,
         )
 
-    # Load submaps (descriptors are persisted via pickle)
     from meridian.params import (
         CrossViewMatchingParams,
         CrossViewLocalizationDataParams,
@@ -281,16 +449,16 @@ def cross_view_place_recognition(
     from meridian.register.registerer import Registerer2D
     from meridian.segmenter.aerial_segmenter import AerialSegmenter
 
-    pipeline_params = CrossViewMatchingParams.load(params)
-    aerial_patch_params = AerialPatchParams.load(params)
-    aerial_segmenter = AerialSegmenter(AerialSegmenterParams.load(params))
+    pipeline_params = CrossViewMatchingParams.load(params, run=run)
+    aerial_patch_params = AerialPatchParams.load(params, run=run)
+    aerial_segmenter = AerialSegmenter(AerialSegmenterParams.load(params, run=run))
     runner = CrossViewMatchingPipeline(
         algorithm=CrossViewMatching(
             pipeline_params=pipeline_params,
             aerial_patch_params=aerial_patch_params,
             pixel_len_m=aerial_segmenter.params.pixel_len_m,
-            matcher=PrimitiveMatcher(PrimitiveMatchParams.load(params)),
-            registerer=Registerer2D(RegisterParams.load(params)),
+            matcher=PrimitiveMatcher(PrimitiveMatchParams.load(params, run=run)),
+            registerer=Registerer2D(RegisterParams.load(params, run=run)),
         ),
     )
 
@@ -304,37 +472,28 @@ def cross_view_place_recognition(
     aerial_submaps = runner.load_submaps_from_dir(aerial_seg_dir)
     ground_submaps = runner.load_submaps_from_dir(ground_seg_dir)
 
-    # Load GT pose data for green-box visualization
-    gt_pose_data = None
-    try:
-        data_params = CrossViewLocalizationDataParams.load(params)
-        if data_params.gt_pose_data is not None:
-            from robotdatapy.data import PoseData
+    # GT poses define the labels, so without them there is nothing to score.
+    data_params = CrossViewLocalizationDataParams.load(params, run=run)
+    if data_params.gt_pose_data is None:
+        raise ValueError("gt_pose_data is required to label patches for a PR curve.")
+    from robotdatapy.data import PoseData
 
-            gt_pose_data = PoseData.from_dict(data_params.gt_pose_data)
-    except Exception:
-        pass
+    gt_pose_data = PoseData.from_dict(data_params.gt_pose_data)
 
-    # Load place recognition params
     try:
-        pr_params = CrossViewPlaceRecognitionParams.load(params)
-    except Exception:
+        pr_params = CrossViewPlaceRecognitionParams.load(params, run=run)
+    except FileNotFoundError:
         pr_params = CrossViewPlaceRecognitionParams()
-    k = pr_params.k_nearest_neighbors
 
-    pr_output_dir = os.path.join(output_dir, "place_recognition")
-
-    # Use the descriptor class for similarity computation
     pr_descriptor = CrossViewPlaceRecognition(
-        pr_params, check_frame_descriptors_match(params, pr_params.comparison)
+        pr_params, check_frame_descriptors_match(params, pr_params.comparison, run=run)
     )
     sim_matrix, ground_keys, aerial_keys = pr_descriptor.compute_similarity_matrix(
         ground_submaps, aerial_submaps
     )
 
-    # Use the pipeline class for GT patches, top-k, viz, and results
-    pr_pipeline = CrossViewPlaceRecognitionPipeline()
-    gt_patches = pr_pipeline.compute_gt_patches(
+    pipeline = CrossViewPlaceRecognitionPipeline()
+    gt_patches = pipeline.compute_gt_patches(
         ground_submaps,
         aerial_submaps,
         ground_keys,
@@ -342,25 +501,46 @@ def cross_view_place_recognition(
         aerial_patch_params,
         gt_pose_data=gt_pose_data,
     )
-    top_k_patches = pr_pipeline.compute_top_k_patches(
-        sim_matrix, ground_keys, aerial_keys, k
-    )
+    y_true = pipeline.labels(ground_keys, aerial_keys, gt_patches)
+    precision, recall, thresholds = pipeline.pr_curve(sim_matrix, y_true)
+    aps, first_ranks = pipeline.per_query(sim_matrix, y_true)
 
-    viz_dir = os.path.join(pr_output_dir, "viz")
-    pr_pipeline.save_heatmaps(
+    # A k past the map size is the same operating point as keeping everything.
+    k_config = pr_params.k_nearest_neighbors
+    ks = sorted({k for k in (*RECALL_KS, k_config) if k <= len(aerial_keys)})
+    recalls = pipeline.recall_at_k(first_ranks, ks)
+
+    pr_output_dir = os.path.join(output_dir, "place_recognition")
+    if not skip_viz:
+        pipeline.save_heatmaps(
+            sim_matrix,
+            ground_keys,
+            aerial_keys,
+            os.path.join(pr_output_dir, "viz"),
+            gt_patches=gt_patches,
+            top_k_patches=pipeline.compute_top_k_patches(
+                sim_matrix, ground_keys, aerial_keys, k_config
+            ),
+        )
+
+    return pipeline.save_results(
+        precision,
+        recall,
+        thresholds,
+        y_true,
         sim_matrix,
-        ground_keys,
-        aerial_keys,
-        viz_dir,
-        gt_patches=gt_patches,
-        top_k_patches=top_k_patches,
+        aps,
+        first_ranks,
+        recalls,
+        k_config,
+        pr_output_dir,
+        run=run,
     )
-    pr_pipeline.save_results(sim_matrix, ground_keys, aerial_keys, pr_output_dir)
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
-        description="Cross-view place recognition using DINO-GeM descriptors"
+        description="Cross-view place recognition: Recall@K, mAP, PR-AUC, heatmaps"
     )
     parser.add_argument(
         "-p",
@@ -377,6 +557,13 @@ if __name__ == "__main__":
         help="Output directory.",
     )
     parser.add_argument(
+        "-r",
+        "--run",
+        type=str,
+        default=None,
+        help="Run key within the params file; selects the dataset.",
+    )
+    parser.add_argument(
         "--skip-segmentation",
         action="store_true",
         help="Skip submap creation; load existing submaps from output dir.",
@@ -390,6 +577,11 @@ if __name__ == "__main__":
         "--skip-ground",
         action="store_true",
         help="Skip ground segmentation (forwarded to cross_view_matching).",
+    )
+    parser.add_argument(
+        "--skip-viz",
+        action="store_true",
+        help="Skip the per-submap similarity heatmaps (one figure per submap).",
     )
     parser.add_argument(
         "--aerial",
@@ -410,9 +602,11 @@ if __name__ == "__main__":
     cross_view_place_recognition(
         args.params,
         args.output,
+        run=args.run,
         skip_segmentation=args.skip_segmentation,
         skip_aerial=args.skip_aerial,
         skip_ground=args.skip_ground,
+        skip_viz=args.skip_viz,
         aerial_dir=args.aerial,
         ground_dir=args.ground,
     )
