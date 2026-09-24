@@ -312,13 +312,13 @@ def viz_masks_on_img(
     return viz_img
 
 
-def viz_segments_on_cam_img(segments, t, pose_cam, img, graveyard_time=15.0):
+def viz_segments_on_cam_img(segments, t, pose_cam, img, graveyard_time=25.0):
     if len(img.shape) == 2:
         img = np.stack([img] * 3, axis=2)
     viz = img.copy()
 
     for seg in segments:
-        if seg.last_seen < t - graveyard_time - 10:
+        if seg.last_seen < t - graveyard_time:
             continue
         outline = seg.outline_2d(pose_cam)
         if outline is None:

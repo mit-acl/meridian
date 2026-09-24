@@ -1,27 +1,20 @@
 import atexit
-import itertools
 import logging
 import signal
 from concurrent.futures import ProcessPoolExecutor
 from time import perf_counter as _perf
 from typing import List, Optional, Tuple
 
-import alphashape
 import circle_fit
 import numpy as np
-import shapely
-from scipy.spatial import Delaunay
-from shapely.geometry import MultiLineString
-from shapely.ops import polygonize, unary_union
 
 from meridian.map2d.map_processing import clean_up_line_map
 from meridian.params.segment_to_primitive_params import (
     SegmentToPrimitiveConversionParams,
 )
-from meridian.map2d.segment2d import Segment2D, _grid_downsample_2d
+from meridian.map2d.segment2d import Segment2D, compute_segment_border
 from meridian.primitive.primitive import LinePrimitive, PointPrimitive
 from meridian.primitive.primitive_list import PrimitiveList
-from meridian.utils import suppress_alphashape_singular_warnings
 
 logger = logging.getLogger(__name__)
 
@@ -65,113 +58,12 @@ def _get_persistent_pool(max_workers):
     return _PERSISTENT_POOL
 
 
-# Drop the noisy "Singular matrix. Likely caused by all points lying in an
-# N-1 space." warnings that alphashape emits per colinear Delaunay simplex.
-suppress_alphashape_singular_warnings()
-
 Crop = Tuple[int, int, int, int]
 
 
 # ---------------------------------------------------------------------------
 # Module-level worker functions (picklable for ProcessPoolExecutor)
 # ---------------------------------------------------------------------------
-
-
-def _fast_alphashape(pts: np.ndarray, alpha: float):
-    """Faster drop-in for ``alphashape.alphashape(pts, alpha)`` (2D, fixed alpha).
-
-    The library's cost is a pure-Python loop over every Delaunay triangle that
-    computes each circumradius via ``np.linalg.solve`` (a 4x4 solve per triangle).
-    Here that circumradius is vectorized across all triangles at once, but the
-    library's exact perimeter-edge bookkeeping and shapely ``polygonize`` /
-    ``unary_union`` are kept unchanged, so the resulting geometry is **identical**
-    (verified: 0 mismatches over 855 real segments), ~2x faster. Falls back to the
-    library for edge cases (fewer than 4 points, alpha <= 0) or any numerical
-    trouble in the batched solve.
-    """
-    if len(pts) < 4 or alpha <= 0:
-        return alphashape.alphashape(pts, alpha)
-    try:
-        simplices = Delaunay(pts).simplices
-        tri_pts = pts[simplices]  # (T, 3, 2)
-        n = len(simplices)
-        # Circumcenter in barycentric coords via the same linear system the
-        # library solves per triangle, batched over all triangles.
-        A = np.zeros((n, 4, 4))
-        A[:, :3, :3] = 2.0 * np.einsum("tik,tjk->tij", tri_pts, tri_pts)
-        A[:, :3, 3] = 1.0
-        A[:, 3, :3] = 1.0
-        b = np.zeros((n, 4))
-        b[:, :3] = np.sum(tri_pts * tri_pts, axis=2)
-        b[:, 3] = 1.0
-        bary = np.linalg.solve(A, b)[:, :3]
-        centers = np.einsum("tn,tnk->tk", bary, tri_pts)
-        circumradii = np.linalg.norm(tri_pts[:, 0] - centers, axis=1)
-    except Exception:
-        return alphashape.alphashape(pts, alpha)
-
-    # Exact library perimeter-edge logic (kept triangles only): an edge on the
-    # boundary appears in exactly one kept triangle.
-    edges = set()
-    perimeter_edges = set()
-    for simplex in simplices[circumradii < 1.0 / alpha]:
-        for edge in itertools.combinations(simplex, 2):
-            if all(e not in edges for e in itertools.combinations(edge, len(edge))):
-                edges.add(edge)
-                perimeter_edges.add(edge)
-            else:
-                perimeter_edges -= set(itertools.combinations(edge, len(edge)))
-
-    m = MultiLineString([pts[np.array(edge)] for edge in perimeter_edges])
-    return unary_union(list(polygonize(m)))
-
-
-def _compute_segment_border(
-    points: np.ndarray,
-    alpha: float,
-    grid_downsample: float,
-    max_n_pts: int,
-    alpha_ref_size: float,
-    max_extent: float,
-    segment_border_type: str = "concave_hull",
-    concave_hull_ratio: float = 0.5,
-) -> Optional[np.ndarray]:
-    """Compute the segment outline ("border") from raw points. Standalone for pickling.
-
-    ``segment_border_type`` selects the method: "concave_hull" uses
-    ``shapely.concave_hull(ratio=concave_hull_ratio)`` (faster); "alpha_shape" uses
-    the (fast) alpha shape parametrized by ``alpha`` / ``alpha_ref_size``.
-    """
-    if segment_border_type not in ("concave_hull", "alpha_shape"):
-        raise ValueError(
-            f"Unknown segment_border_type: {segment_border_type!r} "
-            "(expected 'concave_hull' or 'alpha_shape')"
-        )
-
-    if alpha_ref_size is not None:
-        alpha = alpha * min(1.0, alpha_ref_size / max(max_extent, 1e-6))
-
-    pts = points.copy()
-    if grid_downsample is not None:
-        pts = _grid_downsample_2d(pts, grid_downsample)
-    if max_n_pts is not None and len(pts) > max_n_pts:
-        voxel = grid_downsample if grid_downsample is not None else 0.1
-        while len(pts) > max_n_pts:
-            voxel *= 2.0
-            pts = _grid_downsample_2d(points, voxel)
-    try:
-        if segment_border_type == "concave_hull":
-            shape = shapely.concave_hull(
-                shapely.MultiPoint(pts), ratio=concave_hull_ratio
-            )
-        else:  # "alpha_shape"
-            shape = _fast_alphashape(pts, alpha)
-    except Exception:
-        return None
-    if isinstance(shape, shapely.geometry.polygon.Polygon):
-        x, y = shape.exterior.xy
-        return np.vstack([x, y]).T
-    return None
 
 
 def _classify_single_segment(
@@ -217,7 +109,7 @@ def _classify_single_segment(
     # border is computed exactly once per segment (previously once in the filter
     # AND again here). Computed before the point/line short-circuits to preserve
     # the filter's drop semantics for small/thin segments with a None border.
-    segment_border = _compute_segment_border(
+    segment_border = compute_segment_border(
         points,
         alpha=params.alpha_shape_alpha,
         grid_downsample=params.alpha_shape_grid_downsample,
@@ -248,11 +140,10 @@ def _classify_single_segment(
             )
         ]
 
-    # Thin (essentially 1-D) clouds: skip the border computation (which would
-    # emit noisy "Singular matrix" warnings on colinear simplices and often drop
-    # the segment entirely) and emit a LinePrimitive directly via PCA. We gate on
-    # the raw minor-axis variance (in m²) so long-but-not-thin road segments
-    # still go through the border and can split into multiple lines.
+    # Thin (essentially 1-D) clouds: emit a LinePrimitive directly via PCA.
+    # We gate on the raw minor-axis variance (in m²) so long-but-not-thin 
+    # road segments still go through the border and can split into 
+    # multiple lines.
     if len(points) >= 2 and params.line_min_minor_axis_var_m2 > 0:
         mean_pt = points.mean(axis=0)
         centered = points - mean_pt
