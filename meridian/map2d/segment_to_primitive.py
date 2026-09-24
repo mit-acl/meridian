@@ -112,8 +112,8 @@ def _classify_single_segment(
     segment_border = compute_segment_border(
         points,
         alpha=params.alpha_shape_alpha,
-        grid_downsample=params.alpha_shape_grid_downsample,
-        max_n_pts=params.alpha_shape_max_n_pts,
+        grid_downsample=params.segment_border_grid_downsample,
+        max_n_pts=params.segment_border_max_n_pts,
         alpha_ref_size=params.alpha_shape_ref_size_m,
         max_extent=max_extent,
         segment_border_type=params.segment_border_type,

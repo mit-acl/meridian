@@ -206,6 +206,7 @@ class Segment2D:
             alpha,
             grid_downsample,
             max_n_pts,
+            alpha_ref_size,
             segment_border_type,
             concave_hull_ratio,
         )
