@@ -7,6 +7,7 @@ L2-normalize. Used by the AnyLoc-style VPR pipeline.
 Reference: Jégou, Douze, Schmid, Pérez, *Aggregating local descriptors into a
 compact image representation*, CVPR 2010.
 """
+
 from __future__ import annotations
 
 import torch
@@ -34,8 +35,12 @@ class VLAD(nn.Module):
     (feature confidence), turning it on makes assignment a pure cosine.
     """
 
-    def __init__(self, centers: torch.Tensor, normalize_input: bool = False,
-                 metric: str = "euclidean"):
+    def __init__(
+        self,
+        centers: torch.Tensor,
+        normalize_input: bool = False,
+        metric: str = "euclidean",
+    ):
         """centers: (K, D) cluster centers. `metric`/`normalize_input`: see class."""
         super().__init__()
         if centers.dim() != 2:

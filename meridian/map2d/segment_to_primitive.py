@@ -141,8 +141,8 @@ def _classify_single_segment(
         ]
 
     # Thin (essentially 1-D) clouds: emit a LinePrimitive directly via PCA.
-    # We gate on the raw minor-axis variance (in m²) so long-but-not-thin 
-    # road segments still go through the border and can split into 
+    # We gate on the raw minor-axis variance (in m²) so long-but-not-thin
+    # road segments still go through the border and can split into
     # multiple lines.
     if len(points) >= 2 and params.line_min_minor_axis_var_m2 > 0:
         mean_pt = points.mean(axis=0)
