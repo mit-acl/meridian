@@ -1,6 +1,8 @@
 import logging
+import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 import numpy as np
 from tqdm import tqdm
@@ -214,12 +216,16 @@ class GroundSubmapPrimitiveMapping:
         self,
         submap: Submap,
         return_intermediates: bool = False,
+        timings: Optional[Dict[str, float]] = None,
     ) -> tuple:
         """Convert a single 3D dense submap to a sparse 2D submap.
 
         Args:
             submap: A 3D submap in CAMERA frame.
             return_intermediates: Whether to return intermediate results.
+            timings: Optional dict; if provided, per-stage wall-clock durations
+                (seconds) are recorded under keys ``flatten_3d``, ``to_aerial``,
+                ``segment_border``, ``converter_convert``, ``line_filter``.
 
         Returns:
             (submap_2d, intermediate) tuple. intermediate is None if not requested.
@@ -230,50 +236,69 @@ class GroundSubmapPrimitiveMapping:
         submap.segments.transform(submap.pose)
 
         gs_params = self.ground_segmenter_params
+        _t0 = time.perf_counter()
         flattened_submap = flatten_3d_submap(
             submap,
             outlier_removal_std=gs_params.outlier_removal_std,
             dbscan_epsilon=gs_params.dbscan_epsilon,
             dbscan_min_points=gs_params.dbscan_min_points,
         )
-        aerial_segments = submap_2d_to_aerial(flattened_submap)
-        aerial_segments = [
-            seg
-            for seg in aerial_segments
-            if seg.get_alpha_shape(
-                alpha=self.converter.params.alpha_shape_alpha,
-                grid_downsample=self.converter.params.alpha_shape_grid_downsample,
-                max_n_pts=self.converter.params.alpha_shape_max_n_pts,
-                alpha_ref_size=self.converter.params.alpha_shape_ref_size_m,
-            )
-            is not None
-        ]
+        if timings is not None:
+            timings["flatten_3d"] = time.perf_counter() - _t0
 
-        # Convert to sparse primitives (parallelized per-segment internally)
-        general_segments = self.converter.convert(aerial_segments)
+        _t0 = time.perf_counter()
+        aerial_segments = submap_2d_to_aerial(flattened_submap)
+        if timings is not None:
+            timings["to_aerial"] = time.perf_counter() - _t0
+
+        # Convert to sparse primitives (parallelized per-segment internally).
+        # The segment-border computation + None-drop that used to run as a
+        # separate serial filter pass here is now folded into the converter's
+        # parallel per-segment worker (_classify_single_segment), so the border is
+        # computed exactly once per segment instead of twice.
+        _t0 = time.perf_counter()
+        general_segments = self.converter.convert(aerial_segments, timings=timings)
+        if timings is not None:
+            timings["converter_convert"] = time.perf_counter() - _t0
+            timings["segment_border"] = 0.0
 
         sparse_general_segments = general_segments
 
-        # Remove lines that are FOV border artifacts
+        # Remove lines that are FOV border artifacts. line_is_valid is numpy
+        # distance work that releases the GIL, so parallelize across lines with
+        # threads (no pickling of the dense point clouds a process pool would
+        # need). Results are gathered in input order, so output is deterministic.
+        _t0 = time.perf_counter()
         params = self.submap_params
-        valid_lines = PrimitiveList()
-        for line in sparse_general_segments.get_lines():
+        lines = sparse_general_segments.get_lines()
+        # Index parents once rather than a linear scan per line.
+        parent_by_id = {seg.id: seg for seg in flattened_submap.segments}
+
+        def _line_survives(line):
             parent_id = line.history[0] if line.history else None
-            parent_seg = (
-                flattened_submap.segments.get_segment_from_id(parent_id)
-                if parent_id is not None
-                else None
-            )
-            if parent_seg is None or line_is_valid(
+            parent_seg = parent_by_id.get(parent_id) if parent_id is not None else None
+            return parent_seg is None or line_is_valid(
                 line,
                 parent_seg,
                 line_occlusion_num_samples=params.line_occlusion_num_samples,
                 line_pt_dist_check_m=params.line_pt_dist_check_m,
                 line_frac_near_points=params.line_frac_near_points,
                 line_occlusion_req_non_occluded=params.line_occlusion_req_non_occluded,
-            ):
-                valid_lines.append(line)
+            )
+
+        valid_lines = PrimitiveList()
+        if len(lines) > 1:
+            max_workers = min(
+                self.converter.params.sparse_conversion_max_threads, len(lines)
+            )
+            with ThreadPoolExecutor(max_workers=max_workers) as ex:
+                keep = list(ex.map(_line_survives, lines))
+            valid_lines.extend(ln for ln, k in zip(lines, keep) if k)
+        else:
+            valid_lines.extend(ln for ln in lines if _line_survives(ln))
         sparse_general_segments = sparse_general_segments.get_points() + valid_lines
+        if timings is not None:
+            timings["line_filter"] = time.perf_counter() - _t0
 
         sparse_general_segments.reindex()
         for seg in sparse_general_segments:
@@ -300,7 +325,7 @@ class GroundSubmapPrimitiveMapping:
             pose=np.eye(4),
             segment_frame=FrameType.ODOMETRY,
             descriptor=ground_descriptor,
-            metadata={"camera_pose": submap.pose},
+            camera_pose=submap.pose,
         )
 
         intermediate = None

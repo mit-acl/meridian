@@ -38,6 +38,7 @@ segment_mapping_data:
 
 cross_view_localization_data:
   aerial_img_path: ${MERIDIAN_DEMO_DATA}/aerial.tiff
+  aerial_primitives_dir: ${MERIDIAN_DEMO_DATA}/aerial_primitive_map
   gt_pose_data:
     type: "csv"
     path: "${MERIDIAN_DEMO_DATA}/gt.csv"

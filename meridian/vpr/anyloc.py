@@ -11,6 +11,7 @@ blocks 0..DESC_LAYER (later blocks + final norm are skipped) and use fp16.
 (ImageNet normalization + a center-crop to a multiple of the ViT patch size)
 and returns a global descriptor, so callers only need a raw RGB image.
 """
+
 from __future__ import annotations
 
 import numpy as np
@@ -46,8 +47,13 @@ class AnyLocPipeline(torch.nn.Module):
 
     MODEL = "dinov2_vitg14"
 
-    def __init__(self, centers: torch.Tensor, desc_layer: int = 31,
-                 fp16: bool = True, device: torch.device | str = "cuda"):
+    def __init__(
+        self,
+        centers: torch.Tensor,
+        desc_layer: int = 31,
+        fp16: bool = True,
+        device: torch.device | str = "cuda",
+    ):
         super().__init__()
         self.device = torch.device(device)
         self.desc_layer = desc_layer
@@ -59,12 +65,15 @@ class AnyLocPipeline(torch.nn.Module):
         for p in self.backbone.parameters():
             p.requires_grad_(False)
         if desc_layer >= len(self.backbone.blocks):
-            raise ValueError(f"desc_layer {desc_layer} >= {len(self.backbone.blocks)} blocks")
+            raise ValueError(
+                f"desc_layer {desc_layer} >= {len(self.backbone.blocks)} blocks"
+            )
 
         # Capture the "value" facet exactly like AnyLoc: hook blocks[L].attn.qkv.
         self._qkv = None
         self.backbone.blocks[desc_layer].attn.qkv.register_forward_hook(
-            lambda _m, _i, out: setattr(self, "_qkv", out))
+            lambda _m, _i, out: setattr(self, "_qkv", out)
+        )
 
         self.vlad = VLAD(centers, metric="cosine").to(self.device).eval()
 
@@ -104,13 +113,13 @@ class AnyLocPipeline(torch.nn.Module):
         """
         img = img.to(self.device, self.dtype)
         x = self.backbone.prepare_tokens_with_masks(img)
-        for blk in self.backbone.blocks[:self.desc_layer + 1]:
+        for blk in self.backbone.blocks[: self.desc_layer + 1]:
             x = blk(x)
-        res = self._qkv                        # (B, N+1, 3*D) captured at block L
+        res = self._qkv  # (B, N+1, 3*D) captured at block L
         self._qkv = None
-        res = res[:, 1:, ...]                  # drop CLS (vitg14 has no registers)
+        res = res[:, 1:, ...]  # drop CLS (vitg14 has no registers)
         d_len = res.shape[2] // 3
-        res = res[:, :, 2 * d_len:]            # "value" facet
+        res = res[:, :, 2 * d_len :]  # "value" facet
         return F.normalize(res.float(), dim=-1)
 
     @torch.no_grad()
