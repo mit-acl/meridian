@@ -70,19 +70,19 @@ def _aerial_viz_worker(
     general_segments,
     sparse_segments,
     crop,
+    i,
+    j,
     pixel_len_m,
-    alpha_shape_alpha,
+    segment_border_type,
     segment_border_grid_downsample,
     segment_border_max_n_pts,
+    concave_hull_ratio,
+    alpha_shape_alpha,
     alpha_shape_ref_size_m,
     aerial_viz_downsample,
     aerial_viz_line_width_m,
     aerial_viz_target_size_kb,
     px_per_m,
-    i,
-    j,
-    segment_border_type="concave_hull",
-    concave_hull_ratio=0.5,
 ):
     """Render 3 aerial viz images for one patch. Returns list of (filename, bytes)."""
     results = []
@@ -134,13 +134,13 @@ def _ground_viz_worker(
     aerial_segments,
     general_segments,
     sparse_segments,
-    alpha_shape_alpha,
+    segment_border_type,
     segment_border_grid_downsample,
     segment_border_max_n_pts,
+    concave_hull_ratio,
+    alpha_shape_alpha,
     alpha_shape_ref_size_m,
     show_sm_origin,
-    segment_border_type="concave_hull",
-    concave_hull_ratio=0.5,
 ):
     """Render ground viz for one submap. Returns PNG bytes."""
     matplotlib.use("Agg")
@@ -362,10 +362,14 @@ class CrossViewMatchingPipeline:
                     intermediates.general_segments,
                     submap.segments,
                     crop,
+                    i,
+                    j,
                     pixel_len_m,
-                    conv_params.alpha_shape_alpha,
+                    conv_params.segment_border_type,
                     conv_params.segment_border_grid_downsample,
                     conv_params.segment_border_max_n_pts,
+                    conv_params.concave_hull_ratio,
+                    conv_params.alpha_shape_alpha,
                     conv_params.alpha_shape_ref_size_m,
                     max(
                         1, round(self._viz_params.aerial_viz_pixel_size_m / pixel_len_m)
@@ -373,10 +377,6 @@ class CrossViewMatchingPipeline:
                     self._viz_params.aerial_viz_line_width_m,
                     self._viz_params.aerial_viz_target_size_kb,
                     px_per_m,
-                    i,
-                    j,
-                    conv_params.segment_border_type,
-                    conv_params.concave_hull_ratio,
                 )
                 futures[future] = crop
 
@@ -443,13 +443,13 @@ class CrossViewMatchingPipeline:
                         intermediates.aerial_segments,
                         intermediates.general_segments,
                         submap_2d.segments,
-                        conv_params.alpha_shape_alpha,
+                        conv_params.segment_border_type,
                         conv_params.segment_border_grid_downsample,
                         conv_params.segment_border_max_n_pts,
+                        conv_params.concave_hull_ratio,
+                        conv_params.alpha_shape_alpha,
                         conv_params.alpha_shape_ref_size_m,
                         ground_params.viz_show_sm_origin,
-                        conv_params.segment_border_type,
-                        conv_params.concave_hull_ratio,
                     )
                     futures[future] = k
 
