@@ -101,12 +101,11 @@ class AerialSegmenter(SegmenterBase):
             return []
 
         # Extract DINO features
-        dino_features = None
         dino_output_patches = None
         if self.params.semantics in ("dino", "dinov3", "dinov3-hf"):
             # Convert downsampled RGB back to BGR for _extract_dino_features
             img_bgr_ds = cv.cvtColor(image_rgb, cv.COLOR_RGB2BGR)
-            dino_features, dino_output_patches = self._extract_dino_features(img_bgr_ds)
+            dino_output_patches = self._extract_dino_features(img_bgr_ds)
 
         # First pass: filter masks by area and compute geometry
         valid_entries = []
@@ -128,21 +127,15 @@ class AerialSegmenter(SegmenterBase):
 
         # Batch-compute DINO descriptors on GPU
         descriptors = [None] * len(valid_entries)
-        if dino_features is not None and valid_entries:
-            valid_masks = [entry[1] for entry in valid_entries]
-            assert (
-                valid_masks[0].shape[0] == dino_features.shape[0]
-                and valid_masks[0].shape[1] == dino_features.shape[1]
-            ), "Mask and DINO features must have the same shape."
+        if dino_output_patches is not None and valid_entries:
             dino_frame_embedding = (
                 self._compute_dino_frame_embedding(dino_output_patches)
                 if self.params.subtract_frame_descriptor
-                and dino_output_patches is not None
                 else None
             )
-            descriptors = self._compute_batch_mean_dino_descriptors(
-                dino_features,
-                valid_masks,
+            descriptors = self.get_mask_features(
+                dino_output_patches,
+                np.stack([entry[1] for entry in valid_entries]),
                 dino_frame_embedding=dino_frame_embedding,
             )
 
