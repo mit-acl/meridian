@@ -17,7 +17,6 @@
 import cv2 as cv
 import numpy as np
 import open3d as o3d
-import copy
 import torch
 from yolov7_package import Yolov7Detector
 from PIL import Image
@@ -113,6 +112,8 @@ class Segmenter(SegmenterBase):
             )
         else:
             self.erosion_element = None
+        self._erode_buf = None
+        self._erode_prev = (slice(0, 0), slice(0, 0))
 
     def _init_semantics_model(self):
         """Override to add CLIP support on top of base DINO/DINOv3 support."""
@@ -196,11 +197,9 @@ class Segmenter(SegmenterBase):
         masks = self._process_img(img_bgr, ignore_mask=ignore_mask, keep_mask=keep_mask)
 
         if self.params.semantics in ("dino", "dinov3", "dinov3-hf"):
-            dino_features, dino_output_patches = self._extract_dino_features(img_bgr)
-            dino_features = self.unapply_rotation(dino_features)
+            dino_output_patches = self._extract_dino_features(img_bgr)
         elif self.params.semantics == "clip":
             dino_output_patches = None
-            dino_features = None
 
         frame_descriptor = None
         if (
@@ -216,6 +215,12 @@ class Segmenter(SegmenterBase):
                 dino_output_patches
             )
 
+        mask_descriptors = None
+        if dino_output_patches is not None:
+            mask_descriptors = self.get_mask_features(
+                dino_output_patches, masks, dino_frame_embedding=dino_frame_embedding
+            )
+
         if depth_data is not None:
             if self.params.use_point_cloud:
                 occlusion_edge_mask = self._get_border_occlusion_edge_mask(
@@ -223,8 +228,9 @@ class Segmenter(SegmenterBase):
                 )
             else:
                 occlusion_edge_mask = self._get_occlusion_edge_mask(depth_data)
+                depth_xyz, depth_valid = self._unproject_depth(depth_data)
 
-        for mask in masks:
+        for mask_idx, mask in enumerate(masks):
             mask = self.unapply_rotation(mask)
             points = None
             semantic_descriptor = None
@@ -239,24 +245,15 @@ class Segmenter(SegmenterBase):
                     pcd.points = o3d.utility.Vector3dVector(inside_mask_points)
 
                 else:
-                    depth_obj = copy.deepcopy(depth_data)
                     if self.erosion_element is not None:
-                        eroded_mask = cv.erode(mask, self.erosion_element)
-                        depth_obj[eroded_mask == 0] = 0
+                        obj_mask = self._erode(mask)
                     else:
-                        depth_obj[mask == 0] = 0
+                        obj_mask = mask
 
-                    pcd = o3d.geometry.PointCloud.create_from_depth_image(
-                        o3d.geometry.Image(
-                            np.ascontiguousarray(depth_obj).astype(
-                                np.dtype(depth_obj.dtype).type
-                            )
-                        ),
-                        self.open3d_cam_intrinsics,
-                        depth_scale=self.params.depth_scale,
-                        # depth_trunc=self.params.max_depth,
-                        stride=self.params.pcd_stride,
-                        project_valid_depth_only=True,
+                    s = self.params.pcd_stride
+                    pcd = o3d.geometry.PointCloud()
+                    pcd.points = o3d.utility.Vector3dVector(
+                        depth_xyz[(obj_mask[::s, ::s] != 0) & depth_valid]
                     )
 
                 # shared for depth & rangesens, once PointCloud object is created
@@ -307,15 +304,7 @@ class Segmenter(SegmenterBase):
                 clip_embedding = clip_embedding.squeeze().cpu().detach().numpy()
                 semantic_descriptor = clip_embedding
             elif self.params.semantics in ("dino", "dinov3", "dinov3-hf"):
-                assert (
-                    mask.shape[0] == dino_features.shape[0]
-                    and mask.shape[1] == dino_features.shape[1]
-                ), "Mask and DINO features must have the same shape."
-                semantic_descriptor = self._compute_mean_dino_descriptor(
-                    dino_features,
-                    mask,
-                    dino_frame_embedding=dino_frame_embedding,
-                )
+                semantic_descriptor = mask_descriptors[mask_idx]
 
             new_observation = Observation(
                 id=len(self.observations),
@@ -436,45 +425,79 @@ class Segmenter(SegmenterBase):
             Filtered masks as (N, H, W) numpy array.
         """
         image_rgb = cv.cvtColor(image_bgr, cv.COLOR_BGR2RGB)
-        masks = self._run_segmentation(image_rgb)
+        segmask = self._run_segmentation(image_rgb, on_device=True)
 
-        if len(masks) == 0:
+        if len(segmask) == 0:
             return []
 
-        [numMasks, h, w] = masks.shape
+        return self._filter_masks(
+            segmask, image_bgr.shape, ignore_mask=ignore_mask, keep_mask=keep_mask
+        )
 
-        keep = np.ones(numMasks, dtype=bool)
-        for maskId in range(numMasks):
-            mask_this_id = masks[maskId, :, :]
+    def _erode(self, mask):
+        """
+        Erodes only the mask's bounding box. Erosion is local, so this matches eroding
+        the whole frame, but a segment covers little of it.
+        """
+        x, y, w, h = cv.boundingRect(mask)
+        if w == 0 or h == 0:
+            return mask
+        p = self.params.erosion_size
+        y0, y1 = max(0, y - p), min(mask.shape[0], y + h + p)
+        x0, x1 = max(0, x - p), min(mask.shape[1], x + w + p)
+        buf = self._erode_buf
+        if buf is None or buf.shape != mask.shape or buf.dtype != mask.dtype:
+            buf = self._erode_buf = np.zeros_like(mask)
+        else:
+            buf[self._erode_prev] = 0
+        buf[y0:y1, x0:x1] = cv.erode(mask[y0:y1, x0:x1], self.erosion_element)
+        self._erode_prev = (slice(y0, y1), slice(x0, x1))
+        return buf
 
-            # filter out small masks
-            num_pixels = mask_this_id.astype(np.int8).sum()
-            if num_pixels < self._min_mask_pixels(image_bgr.shape):
-                keep[maskId] = False
-                continue
+    def _unproject_depth(self, depth):
+        """
+        Unprojects every pcd_stride-th pixel of a depth image, using the same arithmetic as
+        o3d.geometry.PointCloud.create_from_depth_image.
 
-            # filter out ignore mask
-            if ignore_mask is not None and np.any(
-                np.bitwise_and(mask_this_id.astype(np.int8), ignore_mask)
-            ):
-                keep[maskId] = False
-                continue
+        Returns:
+            xyz ((h, w, 3) np.array): strided points in the camera frame
+            valid ((h, w) np.array): pixels open3d would keep with project_valid_depth_only
+        """
+        s = self.params.pcd_stride
+        z = (
+            (depth[::s, ::s].astype(np.float64) / self.params.depth_scale)
+            .astype(np.float32)
+            .astype(np.float64)
+        )
+        v, u = np.mgrid[0:depth.shape[0]:s, 0:depth.shape[1]:s]
+        fx, fy = self.open3d_cam_intrinsics.get_focal_length()
+        cx, cy = self.open3d_cam_intrinsics.get_principal_point()
+        xyz = np.stack([(u - cx) * z / fx, (v - cy) * z / fy, z], axis=-1)
+        valid = (z > 0) & (z < 1000.0)  # 1000 is open3d's default depth_trunc
+        return xyz, valid
 
-            if (
-                keep_mask is not None
-                and self.keep_labels_option == "intersect"
-                and (
-                    np.bitwise_and(mask_this_id.astype(np.int8), keep_mask).sum()
-                    < self.params.keep_mask_minimal_intersection
-                    * mask_this_id.astype(np.int8).sum()
-                )
-            ):
-                keep[maskId] = False
-                continue
+    def _filter_masks(self, segmask, image_shape, ignore_mask=None, keep_mask=None):
+        """
+        Drops too-small, ignored and non-kept masks on segmask's device, then returns
+        the kept (n, h, w) masks as a uint8 numpy array.
+        """
+        nonzero = segmask != 0
+        num_pixels = nonzero.sum(dim=(1, 2))
+        keep = num_pixels >= self._min_mask_pixels(image_shape)
 
-        masks = masks[keep]
+        if ignore_mask is not None:
+            ignore_t = torch.from_numpy(ignore_mask != 0).to(segmask.device)
+            keep &= ~(nonzero & ignore_t).any(dim=(1, 2))
 
-        return masks
+        if keep_mask is not None and self.keep_labels_option == "intersect":
+            keep_t = torch.from_numpy(keep_mask != 0).to(segmask.device)
+            intersection = (nonzero & keep_t).sum(dim=(1, 2))
+            keep &= (
+                intersection
+                >= self.params.keep_mask_minimal_intersection * num_pixels
+            )
+
+        return segmask[keep].to(torch.uint8).cpu().numpy()
 
     def mask_bounding_box(self, mask):
         # Find the indices of the True values
