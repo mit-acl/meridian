@@ -388,7 +388,7 @@ class CrossViewLocalization:
                 )
                 continue
             ground_submap = Submap.load(ground_submap_path)
-            ground_camera_pose = ground_submap.metadata["camera_pose"]  # T_odom_camera
+            ground_camera_pose = ground_submap.camera_pose  # T_odom_camera
 
             # Load results matrix
             results_matrix = PoseEstimationResultMatrix.load(str(result_file))
@@ -885,17 +885,30 @@ def cross_view_localization(
     params,
     output_dir,
     skip_matching=False,
+    skip_aerial=False,
+    skip_ground=False,
+    skip_match=False,
     save_viz=True,
     aerial_dir=None,
     ground_dir=None,
 ):
-    """Run cross-view matching (optionally) then localization."""
+    """Run cross-view matching (optionally) then localization.
+
+    skip_aerial / skip_ground / skip_match are passed through to
+    cross_view_matching and have no effect when skip_matching is set.
+    """
     output_dir = str(output_dir)
+
+    data_params = CrossViewLocalizationDataParams.load(params)
+    aerial_dir = data_params.resolve_aerial_dir(aerial_dir, required=False)
 
     if not skip_matching:
         cross_view_matching(
             params,
             output_dir,
+            skip_aerial=skip_aerial,
+            skip_ground=skip_ground,
+            skip_match=skip_match,
             save_viz=save_viz,
             aerial_dir=aerial_dir,
             ground_dir=ground_dir,
@@ -904,7 +917,6 @@ def cross_view_localization(
     match_output_dir = os.path.join(output_dir, "match")
 
     rpgo_params = CrossViewRPGOParams.load(params)
-    data_params = CrossViewLocalizationDataParams.load(params)
     _maybe_resolve_ground_map_path(data_params, ground_dir)
     data = CrossViewLocalizationData.from_params(data_params)
 
@@ -1052,82 +1064,14 @@ if __name__ == "__main__":
             level=logging.INFO, format="%(levelname)s:%(name)s:%(message)s"
         )
 
-    if not args.skip_matching:
-        cross_view_matching(
-            args.params,
-            args.output,
-            skip_aerial=args.skip_aerial,
-            skip_ground=args.skip_ground,
-            skip_match=args.skip_match,
-            save_viz=args.viz,
-            aerial_dir=args.aerial,
-            ground_dir=args.ground,
-        )
-
-    match_output_dir = os.path.join(args.output, "match")
-    rpgo_params = CrossViewRPGOParams.load(args.params)
-    data_params = CrossViewLocalizationDataParams.load(args.params)
-    _maybe_resolve_ground_map_path(data_params, args.ground)
-    data = CrossViewLocalizationData.from_params(data_params)
-
-    # Build pipeline + load submaps for rerun if enabled
-    pipeline = None
-    aerial_submaps = None
-    ground_submaps = None
-    if rpgo_params.rerun_match_with_known_rot:
-        from meridian.params import (
-            PrimitiveMatchParams,
-            CrossViewMatchingParams,
-            CrossViewPlaceRecognitionParams,
-            AerialPatchParams,
-            RegisterParams,
-        )
-        from meridian.cross_view.place_recognition import CrossViewPlaceRecognition
-        from meridian.match.primitive_matcher import PrimitiveMatcher
-        from meridian.register.registerer import Registerer2D
-
-        pipeline_params = CrossViewMatchingParams.load(args.params)
-        aerial_patch_params = AerialPatchParams.load(args.params)
-        primitive_match_params = PrimitiveMatchParams.load(args.params)
-        primitive_match_params.dim = 2
-
-        try:
-            pr_params = CrossViewPlaceRecognitionParams.load(args.params)
-        except Exception:
-            pr_params = None
-        if pr_params is None and pipeline_params.matching_mode == "vpr":
-            pr_params = CrossViewPlaceRecognitionParams()
-        place_recognition = CrossViewPlaceRecognition(pr_params) if pr_params else None
-
-        algorithm = CrossViewMatching(
-            pipeline_params=pipeline_params,
-            aerial_patch_params=aerial_patch_params,
-            pixel_len_m=data.aerial_img_scale,
-            matcher=PrimitiveMatcher(primitive_match_params),
-            registerer=Registerer2D(RegisterParams.load(args.params)),
-            place_recognition=place_recognition,
-        )
-        pipeline = CrossViewMatchingPipeline(algorithm=algorithm)
-        aerial_seg_dir = os.path.join(
-            args.aerial or os.path.join(args.output, "aerial"), "segments"
-        )
-        ground_seg_dir = os.path.join(
-            args.ground or os.path.join(args.output, "ground"), "segments"
-        )
-        aerial_submaps = pipeline.load_submaps_from_dir(aerial_seg_dir)
-        ground_submaps = pipeline.load_submaps_from_dir(ground_seg_dir)
-
-    viz_params = CrossViewVisualizationParams.load(args.params)
-    runner = CrossViewLocalization(rpgo_params=rpgo_params, viz_params=viz_params)
-    loc_output_dir = os.path.join(args.output, "localization")
-    runner.localize(
-        match_output_dir,
-        data,
-        loc_output_dir,
-        pipeline=pipeline,
-        aerial_submaps=aerial_submaps,
-        ground_submaps=ground_submaps,
-        aerial_img=data.aerial_img,
-        main_output_dir=args.output,
+    cross_view_localization(
+        args.params,
+        args.output,
+        skip_matching=args.skip_matching,
+        skip_aerial=args.skip_aerial,
+        skip_ground=args.skip_ground,
+        skip_match=args.skip_match,
         save_viz=args.viz,
+        aerial_dir=args.aerial,
+        ground_dir=args.ground,
     )

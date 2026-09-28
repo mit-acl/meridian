@@ -177,6 +177,8 @@ class CrossViewIncrementalParams(ParamsBase):
     # until newer loop closure distributions have been acquired.
     delay_most_recent_lc_commit_num: int = 2
 
+    ros_pose_history_dt_s: float = 1.0
+
 
 def check_frame_descriptors_match(params_source, comparison=None, run=None):
     """Ground and aerial descriptors must come from the same model.

@@ -25,6 +25,7 @@ class Submap:
     segment_frame: FrameType
     gravity_dir: np.ndarray = None
     descriptor: np.ndarray = None
+    camera_pose: np.ndarray = None
     metadata: dict = None
 
     @property
@@ -52,7 +53,8 @@ class Submap:
         with open(filepath, "wb") as f:
             pickle.dump(self, f)
 
-    def load(filepath: str) -> "Submap":
+    @classmethod
+    def load(cls, filepath: str) -> "Submap":
         with open(filepath, "rb") as f:
             submap = pickle.load(f)
         return submap

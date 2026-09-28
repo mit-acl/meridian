@@ -96,6 +96,11 @@ class SegmenterParams(SegmenterParamsBase):
     outlier_removal_dbscan_min_points: int = 10
     min_occluded_unoccluded_dist_m: float = 0.1
 
+    # ROS params
+    ros_odom_frame_id: str = "odom"
+    ros_min_dt: float = 0.1
+    ros_timing_window: int = 10
+
     def __post_init__(self):
         super().__post_init__()
         self.yolo_weights_path = expandvars_recursive(self.yolo_weights_path)
