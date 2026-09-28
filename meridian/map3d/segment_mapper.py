@@ -824,19 +824,31 @@ class SegmentMapper:
         camera distance to ``center`` when provided, otherwise the most recent
         frame.
         """
+        # update() appends to all three histories together, so they stay aligned
+        assert (
+            len(self.frame_descriptors_history)
+            == len(self.poses_cam_history)
+            == len(self.times_history)
+        ), "frame descriptor, pose, and time histories are out of sync"
+
+        # No center: most recent available descriptor
+        if center is None:
+            for desc_i in reversed(self.frame_descriptors_history):
+                if desc_i is not None:
+                    return np.atleast_2d(desc_i)
+            return None
+
+        # Center given: descriptor captured closest to center
         best_desc = None
-        best_key = None
-        for i, desc_i in enumerate(self.frame_descriptors_history):
+        best_dist = None
+        for desc_i, pose_i in zip(
+            self.frame_descriptors_history, self.poses_cam_history
+        ):
             if desc_i is None:
                 continue
-            if center is not None and i < len(self.poses_cam_history):
-                key = float(np.linalg.norm(self.poses_cam_history[i][:3, 3] - center))
-            elif i < len(self.times_history):
-                key = -self.times_history[i]  # prefer most recent
-            else:
-                key = 0.0
-            if best_key is None or key < best_key:
-                best_key = key
+            dist = float(np.linalg.norm(pose_i[:3, 3] - center))
+            if best_dist is None or dist < best_dist:
+                best_dist = dist
                 best_desc = desc_i
         if best_desc is None:
             return None

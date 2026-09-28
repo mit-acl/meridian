@@ -1,4 +1,5 @@
 import os
+import sys
 import numpy as np
 from dataclasses import dataclass
 from typing import ClassVar
@@ -44,14 +45,22 @@ class CrossViewLocalizationDataParams(ParamsBase):
     def resolve_aerial_dir(self, aerial_dir, required=False):
         """Reconcile the aerial submap dir from a --aerial flag vs. aerial_primitives_dir.
 
-        Both point at the parent dir containing segments/. Errors if both are set;
-        returns whichever is provided (or None). With required=True, errors if neither
-        is set.
+        Both point at the parent dir containing segments/. If both are set, --aerial
+        wins (with a loud warning); returns whichever is provided (or None). With
+        required=True, errors if neither is set.
         """
         if aerial_dir is not None and self.aerial_primitives_dir is not None:
-            raise ValueError(
-                "Aerial submap directory was provided both via --aerial and the "
-                "`aerial_primitives_dir` param. Provide only one."
+            yellow, reset = "\033[1;33m", "\033[0m"
+            bar = "=" * 80
+            print(
+                f"{yellow}{bar}\n"
+                "WARNING: aerial submap directory set by both --aerial and the "
+                "`aerial_primitives_dir` param.\n"
+                f"  Loading from --aerial:                  {aerial_dir}\n"
+                f"  Ignoring `aerial_primitives_dir` param: {self.aerial_primitives_dir}\n"
+                f"{bar}{reset}",
+                file=sys.stderr,
+                flush=True,
             )
         resolved = aerial_dir if aerial_dir is not None else self.aerial_primitives_dir
         if required and resolved is None:
