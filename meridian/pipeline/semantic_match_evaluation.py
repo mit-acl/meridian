@@ -42,7 +42,7 @@ def _ground_seg_to_utm_2d(seg, submap: Submap, gt_pose_data: PoseData):
         # segments are already in odom frame; derive T_utm_odom from submap time +
         # stored T_odom_camera in metadata
         T_utm_cam = gt_pose_data.pose(submap.time)
-        T_odom_cam = submap.metadata["camera_pose"]
+        T_odom_cam = submap.camera_pose
         T = T_utm_cam @ np.linalg.inv(T_odom_cam)
     else:
         raise ValueError(
@@ -75,7 +75,7 @@ def _ground_submap_utm_centroid_xy(submap: Submap, gt_pose_data: PoseData):
         T = gt_pose_data.pose(submap.time)
     elif submap.segment_frame == FrameType.ODOMETRY:
         T_utm_cam = gt_pose_data.pose(submap.time)
-        T_odom_cam = submap.metadata["camera_pose"]
+        T_odom_cam = submap.camera_pose
         T = T_utm_cam @ np.linalg.inv(T_odom_cam)
     else:
         raise ValueError(f"Unsupported ground segment_frame: {submap.segment_frame}")
