@@ -215,16 +215,15 @@ class SegmenterBase:
                 f"Choose from 'dino', 'dinov3', 'dinov3-hf', or 'none'."
             )
 
-    def _run_segmentation(self, image_rgb, on_device=False):
+    def _run_segmentation(self, image_rgb):
         """Run segmentation model on an RGB image.
 
         Args:
             image_rgb: RGB image as numpy array.
-            on_device: Return the masks as a GPU tensor instead of numpy.
 
         Returns:
-            masks: (N, H, W) binary masks — numpy, or a torch tensor when
-                `on_device` is set — or an empty list if none found.
+            masks: (N, H, W) binary masks as a torch tensor on the model's device,
+                or an empty list if none found.
         """
         self._ensure_segmentation_model()
         if self.params.get_model_type() == "fastsam":
@@ -290,10 +289,8 @@ class SegmenterBase:
 
         if len(masks) == 0:
             return []
-        if on_device:
-            return masks
 
-        return masks.cpu().numpy()
+        return masks
 
     def _extract_dino_features(self, img_bgr):
         """Extract DINO features from a BGR image.

@@ -166,6 +166,8 @@ class Segmenter(SegmenterBase):
 
         if self.params.use_point_cloud:
             pcl, pcl_proj = depth_data
+            in_range = pcl[:, 2] < self.params.max_depth
+            pcl, pcl_proj = pcl[in_range], pcl_proj[in_range]
             # Build a sparse depth image from the point cloud projections
             # so occlusion edge logic can index it like a dense depth image.
             h, w = img_bgr.shape[:2]
@@ -260,18 +262,9 @@ class Segmenter(SegmenterBase):
 
                 pcd.remove_non_finite_points()
                 pcd_sampled = pcd.voxel_down_sample(voxel_size=self.params.voxel_size)
-                original_points = np.asarray(pcd_sampled.points)
-                points_in_depth_range = original_points[
-                    original_points[:, 2] < self.params.max_depth
-                ]
 
-                pcd_in_depth_range = o3d.geometry.PointCloud()
-                pcd_in_depth_range.points = o3d.utility.Vector3dVector(
-                    points_in_depth_range
-                )
-
-                if not pcd_in_depth_range.is_empty():
-                    points = self._remove_point_cloud_outliers(pcd_in_depth_range)
+                if not pcd_sampled.is_empty():
+                    points = self._remove_point_cloud_outliers(pcd_sampled)
                 if points is None or points.size == 0:
                     continue
 
@@ -317,9 +310,6 @@ class Segmenter(SegmenterBase):
 
             if depth_data is not None:
                 new_observation.point_cloud = points
-                new_observation.points_beyond_max_depth = original_points[
-                    original_points[:, 2] > self.params.max_depth
-                ]
                 new_observation.occluded_points = self._compute_occlusion_points(
                     points=points,
                     mask=mask,
@@ -425,13 +415,13 @@ class Segmenter(SegmenterBase):
             Filtered masks as (N, H, W) numpy array.
         """
         image_rgb = cv.cvtColor(image_bgr, cv.COLOR_BGR2RGB)
-        segmask = self._run_segmentation(image_rgb, on_device=True)
+        masks = self._run_segmentation(image_rgb)
 
-        if len(segmask) == 0:
+        if len(masks) == 0:
             return []
 
         return self._filter_masks(
-            segmask, image_bgr.shape, ignore_mask=ignore_mask, keep_mask=keep_mask
+            masks, image_bgr.shape, ignore_mask=ignore_mask, keep_mask=keep_mask
         )
 
     def _erode(self, mask):
@@ -461,7 +451,7 @@ class Segmenter(SegmenterBase):
 
         Returns:
             xyz ((h, w, 3) np.array): strided points in the camera frame
-            valid ((h, w) np.array): pixels open3d would keep with project_valid_depth_only
+            valid ((h, w) np.array): pixels with depth in (0, max_depth)
         """
         s = self.params.pcd_stride
         z = (
@@ -473,31 +463,31 @@ class Segmenter(SegmenterBase):
         fx, fy = self.open3d_cam_intrinsics.get_focal_length()
         cx, cy = self.open3d_cam_intrinsics.get_principal_point()
         xyz = np.stack([(u - cx) * z / fx, (v - cy) * z / fy, z], axis=-1)
-        valid = (z > 0) & (z < 1000.0)  # 1000 is open3d's default depth_trunc
+        valid = (z > 0) & (z < self.params.max_depth)
         return xyz, valid
 
-    def _filter_masks(self, segmask, image_shape, ignore_mask=None, keep_mask=None):
+    def _filter_masks(self, masks, image_shape, ignore_mask=None, keep_mask=None):
         """
-        Drops too-small, ignored and non-kept masks on segmask's device, then returns
+        Drops too-small, ignored and non-kept masks on masks' device, then returns
         the kept (n, h, w) masks as a uint8 numpy array.
         """
-        nonzero = segmask != 0
+        nonzero = masks != 0
         num_pixels = nonzero.sum(dim=(1, 2))
         keep = num_pixels >= self._min_mask_pixels(image_shape)
 
         if ignore_mask is not None:
-            ignore_t = torch.from_numpy(ignore_mask != 0).to(segmask.device)
+            ignore_t = torch.from_numpy(ignore_mask != 0).to(masks.device)
             keep &= ~(nonzero & ignore_t).any(dim=(1, 2))
 
         if keep_mask is not None and self.keep_labels_option == "intersect":
-            keep_t = torch.from_numpy(keep_mask != 0).to(segmask.device)
+            keep_t = torch.from_numpy(keep_mask != 0).to(masks.device)
             intersection = (nonzero & keep_t).sum(dim=(1, 2))
             keep &= (
                 intersection
                 >= self.params.keep_mask_minimal_intersection * num_pixels
             )
 
-        return segmask[keep].to(torch.uint8).cpu().numpy()
+        return masks[keep].to(torch.uint8).cpu().numpy()
 
     def mask_bounding_box(self, mask):
         # Find the indices of the True values
