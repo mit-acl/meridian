@@ -104,6 +104,7 @@ class AerialSegmenter(SegmenterBase):
 
         if len(masks) == 0:
             return []
+        masks = masks.cpu().numpy()
 
         # Extract DINO features
         dino_output_patches = None
