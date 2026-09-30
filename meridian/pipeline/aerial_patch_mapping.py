@@ -6,10 +6,15 @@ cross_view_matching's aerial stage, without requiring ground maps or matching.
 Usage:
     python3 -m meridian.pipeline.aerial_patch_mapping \
         -p path/to/params.yaml -o /path/to/output
+
+    # default params, GeoTIFF input only
+    python3 -m meridian.pipeline.aerial_patch_mapping \
+        -a path/to/aerial.tiff [-s DOWNSAMPLE] -o /path/to/output
 """
 
 import argparse
 import pathlib
+import sys
 from concurrent.futures import ProcessPoolExecutor, as_completed
 
 from meridian.params import (
@@ -31,24 +36,58 @@ from meridian.pipeline.cross_view_matching import _aerial_viz_worker
 from meridian.pipeline.data import CrossViewLocalizationData
 
 
-def aerial_patch_mapping(params, output_dir):
+def aerial_patch_mapping(
+    params, output_dir, aerial_img_path=None, downsample_factor=None
+):
     """Run aerial patch segmentation and save submaps + visualizations.
 
     Args:
-        params: Path to YAML params file (same format as cross_view_matching).
+        params: Path to YAML params file (same format as cross_view_matching), or
+            None to use default params (requires aerial_img_path).
         output_dir: Output directory for segments/ and viz/ subdirectories.
+        aerial_img_path: Aerial image path; overrides the params file if both are set.
+        downsample_factor: Aerial segmenter downsample factor; None keeps the
+            params-file / default value.
     """
-    # Load params
-    data_params = CrossViewLocalizationDataParams.load(params)
-    aerial_segmenter_params = AerialSegmenterParams.load(params)
-    aerial_patch_params = AerialPatchParams.load(params)
-    conversion_params = SegmentToPrimitiveConversionParams.load(params)
-    viz_params = CrossViewVisualizationParams.load(params)
+    if params is None and aerial_img_path is None:
+        raise ValueError("Provide a params file and/or an aerial image path.")
 
-    try:
-        pr_params = CrossViewPlaceRecognitionParams.load(params)
-    except Exception:
+    # Load params (defaults when no params file is given)
+    if params is not None:
+        data_params = CrossViewLocalizationDataParams.load(params)
+        aerial_segmenter_params = AerialSegmenterParams.load(params)
+        aerial_patch_params = AerialPatchParams.load(params)
+        conversion_params = SegmentToPrimitiveConversionParams.load(params)
+        viz_params = CrossViewVisualizationParams.load(params)
+        try:
+            pr_params = CrossViewPlaceRecognitionParams.load(params)
+        except Exception:
+            pr_params = None
+    else:
+        data_params = CrossViewLocalizationDataParams(aerial_img_path=aerial_img_path)
+        aerial_segmenter_params = AerialSegmenterParams()
+        aerial_patch_params = AerialPatchParams()
+        conversion_params = SegmentToPrimitiveConversionParams()
+        viz_params = CrossViewVisualizationParams()
         pr_params = None
+
+    # Command-line overrides
+    if params is not None and aerial_img_path is not None:
+        yellow, reset = "\033[1;33m", "\033[0m"
+        bar = "=" * 80
+        print(
+            f"{yellow}{bar}\n"
+            "WARNING: aerial image set by both --aerial-img and the params file.\n"
+            f"  Loading from --aerial-img:       {aerial_img_path}\n"
+            f"  Ignoring params `aerial_img_path`: {data_params.aerial_img_path}\n"
+            f"{bar}{reset}",
+            file=sys.stderr,
+            flush=True,
+        )
+        data_params.aerial_img_path = aerial_img_path
+    if downsample_factor is not None:
+        aerial_segmenter_params.downsample_factor = downsample_factor
+
     from meridian.cross_view.place_recognition import CrossViewPlaceRecognition
     from meridian.vpr.vpr import check_frame_descriptors_match
 
@@ -175,8 +214,25 @@ if __name__ == "__main__":
         "-p",
         "--params",
         type=str,
-        required=True,
-        help="Path to params YAML file.",
+        default=None,
+        help="Path to params YAML file. If omitted, default params are used "
+        "(requires --aerial-img).",
+    )
+    parser.add_argument(
+        "-a",
+        "--aerial-img",
+        type=str,
+        default=None,
+        help="Aerial image path (GeoTIFF when no params file). Overrides the "
+        "params file's `aerial_img_path` if both are given.",
+    )
+    parser.add_argument(
+        "-s",
+        "--downsample",
+        type=int,
+        default=None,
+        help="Aerial segmenter downsample factor (default: params file / "
+        "AerialSegmenterParams default).",
     )
     parser.add_argument(
         "-o",
@@ -192,6 +248,8 @@ if __name__ == "__main__":
         help="Enable INFO-level logging.",
     )
     args = parser.parse_args()
+    if args.params is None and args.aerial_img is None:
+        parser.error("one of -p/--params or -a/--aerial-img is required")
 
     if args.debug:
         import logging
@@ -200,4 +258,9 @@ if __name__ == "__main__":
             level=logging.INFO, format="%(levelname)s:%(name)s:%(message)s"
         )
 
-    aerial_patch_mapping(args.params, args.output)
+    aerial_patch_mapping(
+        args.params,
+        args.output,
+        aerial_img_path=args.aerial_img,
+        downsample_factor=args.downsample,
+    )
