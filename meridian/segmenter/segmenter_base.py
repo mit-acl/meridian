@@ -80,6 +80,18 @@ class SegmenterBase:
                 "Frame descriptor only supported with DINO, DINOv3, DINOv3-HF semantics, or 'anyloc'/'salad'."
             )
 
+        self.preload_models()
+
+    def preload_models(self):
+        """Load every model this config will use."""
+        self._ensure_segmentation_model()
+        if self.params.semantics is not None:
+            self._ensure_semantics_model()
+        if self.frame_descriptor_type == "anyloc":
+            self._ensure_anyloc()
+        elif self.frame_descriptor_type == "salad":
+            self._ensure_salad()
+
     def _fp16_enabled(self, flag: bool) -> bool:
         """fp16 only on CUDA — half precision is unreliable/unsupported on CPU."""
         return bool(flag) and "cuda" in str(self.params.device)
@@ -210,7 +222,8 @@ class SegmenterBase:
             image_rgb: RGB image as numpy array.
 
         Returns:
-            masks: (N, H, W) numpy array of binary masks, or empty list if none found.
+            masks: (N, H, W) binary masks as a torch tensor on the model's device,
+                or an empty list if none found.
         """
         self._ensure_segmentation_model()
         if self.params.get_model_type() == "fastsam":
@@ -274,9 +287,7 @@ class SegmenterBase:
                 f"Unsupported segmenter model type: {self.params.model_type}"
             )
 
-        if len(masks) > 0:
-            masks = masks.cpu().numpy()
-        else:
+        if len(masks) == 0:
             return []
 
         return masks
@@ -288,9 +299,7 @@ class SegmenterBase:
             img_bgr: BGR image as numpy array.
 
         Returns:
-            Tuple of (per_pixel_features, output_patches):
-                per_pixel_features: (H, W, C) tensor of per-pixel features.
-                output_patches: (1, h, w, C) tensor of patch features.
+            output_patches: (1, h, w, C) tensor of patch features.
         """
         self._ensure_semantics_model()
         if self.params.semantics in ("dino", "dinov3-hf"):
@@ -301,15 +310,11 @@ class SegmenterBase:
             if self._fp16_enabled(self.params.semantics_fp16):
                 preprocessed["pixel_values"] = preprocessed["pixel_values"].half()
             dino_output = self.semantics_model(**preprocessed)
-            output_patches = self.get_output_patches(
+            return self.get_output_patches(
                 model_output=dino_output.last_hidden_state.float(),
                 img_shape=img_bgr.shape,
                 feature_dim=self.params.semantics_dim,
             )
-            per_pixel = self.get_per_pixel_features(
-                model_output_patches=output_patches, img_shape=img_bgr.shape
-            )
-            return per_pixel, output_patches
         elif self.params.semantics == "dinov3":
             img_rgb = cv.cvtColor(img_bgr, cv.COLOR_BGR2RGB)
             img_tensor = (
@@ -321,15 +326,9 @@ class SegmenterBase:
                 features = self.semantics_model.get_intermediate_layers(
                     img_tensor, n=1, reshape=True, return_class_token=False, norm=True
                 )[0].float()  # (B, C, H_patches, W_patches)
-            output_patches = features.permute(0, 2, 3, 1)  # (1, H, W, C)
-            per_pixel = torch.nn.functional.interpolate(
-                features,
-                size=(img_bgr.shape[0], img_bgr.shape[1]),
-                mode="bilinear",
-            )[0].permute(1, 2, 0)  # (H, W, C)
-            return per_pixel, output_patches
+            return features.permute(0, 2, 3, 1)  # (1, H, W, C)
         else:
-            return None, None
+            return None
 
     def _compute_gem_descriptor(self, patch_features):
         """Compute GeM (Generalized Mean) pooling descriptor.
@@ -366,67 +365,6 @@ class SegmenterBase:
             mean = mean / mean.norm().clamp(min=1e-12)
         return mean
 
-    def _compute_mean_dino_descriptor(
-        self, dino_features, mask, dino_frame_embedding=None
-    ):
-        """Compute mean DINO descriptor over a binary mask.
-
-        Args:
-            dino_features: (H, W, C) tensor of per-pixel features.
-            mask: (H, W) binary mask.
-            dino_frame_embedding: optional (C,) torch tensor — the L2-normalized
-                mean of all patch tokens for this frame. When provided, it is
-                subtracted from the segment's normalized mean and the result is
-                re-normalized, so the descriptor encodes how the masked region
-                differs from the rest of the frame.
-
-        Returns:
-            Normalized 1-D numpy array of shape (C,).
-        """
-        with torch.no_grad():
-            mask_tensor = torch.from_numpy(mask.astype(bool)).to(dino_features.device)
-            dino_mask = dino_features[mask_tensor].float()  # (K, C) on GPU, float32
-            mean_dino = dino_mask.mean(dim=0)  # (C,) on GPU
-            mean_dino = mean_dino / mean_dino.norm().clamp(min=1e-12)
-            if dino_frame_embedding is not None:
-                mean_dino = mean_dino - dino_frame_embedding
-                mean_dino = mean_dino / mean_dino.norm().clamp(min=1e-12)
-        return mean_dino.cpu().numpy()
-
-    def _compute_batch_mean_dino_descriptors(
-        self, dino_features, masks, dino_frame_embedding=None
-    ):
-        """Compute normalized mean DINO descriptors for multiple masks at once.
-
-        Uses a single GPU matmul instead of per-mask transfers.
-
-        Args:
-            dino_features: (H, W, C) tensor of per-pixel features on GPU.
-            masks: list of (H, W) numpy binary masks.
-            dino_frame_embedding: optional (C,) torch tensor — see
-                _compute_mean_dino_descriptor.
-
-        Returns:
-            List of normalized numpy arrays, each of shape (C,).
-        """
-        with torch.no_grad():
-            H, W, C = dino_features.shape
-            # Cast to float32 for accumulation to avoid float16 overflow
-            features_flat = dino_features.reshape(H * W, C).float()
-            mask_np = np.stack([m.astype(bool).ravel() for m in masks])
-            mask_tensor = torch.from_numpy(mask_np.astype(np.float32)).to(
-                dino_features.device
-            )
-            counts = mask_tensor.sum(dim=1, keepdim=True).clamp(min=1)
-            means = (mask_tensor @ features_flat) / counts
-            norms = means.norm(dim=1, keepdim=True).clamp(min=1e-12)
-            descriptors = means / norms
-            if dino_frame_embedding is not None:
-                descriptors = descriptors - dino_frame_embedding.unsqueeze(0)
-                new_norms = descriptors.norm(dim=1, keepdim=True).clamp(min=1e-12)
-                descriptors = descriptors / new_norms
-        return list(descriptors.cpu().numpy())
-
     def get_output_patches(
         self, model_output: ArrayLike, img_shape: ArrayLike, feature_dim: int
     ) -> ArrayLike:
@@ -453,25 +391,47 @@ class SegmenterBase:
         )
         return model_output_patches
 
-    def get_per_pixel_features(
-        self, model_output_patches: ArrayLike, img_shape: ArrayLike
-    ) -> ArrayLike:
-        """Interpolate patch features to per-pixel resolution.
+    def get_mask_features(
+        self, model_output_patches, masks, dino_frame_embedding=None
+    ):
+        """Normalized mean of the bilinearly upsampled DINO features within each mask.
+
+        Upsampling is linear (F_up = Ry F Rx^T per channel), so the sum over mask M
+        equals <Ry^T M Rx, F> (cyclic trace), and the full-resolution feature map is
+        never materialized.
 
         Args:
-            model_output_patches: (1, h, w, C) patch features.
-            img_shape: Original image shape (H, W, ...).
+            model_output_patches: Reshaped patch features, 1 x h x w x feature_dim.
+            masks: N x H x W masks in the same frame as the patches.
+            dino_frame_embedding: optional (C,) torch tensor subtracted from each
+                normalized descriptor, which is then re-normalized.
 
         Returns:
-            Per-pixel features of shape (H, W, C).
+            N x feature_dim unit-norm numpy descriptors.
         """
-        per_pixel_features = torch.nn.functional.interpolate(
-            model_output_patches.permute(0, 3, 1, 2),
-            size=(img_shape[0], img_shape[1]),
-            mode="bilinear",
+        if len(masks) == 0:
+            return np.zeros((0, model_output_patches.shape[-1]), dtype=np.float32)
+        _, h, w, feature_dim = model_output_patches.shape
+        device = model_output_patches.device
+        # rows of the 1D bilinear upsampling matrices, matching interpolate(mode='bilinear')
+        Ry = torch.nn.functional.interpolate(
+            torch.eye(h, device=device)[None], size=masks.shape[1], mode="linear"
+        )[0].T
+        Rx = torch.nn.functional.interpolate(
+            torch.eye(w, device=device)[None], size=masks.shape[2], mode="linear"
+        )[0].T
+
+        masks_t = torch.from_numpy(np.ascontiguousarray(masks) != 0).to(device).float()
+        patch_weights = Ry.T @ masks_t @ Rx  # N x h x w
+        feature_sums = patch_weights.reshape(len(masks), -1) @ (
+            model_output_patches.reshape(-1, feature_dim).float()
         )
-        per_pixel_features = per_pixel_features[0].permute(1, 2, 0)
-        return per_pixel_features
+        descriptors = torch.nn.functional.normalize(feature_sums, dim=1)
+        if dino_frame_embedding is not None:
+            descriptors = torch.nn.functional.normalize(
+                descriptors - dino_frame_embedding.unsqueeze(0), dim=1
+            )
+        return descriptors.cpu().detach().numpy()
 
     def get_frame_descriptor(
         self, dino_features: torch.Tensor, img_bgr=None
