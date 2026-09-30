@@ -31,7 +31,13 @@ M. Peterson, Q. Li, Y. Jia, F. Cladera, C. Nieto-Granda, C.J. Taylor, and J.P. H
 
 We recommend using this repo with a Python virtual environment. This software has been tested with Python 3.12 on Ubuntu 24.04.
 
-To install, clone and `cd` into this repo, activate your environment, and run
+Prerequisites include CMake, g++, Eigen, `python3-dev`, and OpenBLAS. If these are not currently installed, run
+
+```
+sudo apt install cmake build-essential libeigen3-dev python3-dev libopenblas-dev
+```
+
+To install Meridian, clone and `cd` into this repo, activate your environment, and run
 
 ```
 source ./install/install.sh
