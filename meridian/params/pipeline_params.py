@@ -21,6 +21,9 @@ class LandmarkPoseEstimationParams(ParamsBase):
     odometry_tran_sig_m: float = 0.1
     landmark_tran_sig_m: float = 1.0
     landmark_z_sig_m: float = 1000.0
+    # PGO node spacing along the odometry trajectory (plus one node per
+    # landmark observation time). <= 0 uses every odometry pose.
+    downsample_distance_m: float = 0.25
 
 
 @dataclass

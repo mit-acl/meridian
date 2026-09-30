@@ -14,16 +14,20 @@ from dataclasses import dataclass
 from typing import List, Optional
 
 import cv2 as cv
+import gtsam
 import numpy as np
 import rasterio
 from rasterio.crs import CRS as RastCRS
+from rasterio.transform import rowcol
 from rasterio.transform import xy as rasterio_xy
 from rasterio.warp import transform as warp_transform
 from robotdatapy.camera import pixel_depth_2_xyz
 from robotdatapy.data import ImgData, PoseData
 from robotdatapy.transform import aruns, transform_to_gtsam
+from scipy.spatial.transform import Rotation as Rot, Slerp
 
 from meridian.cross_view.rpgo import se2_to_se3
+from meridian.pipeline.data import LazyMcapImgData, is_mcap_bag
 from meridian.params.data_params import LandmarkPoseEstimationDataParams
 from meridian.params.pipeline_params import LandmarkPoseEstimationParams
 
@@ -526,18 +530,96 @@ def estimate_frame_align(
     return T_utm_odom
 
 
+def _pgo_node_times_and_poses(
+    camera_pose_data: PoseData,
+    landmarks: List[LandmarkMatch],
+    downsample_distance_m: float,
+) -> tuple:
+    """Select PGO nodes: one every downsample_distance_m of odometry travel (plus
+    the first and last odometry poses), and one at every landmark observation time
+    so landmark factors attach to an exact, non-interpolated pose.
+
+    Returns (node_times, node_poses) sorted by time.
+    """
+    times = camera_pose_data.times
+    poses = camera_pose_data.all_poses()
+
+    if downsample_distance_m is None or downsample_distance_m <= 0:
+        keep = np.arange(len(times))
+    else:
+        keep = [0]
+        last_xyz = poses[0, :3, 3]
+        for i in range(1, len(times)):
+            if np.linalg.norm(poses[i, :3, 3] - last_xyz) >= downsample_distance_m:
+                keep.append(i)
+                last_xyz = poses[i, :3, 3]
+        if keep[-1] != len(times) - 1:
+            keep.append(len(times) - 1)
+        keep = np.array(keep)
+
+    node_times = times[keep]
+    node_poses = poses[keep]
+
+    lm_times = np.unique([lm.time for lm in landmarks])
+    lm_times = lm_times[~np.isin(lm_times, node_times)]
+    if len(lm_times):
+        lm_poses = np.array([camera_pose_data.pose(t) for t in lm_times])
+        node_times = np.concatenate([node_times, lm_times])
+        node_poses = np.concatenate([node_poses, lm_poses])
+        order = np.argsort(node_times)
+        node_times, node_poses = node_times[order], node_poses[order]
+
+    return node_times, node_poses
+
+
+def _densify_trajectory(
+    node_times: np.ndarray,
+    node_poses_opt: np.ndarray,
+    node_poses_odom: np.ndarray,
+    dense_times: np.ndarray,
+    dense_poses_odom: np.ndarray,
+) -> np.ndarray:
+    """Dense UTM trajectory from sparse optimized nodes.
+
+    At each node, the correction C = T_utm_opt @ inv(T_odom) is known. It is
+    interpolated between nodes (lerp translation, slerp rotation) and applied to
+    the dense odometry: T(t) = C(t) @ T_odom(t). Exact at node times; between
+    nodes it keeps the odometry's local motion instead of straight-line
+    interpolating the optimized poses.
+    """
+    C = node_poses_opt @ np.linalg.inv(node_poses_odom)
+
+    C_dense = np.tile(np.eye(4), (len(dense_times), 1, 1))
+    for k in range(3):
+        C_dense[:, k, 3] = np.interp(dense_times, node_times, C[:, k, 3])
+    slerp = Slerp(node_times, Rot.from_matrix(C[:, :3, :3]))
+    C_dense[:, :3, :3] = slerp(
+        np.clip(dense_times, node_times[0], node_times[-1])
+    ).as_matrix()
+
+    return C_dense @ dense_poses_odom
+
+
 def estimate_pgo(
     landmarks: List[LandmarkMatch],
     camera_pose_data: PoseData,
     params: LandmarkPoseEstimationParams,
 ) -> tuple:
-    """GTSAM pose-graph optimizer. Returns (result_pose_data, T_utm_odom)."""
-    import gtsam
+    """GTSAM pose-graph optimizer over a distance-downsampled trajectory.
 
-    times = camera_pose_data.times
-
+    Returns (dense result_pose_data at every odometry time, T_utm_odom).
+    """
     # Initial alignment via frame_align
     T_utm_odom = estimate_frame_align(landmarks, camera_pose_data)
+
+    node_times, node_poses = _pgo_node_times_and_poses(
+        camera_pose_data, landmarks, params.downsample_distance_m
+    )
+    N = len(node_times)
+    logger.info(
+        f"PGO: {N} nodes ({len(camera_pose_data.times)} odometry poses, "
+        f"downsample_distance_m={params.downsample_distance_m})"
+    )
 
     # Noise models
     rot_sig = np.deg2rad(params.odometry_rot_sig_deg)
@@ -565,13 +647,11 @@ def estimate_pgo(
     graph = gtsam.NonlinearFactorGraph()
     initial_estimate = gtsam.Values()
 
-    N = len(times)
     lm_idx0 = N  # landmark variable indices start after trajectory
 
     # Trajectory between factors
-    T_prev = camera_pose_data.pose(times[0])
-    for i, t_i in enumerate(times):
-        T_i = camera_pose_data.pose(t_i)
+    for i in range(N):
+        T_i = node_poses[i]
         if i == 0:
             # Anchor z at P_0
             T_init = T_utm_odom @ T_i
@@ -579,24 +659,23 @@ def estimate_pgo(
                 gtsam.PriorFactorPose3(0, transform_to_gtsam(T_init), anchor_noise)
             )
         else:
-            T_rel = np.linalg.inv(T_prev) @ T_i
+            T_rel = np.linalg.inv(node_poses[i - 1]) @ T_i
             graph.add(
                 gtsam.BetweenFactorPose3(
                     i - 1, i, transform_to_gtsam(T_rel), odom_noise
                 )
             )
-        T_prev = T_i
 
         # Initial estimate
-        T_utm_i = T_utm_odom @ T_i
-        initial_estimate.insert(i, transform_to_gtsam(T_utm_i))
+        initial_estimate.insert(i, transform_to_gtsam(T_utm_odom @ T_i))
 
     # Landmark factors
     for k, lm in enumerate(landmarks):
         lm_var = lm_idx0 + k
 
-        # Closest trajectory index
-        pose_idx = int(np.argmin(np.abs(times - lm.time)))
+        # Every landmark time is a node (see _pgo_node_times_and_poses)
+        pose_idx = int(np.searchsorted(node_times, lm.time))
+        assert node_times[pose_idx] == lm.time
 
         # T_camera_point: translation = point_camera (rotation = identity)
         T_cam_pt = np.eye(4)
@@ -617,7 +696,7 @@ def estimate_pgo(
         )
 
         # Initial estimate for landmark
-        T_lm_init = T_utm_odom @ camera_pose_data.pose(lm.time)
+        T_lm_init = T_utm_odom @ node_poses[pose_idx]
         T_lm_init[:3, 3] = np.array([lm.utm_x, lm.utm_y, 0.0])
         initial_estimate.insert(lm_var, transform_to_gtsam(T_lm_init))
 
@@ -625,9 +704,16 @@ def estimate_pgo(
     optimizer = gtsam.LevenbergMarquardtOptimizer(graph, initial_estimate, lm_params)
     result = optimizer.optimize()
 
-    poses = [result.atPose3(i).matrix() for i in range(N)]
+    node_poses_opt = np.array([result.atPose3(i).matrix() for i in range(N)])
+    dense_poses = _densify_trajectory(
+        node_times,
+        node_poses_opt,
+        node_poses,
+        camera_pose_data.times,
+        camera_pose_data.all_poses(),
+    )
     result_pd = PoseData.from_times_and_poses(
-        times, poses, time_tol=np.inf, interp=True
+        camera_pose_data.times, dense_poses, time_tol=np.inf, interp=True
     )
     return result_pd, T_utm_odom
 
@@ -647,8 +733,6 @@ def _draw_trajectory_on_aerial(
     utm_crs=None,
 ) -> np.ndarray:
     """Draw trajectory polyline and landmark dots on downsampled aerial image."""
-    from rasterio.transform import rowcol
-
     img = aerial_display.copy()
     ds = aerial_display_downsample
 
@@ -730,9 +814,26 @@ def gt_landmark_pose_estimation(
 
     # Load data
     logger.info("Loading data...")
-    img_data = ImgData.from_dict(data_params.img_data) if data_params.img_data else None
+    if data_params.lazy_mcap_loading:
+        for name, d in [
+            ("img_data", data_params.img_data),
+            ("depth_data", data_params.depth_data),
+        ]:
+            if d and (d.get("type") != "bag" or not is_mcap_bag(d["path"])):
+                raise ValueError(
+                    f"lazy_mcap_loading requires {name} to be an MCAP bag, got "
+                    f"type={d.get('type')!r}, path={d.get('path')!r}"
+                )
+        img_data_cls = LazyMcapImgData
+    else:
+        img_data_cls = ImgData
+    img_data = (
+        img_data_cls.from_dict(data_params.img_data) if data_params.img_data else None
+    )
     depth_data = (
-        ImgData.from_dict(data_params.depth_data) if data_params.depth_data else None
+        img_data_cls.from_dict(data_params.depth_data)
+        if data_params.depth_data
+        else None
     )
     camera_pose_data = (
         PoseData.from_dict(data_params.camera_pose_data)
@@ -805,10 +906,11 @@ def gt_landmark_pose_estimation(
     T_utm_odom = estimate_frame_align(landmarks, camera_pose_data)
 
     if params.method == "frame_align":
-        times = camera_pose_data.times
-        poses = [T_utm_odom @ camera_pose_data.pose(t) for t in times]
         trajectory_pd = PoseData.from_times_and_poses(
-            times, poses, time_tol=np.inf, interp=True
+            camera_pose_data.times,
+            T_utm_odom @ camera_pose_data.all_poses(),
+            time_tol=np.inf,
+            interp=True,
         )
     elif params.method == "pgo":
         trajectory_pd, T_utm_odom = estimate_pgo(landmarks, camera_pose_data, params)

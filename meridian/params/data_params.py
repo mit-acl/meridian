@@ -101,6 +101,9 @@ class LandmarkPoseEstimationDataParams(ParamsBase):
     depth_data: dict = None
     camera_pose_data: dict = None
     depth_scale: float = 1e-3
+    # Read img_data/depth_data frames from the bag on demand instead of loading
+    # the whole topic into memory. Requires MCAP bags (time-indexed random access).
+    lazy_mcap_loading: bool = False
 
     def __post_init__(self):
         self.aerial_img_path = expandvars_recursive(self.aerial_img_path)

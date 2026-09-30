@@ -1,8 +1,18 @@
 import logging
+import os
+import pickle
+import struct
 import numpy as np
+from collections import OrderedDict
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Union
+from robotdatapy.camera import CameraParams
 from robotdatapy.data import PoseData, ImgData, PointCloudData
+from robotdatapy.data.robot_data import RobotData
+from robotdatapy.exceptions import MsgNotFound
+from rosbags.highlevel import AnyReader
+from rosbags.image import message_to_cvimage
 import cv2 as cv
 import rasterio
 from rasterio.crs import CRS
@@ -223,9 +233,6 @@ class CrossViewLocalizationData:
 
     @staticmethod
     def _load_ground_map(path: str) -> SegmentMap:
-        import pickle
-        import os
-
         with open(os.path.expanduser(path), "rb") as f:
             ground_map = pickle.load(f)
         if not isinstance(ground_map, SegmentMap):
@@ -333,3 +340,203 @@ class SegmentMappingData:
             tf = ImgData.topic_tf(bag_path, topic)
             return (t0, tf)
         return ImgData.bag_t_range(bag_path)
+
+# ---------------------------------------------------------------------------
+# Lazy, random-access image loading from ROS2 MCAP bags
+# ---------------------------------------------------------------------------
+#
+# robotdatapy's ImgData.from_bag keeps every message of a topic in memory, which
+# for long uncompressed image topics can mean tens of GB. MCAP files carry a
+# time-indexed chunk index, so a narrow time-window query only reads the chunk(s)
+# around that time. LazyMcapImgData exploits this: nothing is loaded up front and
+# each img(t) call reads (and deserializes) a single frame from disk.
+#
+# Intended for interactive tools that only look at a few hundred frames, e.g.
+# gt_landmark_pose_estimation. It implements the subset of the ImgData interface
+# those tools use: t0, tf, img(t), camera_params.
+
+# Keys accepted from an ImgData bag dict that are meaningless for lazy loading
+# (every frame is reachable, so there is nothing to subsample).
+_IGNORED_KEYS = {"stride", "causal", "t0"}
+
+# Extra bag-time slack (s) around a query window, on top of time_tol, to absorb
+# jitter in the recording-time vs. header-stamp offset.
+_WINDOW_SLACK = 0.1
+
+
+def is_mcap_bag(path: str) -> bool:
+    """True if path is a .mcap file or a rosbag2 directory containing one."""
+    p = Path(os.path.expanduser(os.path.expandvars(path)))
+    if p.is_file():
+        return p.suffix == ".mcap"
+    return p.is_dir() and any(p.glob("*.mcap"))
+
+
+def _header_stamp_from_cdr(rawdata) -> float:
+    """Read std_msgs/Header.stamp from a serialized message without deserializing.
+
+    Valid for any message whose first field is a Header (Image, CompressedImage,
+    ...). CDR layout: 4-byte encapsulation header, then int32 sec, uint32 nanosec.
+    """
+    little_endian = rawdata[1] == 1
+    sec, nsec = struct.unpack_from("<iI" if little_endian else ">iI", rawdata, 4)
+    return sec + nsec * 1e-9
+
+
+class LazyMcapImgData:
+    """Random-access image data backed by an open MCAP bag reader."""
+
+    def __init__(
+        self,
+        path,
+        topic,
+        camera_info_topic=None,
+        time_range=None,
+        time_range_relative=False,
+        time_tol=0.1,
+        compressed=True,
+        color_space=None,
+        ros_distro=None,
+        cache_size=16,
+        **kwargs,
+    ):
+        """
+        Args mirror ImgData.from_bag so the same params dict can be used.
+
+        Args:
+            path (str): rosbag2 directory or .mcap file.
+            topic (str): Image (or CompressedImage) topic.
+            camera_info_topic (str, optional): CameraInfo topic for intrinsics.
+            time_range (list, optional): [start, end] restricting t0/tf.
+            time_range_relative (bool, optional): time_range is relative to bag start.
+            time_tol (float, optional): Max |header stamp - t| for img(t) to return
+                a frame; otherwise returns None. Defaults to 0.1.
+            compressed (bool, optional): Unused beyond interface compatibility;
+                message_to_cvimage handles both Image and CompressedImage.
+            color_space (str, optional): Output color space, e.g. 'bgr8'.
+            ros_distro (str, optional): 'foxy', 'humble' or 'jazzy'.
+            cache_size (int, optional): Number of decoded frames kept in an LRU
+                cache (the UI redraws the same frame many times per second).
+        """
+        if kwargs.pop("compressed_rvl", False):
+            raise NotImplementedError(
+                "LazyMcapImgData does not support compressed_rvl"
+            )
+        ignored = set(kwargs) & _IGNORED_KEYS
+        unknown = set(kwargs) - _IGNORED_KEYS
+        if unknown:
+            raise TypeError(f"Unexpected LazyMcapImgData args: {sorted(unknown)}")
+        if ignored:
+            logger.info(f"LazyMcapImgData ignoring {sorted(ignored)} for {topic}")
+
+        self.data_path = os.path.expanduser(os.path.expandvars(path))
+        if not is_mcap_bag(self.data_path):
+            raise ValueError(
+                f"LazyMcapImgData requires an MCAP bag, got {self.data_path}"
+            )
+        self.topic = topic
+        self.time_tol = time_tol
+        self.color_space = color_space
+        self.compressed = compressed
+        self._cache_size = cache_size
+        self._cache = OrderedDict()
+
+        typestore = RobotData.distro_to_typestore(ros_distro)
+        self._reader = AnyReader([Path(self.data_path)], default_typestore=typestore)
+        self._reader.open()
+        self._connections = [c for c in self._reader.connections if c.topic == topic]
+        if not self._connections:
+            self._reader.close()
+            raise MsgNotFound(topic, self.data_path)
+
+        # Offset between bag recording time and header stamp, used to translate
+        # header-time queries into bag-time windows.
+        first_bag_ns, first_stamp = self._first_message_after(self._reader.start_time)
+        self._bag_minus_header = first_bag_ns * 1e-9 - first_stamp
+
+        t0 = first_stamp
+        tf = self._last_stamp()
+        if time_range is not None:
+            assert (
+                time_range[0] < time_range[1]
+            ), "time_range must be given in incrementing order"
+            if time_range_relative:
+                time_range = [self._reader.start_time * 1e-9 + t for t in time_range]
+            t0, tf = max(t0, time_range[0]), min(tf, time_range[1])
+        self._t0, self._tf = t0, tf
+
+        self.camera_params = CameraParams()
+        if camera_info_topic is not None:
+            self.camera_params = CameraParams.from_bag(
+                self.data_path, camera_info_topic, ros_distro=ros_distro
+            )
+
+    @classmethod
+    def from_dict(cls, img_data_dict):
+        """Create from an ImgData-style dict (the 'type' key is ignored)."""
+        return cls(**{k: v for k, v in img_data_dict.items() if k != "type"})
+
+    @property
+    def t0(self):
+        return self._t0
+
+    @property
+    def tf(self):
+        return self._tf
+
+    def _first_message_after(self, start_ns):
+        for _, bag_ns, raw in self._reader.messages(
+            connections=self._connections, start=start_ns
+        ):
+            return bag_ns, _header_stamp_from_cdr(raw)
+        raise MsgNotFound(self.topic, self.data_path)
+
+    def _last_stamp(self):
+        # Search backwards in growing windows so a sparse topic still resolves.
+        window_s = 2.0
+        end_ns = self._reader.end_time
+        while True:
+            start_ns = max(end_ns - int(window_s * 1e9), self._reader.start_time)
+            stamps = [
+                _header_stamp_from_cdr(raw)
+                for _, _, raw in self._reader.messages(
+                    connections=self._connections, start=start_ns, stop=end_ns + 1
+                )
+            ]
+            if stamps:
+                return max(stamps)
+            if start_ns == self._reader.start_time:
+                raise MsgNotFound(self.topic, self.data_path)
+            window_s *= 4
+
+    def img(self, t: float):
+        """Image at header time t, or None if no frame within time_tol."""
+        if t in self._cache:
+            self._cache.move_to_end(t)
+            return self._cache[t]
+
+        t_bag = t + self._bag_minus_header
+        half = self.time_tol + _WINDOW_SLACK
+        best = None  # (|dt|, connection, rawdata)
+        for conn, _, raw in self._reader.messages(
+            connections=self._connections,
+            start=int((t_bag - half) * 1e9),
+            stop=int((t_bag + half) * 1e9),
+        ):
+            dt = abs(_header_stamp_from_cdr(raw) - t)
+            if dt <= self.time_tol and (best is None or dt < best[0]):
+                best = (dt, conn, raw)
+
+        img = None
+        if best is not None:
+            _, conn, raw = best
+            msg = self._reader.deserialize(raw, conn.msgtype)
+            img = message_to_cvimage(msg, color_space=self.color_space)
+
+        self._cache[t] = img
+        if len(self._cache) > self._cache_size:
+            self._cache.popitem(last=False)
+        return img
+
+    def close(self):
+        self._reader.close()
