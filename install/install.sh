@@ -1,12 +1,12 @@
 #!/bin/bash
-MERIDIAN_DIR="$(cd "$(dirname "$0")" && pwd)/.." 
+MERIDIAN_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)/.."
 pushd $MERIDIAN_DIR
 
-# pip install .
-# pip install --no-build-isolation git+https://github.com/CASIA-IVA-Lab/FastSAM.git@4d153e9
+pip install .
+pip install --no-build-isolation git+https://github.com/CASIA-IVA-Lab/FastSAM.git@4d153e9
 
 # Install CLIPPER
-mkdir third_party/clipper/build
+mkdir -p third_party/clipper/build
 cd third_party/clipper/build
 cmake .. && make && make pip-install
 
