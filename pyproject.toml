@@ -21,6 +21,7 @@ dependencies = [
     "yolov7-package",
     "robotdatapy",
     "gdown",
+    "setuptools<70",  # CLIP (via FastSAM) imports pkg_resources.packaging at runtime, removed in setuptools 70
     # for dinov3
     #"torchmetrics",
     #"termcolor",
