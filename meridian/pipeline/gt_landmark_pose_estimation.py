@@ -130,6 +130,12 @@ class LandmarkSelector:
         "+/-: zoom aerial",
     ]
 
+    # Click/landmark markers: small X's so the exact pixel stays visible
+    MARKER_SIZE = 7
+    MARKER_THICKNESS = 1
+    COLOR_SAVED = (0, 200, 0)
+    COLOR_CURRENT = (0, 0, 220)
+
     def __init__(
         self,
         aerial_img: np.ndarray,
@@ -158,14 +164,24 @@ class LandmarkSelector:
             aerial_img, (w // ds, h // ds), interpolation=cv.INTER_AREA
         )
         self.display_h, self.display_w = self.aerial_display.shape[:2]
+        self.full_h, self.full_w = h, w
 
         # State
         self.landmarks: List[LandmarkMatch] = []
         self.t_current = img_data.t0
-        self.aerial_click = None  # (col, row) in display coords
+        self.aerial_click = None  # (col, row) in full-res aerial pixels
         self.ground_click = None  # (col, row) in ground image coords
         self.zoom_level = 1  # 1 = full aerial display
         self.status_msg = ""  # shown at top of ground window
+
+        # Aerial window view: full-res pixels shown in the window, re-centred on
+        # the latest click only when the zoom level changes.
+        self.view_center = (w / 2, h / 2)  # full-res (col, row)
+        # (x0, y0, sx, sy): window pixel (x, y) covers full-res pixels starting at
+        # (x0 + x * sx, y0 + y * sy)
+        self._view = (0, 0, w / self.display_w, h / self.display_h)
+        self._aerial_base_key = None
+        self._aerial_base = None
 
     # ------------------------------------------------------------------
     # Mouse callbacks
@@ -173,8 +189,11 @@ class LandmarkSelector:
 
     def _aerial_mouse_cb(self, event, x, y, flags, param):
         if event == cv.EVENT_LBUTTONDOWN:
-            self.aerial_click = (x, y)
-            self.status_msg = f"Aerial click: ({x}, {y})"
+            x0, y0, sx, sy = self._view
+            col = int(np.clip(x0 + (x + 0.5) * sx, 0, self.full_w - 1))
+            row = int(np.clip(y0 + (y + 0.5) * sy, 0, self.full_h - 1))
+            self.aerial_click = (col, row)
+            self.status_msg = f"Aerial click: ({col}, {row}) full-res px"
 
     def _ground_mouse_cb(self, event, x, y, flags, param):
         if event == cv.EVENT_LBUTTONDOWN:
@@ -186,59 +205,70 @@ class LandmarkSelector:
     # ------------------------------------------------------------------
 
     def _render_aerial(self) -> np.ndarray:
-        ds = self.params.aerial_display_downsample
         z = self.zoom_level
 
         if z <= 1:
-            img = self.aerial_display.copy()
+            key = (1,)
+            view = (0, 0, self.full_w / self.display_w, self.full_h / self.display_h)
         else:
-            # Crop around aerial_click (or centre if no click)
-            if self.aerial_click is not None:
-                cx, cy = self.aerial_click
-            else:
-                cx, cy = self.display_w // 2, self.display_h // 2
+            # Crop 1/z of the full-res image around view_center, so detail
+            # increases with zoom instead of upsampling the downsampled display.
+            crop_w = max(int(round(self.full_w / z)), 1)
+            crop_h = max(int(round(self.full_h / z)), 1)
+            cx, cy = self.view_center
+            x0 = int(np.clip(round(cx - crop_w / 2), 0, self.full_w - crop_w))
+            y0 = int(np.clip(round(cy - crop_h / 2), 0, self.full_h - crop_h))
+            key = (z, x0, y0)
+            view = (x0, y0, crop_w / self.display_w, crop_h / self.display_h)
 
-            crop_w = max(self.display_w // z, 1)
-            crop_h = max(self.display_h // z, 1)
-            x0 = int(np.clip(cx - crop_w // 2, 0, self.display_w - crop_w))
-            y0 = int(np.clip(cy - crop_h // 2, 0, self.display_h - crop_h))
-            crop = self.aerial_display[y0 : y0 + crop_h, x0 : x0 + crop_w]
-            img = cv.resize(
-                crop, (self.display_w, self.display_h), interpolation=cv.INTER_LINEAR
-            )
-            # Remap aerial_click to display space for dot drawing
-            self._zoom_offset = (x0, y0)
-            self._zoom_scale = (self.display_w / crop_w, self.display_h / crop_h)
+        if key != self._aerial_base_key:
+            if z <= 1:
+                base = self.aerial_display
+            else:
+                crop = self.aerial_full[y0 : y0 + crop_h, x0 : x0 + crop_w]
+                # Nearest-neighbour once past 1:1 so single pixels stay crisp
+                interp = cv.INTER_AREA if crop_w > self.display_w else cv.INTER_NEAREST
+                base = cv.resize(
+                    crop, (self.display_w, self.display_h), interpolation=interp
+                )
+            self._aerial_base_key = key
+            self._aerial_base = base
+        self._view = view
+        img = self._aerial_base.copy()
 
         # Draw saved landmarks
         for lm in self.landmarks:
-            col_full, row_full = lm.aerial_pixel_full
-            col_disp = col_full // ds
-            row_disp = row_full // ds
-            pt = self._to_zoom_display(col_disp, row_disp)
+            pt = self._full_to_window(*lm.aerial_pixel_full)
             if pt is not None:
-                cv.circle(img, pt, 6, (0, 200, 0), -1)
+                self._draw_marker(img, pt, self.COLOR_SAVED)
 
         # Draw current aerial click
         if self.aerial_click is not None:
-            pt = self._to_zoom_display(*self.aerial_click)
+            pt = self._full_to_window(*self.aerial_click)
             if pt is not None:
-                cv.circle(img, pt, 6, (0, 0, 220), -1)
+                self._draw_marker(img, pt, self.COLOR_CURRENT)
 
         return img
 
-    def _to_zoom_display(self, col_disp: int, row_disp: int):
-        """Map a display-coord point through zoom transformation.
-        Returns None if point is outside zoomed crop."""
-        if self.zoom_level <= 1:
-            return (int(col_disp), int(row_disp))
-        x0, y0 = self._zoom_offset
-        sx, sy = self._zoom_scale
-        px = int((col_disp - x0) * sx)
-        py = int((row_disp - y0) * sy)
+    def _full_to_window(self, col_full: int, row_full: int):
+        """Map a full-res aerial pixel to aerial window coords.
+        Returns None if the point is outside the current view."""
+        x0, y0, sx, sy = self._view
+        px = int(round((col_full + 0.5 - x0) / sx - 0.5))
+        py = int(round((row_full + 0.5 - y0) / sy - 0.5))
         if 0 <= px < self.display_w and 0 <= py < self.display_h:
             return (px, py)
         return None
+
+    def _draw_marker(self, img: np.ndarray, pt, color):
+        cv.drawMarker(
+            img,
+            tuple(int(v) for v in pt),
+            color,
+            markerType=cv.MARKER_TILTED_CROSS,
+            markerSize=self.MARKER_SIZE,
+            thickness=self.MARKER_THICKNESS,
+        )
 
     def _render_ground(self, ground_img: np.ndarray) -> np.ndarray:
         img = ground_img.copy()
@@ -246,11 +276,11 @@ class LandmarkSelector:
         # Draw saved landmarks for this time (approximate)
         for lm in self.landmarks:
             if abs(lm.time - self.t_current) < 0.1:
-                cv.circle(img, tuple(lm.ground_pixel), 6, (0, 200, 0), -1)
+                self._draw_marker(img, lm.ground_pixel, self.COLOR_SAVED)
 
         # Draw current ground click
         if self.ground_click is not None:
-            cv.circle(img, self.ground_click, 6, (0, 0, 220), -1)
+            self._draw_marker(img, self.ground_click, self.COLOR_CURRENT)
 
         # Help overlay
         y = 20
@@ -301,19 +331,13 @@ class LandmarkSelector:
         return pixel_depth_2_xyz(gx, gy, depth_m, K)
 
     # ------------------------------------------------------------------
-    # UTM from aerial display click
+    # UTM from aerial click
     # ------------------------------------------------------------------
 
-    def _utm_from_display_click(self, col_disp: int, row_disp: int):
-        """Convert a display-space aerial click to true metric UTM and full-res pixel."""
-        ds = self.params.aerial_display_downsample
-        col_full = col_disp * ds
-        row_full = row_disp * ds
+    def _utm_from_aerial_pixel(self, col_full: int, row_full: int):
+        """Convert a full-res aerial pixel (col, row) to true metric UTM."""
         x_native, y_native = rasterio_xy(self.geotiff_transform, row_full, col_full)
-        utm_x, utm_y = _native_xy_to_utm(
-            x_native, y_native, self.native_crs, self.utm_crs
-        )
-        return utm_x, utm_y, col_full, row_full
+        return _native_xy_to_utm(x_native, y_native, self.native_crs, self.utm_crs)
 
     # ------------------------------------------------------------------
     # Try to add a match
@@ -334,9 +358,8 @@ class LandmarkSelector:
             return
 
         # UTM
-        utm_x, utm_y, col_full, row_full = self._utm_from_display_click(
-            *self.aerial_click
-        )
+        col_full, row_full = self.aerial_click
+        utm_x, utm_y = self._utm_from_aerial_pixel(col_full, row_full)
 
         lm = LandmarkMatch(
             utm_x=utm_x,
@@ -361,10 +384,6 @@ class LandmarkSelector:
         cv.namedWindow("Ground", cv.WINDOW_NORMAL)
         cv.setMouseCallback("Aerial", self._aerial_mouse_cb)
         cv.setMouseCallback("Ground", self._ground_mouse_cb)
-
-        # Initialize zoom state
-        self._zoom_offset = (0, 0)
-        self._zoom_scale = (1.0, 1.0)
 
         t_slot = self.img_data.t0
         self.t_current = t_slot
@@ -411,14 +430,19 @@ class LandmarkSelector:
                 self.ground_click = None
                 self.status_msg = "Clicks discarded"
             elif key == ord("+") or key == ord("="):
-                self.zoom_level = min(self.zoom_level + 1, 8)
-                self.status_msg = f"Zoom {self.zoom_level}x"
+                self._set_zoom(min(self.zoom_level + 1, 8))
             elif key == ord("-"):
-                self.zoom_level = max(self.zoom_level - 1, 1)
-                self.status_msg = f"Zoom {self.zoom_level}x"
+                self._set_zoom(max(self.zoom_level - 1, 1))
 
         cv.destroyAllWindows()
         return self.landmarks
+
+    def _set_zoom(self, zoom_level: int):
+        """Change zoom, re-centring the view on the latest aerial click."""
+        self.zoom_level = zoom_level
+        if self.aerial_click is not None:
+            self.view_center = self.aerial_click
+        self.status_msg = f"Zoom {self.zoom_level}x"
 
     # ------------------------------------------------------------------
     # Optional confirmation step
@@ -444,15 +468,10 @@ class LandmarkSelector:
             aerial_crop = cv.resize(aerial_crop, (crop_size, crop_size))
             dot_x = col_disp - x0
             dot_y = row_disp - y0
-            cv.circle(
+            self._draw_marker(
                 aerial_crop,
-                (
-                    int(dot_x * crop_size / (x1 - x0)),
-                    int(dot_y * crop_size / (y1 - y0)),
-                ),
-                6,
-                (0, 0, 220),
-                -1,
+                (dot_x * crop_size / (x1 - x0), dot_y * crop_size / (y1 - y0)),
+                self.COLOR_CURRENT,
             )
 
             # Ground image
@@ -461,7 +480,7 @@ class LandmarkSelector:
                 ground_img = np.zeros((crop_size, crop_size, 3), dtype=np.uint8)
             else:
                 ground_img = ground_img.copy()
-            cv.circle(ground_img, tuple(lm.ground_pixel), 8, (0, 0, 220), 2)
+            self._draw_marker(ground_img, lm.ground_pixel, self.COLOR_CURRENT)
 
             # Resize ground to match crop height
             gh, gw = ground_img.shape[:2]
