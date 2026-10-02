@@ -108,12 +108,11 @@ class GroundSubmapPrimitiveMapping:
                 sampled_indices.append(i)
                 last_position = position
 
-        # Precompute ground map data for semantic-gem descriptors
-        _attach_gem_descriptors = (
+        _attach_frame_descriptors = (
             self.place_recognition is not None
-            and self.place_recognition.method in ("semantic-gem", "anyloc")
+            and self.place_recognition.comparison == "image"
         )
-        if _attach_gem_descriptors:
+        if _attach_frame_descriptors:
             self.place_recognition.precompute_ground_map_data(ground_map)
 
         # For each sampled pose, collect segments with dense points within radius
@@ -180,9 +179,8 @@ class GroundSubmapPrimitiveMapping:
             if len(submap_segments) == 0:
                 continue
 
-            # Attach semantic-gem descriptors if available
             submap_descriptor = None
-            if _attach_gem_descriptors:
+            if _attach_frame_descriptors:
                 submap_descriptor = self.place_recognition.ground_descriptor(
                     None,
                     submap_segments=submap_segments,
@@ -198,6 +196,8 @@ class GroundSubmapPrimitiveMapping:
                 segment_frame=FrameType.CAMERA,
                 descriptor=submap_descriptor,
             )
+            if self.place_recognition is not None:
+                self.place_recognition.tag(submap)
 
             # Transform segments from odom frame to submap-local frame
             T_submap_odom = np.linalg.inv(submap.pose)
@@ -312,7 +312,7 @@ class GroundSubmapPrimitiveMapping:
         ground_descriptor = submap.descriptor
         if (
             self.place_recognition is not None
-            and self.place_recognition.method == "semantic-point-line"
+            and self.place_recognition.comparison == "semantic-point-line"
         ):
             ground_descriptor = self.place_recognition.ground_descriptor(
                 None, submap_segments=sparse_general_segments
@@ -327,6 +327,8 @@ class GroundSubmapPrimitiveMapping:
             descriptor=ground_descriptor,
             camera_pose=submap.pose,
         )
+        if self.place_recognition is not None:
+            self.place_recognition.tag(submap_2d)
 
         intermediate = None
         if return_intermediates:

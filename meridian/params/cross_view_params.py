@@ -1,3 +1,4 @@
+import warnings
 from dataclasses import dataclass
 from typing import ClassVar, Optional, Tuple
 
@@ -45,14 +46,49 @@ class CrossViewVisualizationParams(ParamsBase):
     estimated_trajectory_color: str = "#fa5ff7"  # light magenta
     gt_trajectory_color: str = "#89fe05"  # lime green
 
+# Values `frame_descriptor` accepts, on either segmenter.
+# Pooled from the segmenter's DINO patch features
+POOLED_DESCRIPTORS = ("dino-gap", "dino-gmp", "dino-gem")
+# Own model, run on the raw image
+STANDALONE_DESCRIPTORS = ("anyloc", "meridian-vpr", "salad")
+FRAME_DESCRIPTORS = POOLED_DESCRIPTORS + STANDALONE_DESCRIPTORS
+
+COMPARISONS = ("image", "semantic-point-line")
+
+# Old `method:` values; every image one only ever selected "image".
+_LEGACY_METHODS = {name: "image" for name in FRAME_DESCRIPTORS}
+_LEGACY_METHODS["semantic-point-line"] = "semantic-point-line"
+
 
 @dataclass
 class CrossViewPlaceRecognitionParams(ParamsBase):
     params_key: ClassVar[str] = "cross_view_place_recognition"
 
-    method: str = "anyloc"  # "semantic-gem", "anyloc", or "semantic-point-line"
+    # What to compare. One of COMPARISONS.
+    comparison: str = "image"
     ground_descriptor_dist_m: float = 5.0
     k_nearest_neighbors: int = 25
+
+    method: Optional[str] = None  # deprecated spelling of `comparison`
+
+    def __post_init__(self):
+        if self.method is not None:
+            mapped = _LEGACY_METHODS.get(self.method)
+            if mapped is None:
+                raise ValueError(f"Unknown legacy method: {self.method!r}")
+            warnings.warn(
+                f"`method: {self.method}` is deprecated; use "
+                f"`comparison: {mapped}`. The model comes from "
+                "frame_descriptor, not from here.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+            self.comparison = mapped
+            self.method = None
+        if self.comparison not in COMPARISONS:
+            raise ValueError(
+                f"comparison={self.comparison!r} must be one of {COMPARISONS}."
+            )
 
 
 @dataclass
