@@ -43,7 +43,7 @@ from robotdatapy.data.robot_data import NoDataNearTimeException
 from meridian.cross_view.incremental_localization import IncrementalLocalization
 from meridian.cross_view.matching import CrossViewMatching
 from meridian.cross_view.place_recognition import CrossViewPlaceRecognition
-from meridian.params.cross_view_params import check_frame_descriptors_match
+from meridian.vpr.vpr import check_frame_descriptors_match
 from meridian.map2d.ground_submap_primitive_mapping import (
     GroundSubmapPrimitiveMapping,
 )

@@ -25,7 +25,7 @@ from meridian.params import (
     GroundSegmenterParams,
 )
 from meridian.cross_view.place_recognition import CrossViewPlaceRecognition
-from meridian.params.cross_view_params import check_frame_descriptors_match
+from meridian.vpr.vpr import check_frame_descriptors_match
 from meridian.pipeline.data import CrossViewLocalizationData
 from meridian.utils import expandvars_recursive
 from meridian.segmenter.aerial_segmenter import AerialSegmenter

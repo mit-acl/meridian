@@ -8,13 +8,16 @@ in, L2-normalized descriptor out.
 """
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import numpy as np
 import torch
 import torch.hub  # stop torch.hub's GitHub check from hanging when offline
 import torch.nn.functional as F
+import yaml
 
+from meridian.params.segmenter_params import AerialSegmenterParams, SegmenterParams
 from vpr.data.transforms import default_transform
 from vpr.models.vlad import VLAD as VprVLAD
 
@@ -214,3 +217,50 @@ class MeridianVprPipeline(torch.nn.Module):
                   else self.head.encode_satellite)
         desc = encode(tokens).squeeze(0).cpu().numpy()
         return desc.astype(np.float16) if self.fp16 else desc
+
+
+def check_frame_descriptors_match(params_source, comparison=None, run=None):
+    """Ground and aerial descriptors must come from the same model.
+
+    Args:
+        params_source: params YAML path or directory
+        comparison: CrossViewPlaceRecognitionParams.comparison, if known
+        run: run key within the YAML
+
+    Returns:
+        The agreed frame_descriptor, to stamp onto whatever it produces, or
+        None if neither block is present.
+    """
+    found = {
+        key: cls.load(params_source, run=run).frame_descriptor
+        for key, cls in (
+            ("segmenter", SegmenterParams),
+            ("aerial_segmenter", AerialSegmenterParams),
+        )
+        if _block_present(params_source, key)
+    }
+    if len(set(found.values())) > 1:
+        pairs = ", ".join(f"{k}.frame_descriptor={v!r}" for k, v in found.items())
+        raise ValueError(
+            f"{pairs}; cross-view similarity between two different models is "
+            "meaningless."
+        )
+    if not found:
+        return None
+
+    descriptor = next(iter(found.values()))
+    if comparison == "image" and descriptor is None:
+        raise ValueError(
+            "cross_view_place_recognition.comparison='image' compares frame "
+            "descriptors, but frame_descriptor is unset; every similarity "
+            "would be nan."
+        )
+    return descriptor
+
+
+def _block_present(params_source, key):
+    """Whether `key` is configured in `params_source` at all."""
+    if os.path.isdir(params_source):
+        return os.path.exists(os.path.join(params_source, f"{key}.yaml"))
+    with open(params_source, "r") as f:
+        return key in (yaml.full_load(f) or {})

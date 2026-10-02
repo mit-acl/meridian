@@ -50,7 +50,7 @@ def aerial_patch_mapping(params, output_dir):
     except Exception:
         pr_params = None
     from meridian.cross_view.place_recognition import CrossViewPlaceRecognition
-    from meridian.params.cross_view_params import check_frame_descriptors_match
+    from meridian.vpr.vpr import check_frame_descriptors_match
 
     descriptor_type = (
         check_frame_descriptors_match(params, pr_params.comparison)

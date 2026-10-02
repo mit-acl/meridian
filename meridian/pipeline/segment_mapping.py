@@ -274,7 +274,7 @@ def segment_mapping(
         # Place recognition is optional
         try:
             from meridian.params import CrossViewPlaceRecognitionParams
-            from meridian.params.cross_view_params import (
+            from meridian.vpr.vpr import (
                 check_frame_descriptors_match,
             )
             from meridian.cross_view.place_recognition import (

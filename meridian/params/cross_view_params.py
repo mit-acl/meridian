@@ -1,10 +1,8 @@
-import os
 import warnings
 from dataclasses import dataclass
 from typing import ClassVar, Optional, Tuple
 
 import numpy as np
-import yaml
 
 from meridian.params.params_base import ParamsBase
 
@@ -178,55 +176,3 @@ class CrossViewIncrementalParams(ParamsBase):
     delay_most_recent_lc_commit_num: int = 2
 
     ros_pose_history_dt_s: float = 1.0
-
-
-def check_frame_descriptors_match(params_source, comparison=None, run=None):
-    """Ground and aerial descriptors must come from the same model.
-
-    Args:
-        params_source: params YAML path or directory
-        comparison: CrossViewPlaceRecognitionParams.comparison, if known
-        run: run key within the YAML
-
-    Returns:
-        The agreed frame_descriptor, to stamp onto whatever it produces, or
-        None if neither block is present.
-    """
-    from meridian.params.segmenter_params import (
-        AerialSegmenterParams,
-        SegmenterParams,
-    )
-
-    found = {
-        key: cls.load(params_source, run=run).frame_descriptor
-        for key, cls in (
-            ("segmenter", SegmenterParams),
-            ("aerial_segmenter", AerialSegmenterParams),
-        )
-        if _block_present(params_source, key)
-    }
-    if len(set(found.values())) > 1:
-        pairs = ", ".join(f"{k}.frame_descriptor={v!r}" for k, v in found.items())
-        raise ValueError(
-            f"{pairs}; cross-view similarity between two different models is "
-            "meaningless."
-        )
-    if not found:
-        return None
-
-    descriptor = next(iter(found.values()))
-    if comparison == "image" and descriptor is None:
-        raise ValueError(
-            "cross_view_place_recognition.comparison='image' compares frame "
-            "descriptors, but frame_descriptor is unset; every similarity "
-            "would be nan."
-        )
-    return descriptor
-
-
-def _block_present(params_source, key):
-    """Whether `key` is configured in `params_source` at all."""
-    if os.path.isdir(params_source):
-        return os.path.exists(os.path.join(params_source, f"{key}.yaml"))
-    with open(params_source, "r") as f:
-        return key in (yaml.full_load(f) or {})

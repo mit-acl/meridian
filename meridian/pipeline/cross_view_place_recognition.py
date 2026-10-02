@@ -15,7 +15,7 @@ from meridian.pipeline.cross_view_matching import (
 )
 from meridian.params import CrossViewPlaceRecognitionParams
 from meridian.cross_view.place_recognition import CrossViewPlaceRecognition
-from meridian.params.cross_view_params import check_frame_descriptors_match
+from meridian.vpr.vpr import check_frame_descriptors_match
 
 logger = logging.getLogger(__name__)
 
