@@ -502,6 +502,12 @@ class CrossViewMatching:
 
         runtime_s = time.time() - t0
 
+        # TEMP(fitness-simplify): snapshot the pre-cluster hypotheses so the short-map tool can dump them.
+        if getattr(self, "_temp_dump_raw", False):
+            self._temp_last_raw = [
+                (r.T_aerial_ground_odom_2d.copy(), T.copy(), int(c)) for r, T, c in raw_results
+            ]
+
         # When fitness re-ranks hypotheses, keep a deeper shortlist (M) than we return (N),
         n_keep = self.registerer.params.max_hypotheses
         n_scored = n_keep
@@ -520,17 +526,19 @@ class CrossViewMatching:
 
         # Full-submap alignment fitness
         if self.pipeline_params.compute_fitness and results:
+            point_m, line_m, angle_rad = self.fitness_thresholds(  # TEMP(fitness-simplify)
+                self.pipeline_params, self.matcher.params, self.registerer.params
+            )
             evaluator = AlignmentEvaluator(
                 aerial_segments=aerial_segs_j,
                 ground_segments=ground_segs_i,
-                point_inlier_thresh_m=self.pipeline_params.fitness_point_inlier_thresh_m,
-                line_inlier_thresh_m=self.pipeline_params.fitness_line_inlier_thresh_m,
-                line_angle_thresh_rad=np.deg2rad(
-                    self.pipeline_params.fitness_line_angle_thresh_deg
-                ),
+                point_inlier_thresh_m=point_m,
+                line_inlier_thresh_m=line_m,
+                line_angle_thresh_rad=angle_rad,
                 line_min_overlap=self.pipeline_params.fitness_line_min_overlap,
-                min_in_patch=self.pipeline_params.fitness_min_in_patch,
                 wilson_z=self.pipeline_params.fitness_wilson_z,
+                min_inliers=self.pipeline_params.fitness_min_inliers,
+                use_wilson=self.pipeline_params.fitness_use_wilson,  # TEMP(fitness-simplify)
             )
             for result in results:
                 self._store_fitness(
@@ -543,12 +551,14 @@ class CrossViewMatching:
 
             # Only the hypotheses we return are worth polishing.
             if self.pipeline_params.refine_hypotheses:
+                max_correction_m = self.pipeline_params.refine_max_correction_m
+                if self.pipeline_params.refine_simplified:  # TEMP(fitness-simplify)
+                    max_correction_m = 2.0 * point_m
                 for result in results:
                     refinement = evaluator.refine(
                         result.T_aerial_ground_odom_2d,
                         max_iters=self.pipeline_params.refine_max_iters,
-                        min_inliers=self.pipeline_params.refine_min_inliers,
-                        max_correction_m=self.pipeline_params.refine_max_correction_m,
+                        max_correction_m=max_correction_m,
                     )
                     if refinement.applied:
                         self._apply_refinement(result, refinement)
@@ -572,6 +582,24 @@ class CrossViewMatching:
             ]
 
         return results
+
+    @staticmethod
+    def fitness_thresholds(pipeline_params, match_params, register_params):
+        """TEMP(fitness-simplify): (point_m, line_m, angle_rad) for fitness, per fitness_thresholds_from."""
+        source = pipeline_params.fitness_thresholds_from
+        if source == "shipped":
+            return (
+                pipeline_params.fitness_point_inlier_thresh_m,
+                pipeline_params.fitness_line_inlier_thresh_m,
+                np.deg2rad(pipeline_params.fitness_line_angle_thresh_deg),
+            )
+        if source == "matcher":
+            d = match_params.epsilon_dist
+            return d, d, match_params.epsilon_angle_rad
+        if source == "cluster":
+            d = register_params.cluster_trans_thresh_m
+            return d, d, np.deg2rad(register_params.cluster_rot_thresh_deg)
+        raise ValueError(f"Unknown fitness_thresholds_from: {source}")
 
     @staticmethod
     def _store_fitness(

@@ -42,7 +42,8 @@ class CrossViewMatchingParams(ParamsBase):
     fitness_line_inlier_thresh_m: float = 1.5
     fitness_line_angle_thresh_deg: float = 5.0
     fitness_line_min_overlap: float = 0.25
-    fitness_min_in_patch: int = 10
+    # Fewer inliers than this scores 0 and skips refinement. 0 = disabled.
+    fitness_min_inliers: int = 6
     # Wilson lower-bound confidence (standard errors)
     fitness_wilson_z: float = 2.576
 
@@ -50,10 +51,16 @@ class CrossViewMatchingParams(ParamsBase):
     # sub-meter alignment. Requires compute_fitness; ~1 fitness eval per iter.
     refine_hypotheses: bool = False
     refine_max_iters: int = 3
-    # Below this many correspondences the hypothesis is left alone.
-    refine_min_inliers: int = 6
     # Reject a refinement moving the patch center further than this. 0 = uncapped.
     refine_max_correction_m: float = 2.0
+
+    # TEMP(fitness-simplify): A/B switches for the parameter-reduction study; defaults reproduce shipped behavior.
+    # False scores the plain inlier ratio instead of its Wilson lower bound.
+    fitness_use_wilson: bool = True
+    # Inlier thresholds: "shipped" (fitness_* above), "matcher" (primitive_match epsilons), "cluster" (register cluster_*).
+    fitness_thresholds_from: str = "shipped"
+    # True: refine_max_correction_m -> 2x the fitness distance threshold.
+    refine_simplified: bool = False
 
 
 @dataclass

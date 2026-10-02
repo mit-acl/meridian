@@ -428,8 +428,8 @@ class AlignmentEvaluator:
     Quality only selects each ground primitive's best match; the reported
     ``fitness`` is the Wilson lower bound of the resulting inlier ratio,
     rewarding dense overlap while resisting small-support inflation. Hypotheses
-    with fewer than ``min_in_patch`` in-patch primitives score 0 (too little
-    overlap to trust).
+    with fewer than ``min_inliers`` inliers score 0 and are not refined
+    (0 disables the gate).
 
     Everything is evaluated as whole-matrix numpy expressions over
     (n_ground x n_aerial), since the per-pair Python geometry calls this
@@ -446,15 +446,17 @@ class AlignmentEvaluator:
         line_angle_thresh_rad: float,
         line_min_overlap: float,
         wilson_z: float,
-        min_in_patch: int,
+        min_inliers: int,
         patch_bounds: Optional[Tuple[float, float, float, float]] = None,
+        use_wilson: bool = True,  # TEMP(fitness-simplify): False scores the plain inlier ratio
     ):
         self.point_inlier_thresh_m = point_inlier_thresh_m
         self.line_inlier_thresh_m = line_inlier_thresh_m
         self.line_angle_thresh_rad = line_angle_thresh_rad
         self.line_min_overlap = line_min_overlap
         self.wilson_z = wilson_z
-        self.min_in_patch = min_in_patch
+        self.min_inliers = min_inliers
+        self.use_wilson = use_wilson  # TEMP(fitness-simplify)
 
         self._aerial = _prepare(aerial_segments, "aerial_segments")
         self._ground = _prepare(ground_segments, "ground_segments")
@@ -579,8 +581,10 @@ class AlignmentEvaluator:
         n_in_patch = assoc.n_in_patch
         inlier_ratio = n_inliers / n_in_patch if n_in_patch > 0 else 0.0
         mean_quality = float(np.mean(assoc.qualities)) if assoc.qualities else 0.0
-        if n_in_patch < self.min_in_patch:
+        if n_inliers < self.min_inliers:
             fitness = 0.0
+        elif not self.use_wilson:  # TEMP(fitness-simplify)
+            fitness = inlier_ratio
         else:
             fitness = _wilson_lower_bound(n_inliers, n_in_patch, self.wilson_z)
         return AlignmentFitnessResult(
@@ -601,7 +605,6 @@ class AlignmentEvaluator:
         self,
         T_aerial_ground: np.ndarray,
         max_iters: int = 3,
-        min_inliers: int = 6,
         max_correction_m: float = 0.0,
     ) -> AlignmentRefinementResult:
         """Re-fit the transform to its own fitness inliers, ICP style.
@@ -628,7 +631,7 @@ class AlignmentEvaluator:
         for i in range(max_iters):
             if i > 0:
                 assoc = self._associate(_as_se2(T_init, R, t))
-            if len(assoc.pairs) < min_inliers:
+            if len(assoc.pairs) < self.min_inliers:
                 break
             step = _gauss_newton_step(assoc)
             if step is None:
@@ -707,8 +710,9 @@ class AlignmentFitness:
         line_angle_thresh_rad: float,
         line_min_overlap: float,
         wilson_z: float,
-        min_in_patch: int,
+        min_inliers: int,
         patch_bounds: Optional[Tuple[float, float, float, float]] = None,
+        use_wilson: bool = True,  # TEMP(fitness-simplify)
     ) -> AlignmentFitnessResult:
         return AlignmentEvaluator(
             aerial_segments=aerial_segments,
@@ -718,8 +722,9 @@ class AlignmentFitness:
             line_angle_thresh_rad=line_angle_thresh_rad,
             line_min_overlap=line_min_overlap,
             wilson_z=wilson_z,
-            min_in_patch=min_in_patch,
+            min_inliers=min_inliers,
             patch_bounds=patch_bounds,
+            use_wilson=use_wilson,
         ).fitness(T_aerial_ground)
 
 
