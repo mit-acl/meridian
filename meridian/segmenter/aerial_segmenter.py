@@ -58,7 +58,13 @@ class AerialSegmenter(SegmenterBase):
         image_rgb = cv.cvtColor(img_bgr, cv.COLOR_BGR2RGB)
 
         with torch.no_grad():
-            if self.params.semantics in ("dino", "dinov3-hf"):
+            if (
+                self.params.semantics in ("dino", "dinov3-hf")
+                and self.params.use_trt_semantics
+            ):
+                out = self.semantics_model.embed(img_bgr).float()
+                features = out[:, self.semantics_model.num_prefix :, :]
+            elif self.params.semantics in ("dino", "dinov3-hf"):
                 preprocessed = self.semantics_preprocess(
                     images=image_rgb, return_tensors="pt"
                 ).to(self.params.device)

@@ -79,6 +79,25 @@ To switch backends, set `segmenter.frame_descriptor` and
 `image` (default) uses the frame descriptors, `semantic-point-line`
 uses segment `cos_feature`s.
 
+### TensorRT
+
+FastSAM, the DINO semantics backbone and the VPR backbone can run on TensorRT
+instead of PyTorch, on `segmenter` and `aerial_segmenter`:
+
+```
+pip install '.[tensorrt]'
+```
+
+```yaml
+segmenter:
+  use_trt_segmentation: True
+  use_trt_semantics: True
+  use_trt_vpr: True
+```
+
+Precision follows the existing `*_fp16` flags. The engines are exported and
+compiled on first use and cached in `$MERIDIAN_WEIGHTS`.
+
 ## Pipeline Demo
 
 Once installed, the full pipeline can be run on our experimental data.

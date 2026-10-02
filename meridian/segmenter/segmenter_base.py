@@ -132,7 +132,19 @@ class SegmenterBase:
 
     def _init_segmentation_model(self):
         if self.params.get_model_type() == "fastsam":
-            self.model = FastSAM(self.params.weights_path)
+            if self.params.use_trt_segmentation:
+                from meridian.tensorrt import FastSAMTRT
+
+                self.model = FastSAMTRT(
+                    self.params.weights_path,
+                    imgsz=self.params.imgsz,
+                    conf=self.params.conf,
+                    iou=self.params.iou,
+                    fp16=self._fp16_enabled(self.params.segmentation_fp16),
+                )
+                self.model.warmup()
+            else:
+                self.model = FastSAM(self.params.weights_path)
         elif self.params.get_model_type() == "segment_anything":
             sam = sam_model_registry["vit_l"](checkpoint=self.params.weights_path)
             sam.to(self.params.device)
@@ -163,6 +175,10 @@ class SegmenterBase:
             self.semantics_preprocess = None
         elif self.params.semantics.lower() == "dino":
             dino_model_name = f"facebook/dinov2-{self.params.semantics_size}"
+            self._num_register_tokens = 0
+            if self.params.use_trt_semantics:
+                self._init_trt_semantics(dino_model_name)
+                return
             self.semantics_preprocess = AutoImageProcessor.from_pretrained(
                 dino_model_name, do_center_crop=False
             )
@@ -171,7 +187,6 @@ class SegmenterBase:
             self.semantics_model.to(self.params.device)
             if self._fp16_enabled(self.params.semantics_fp16):
                 self.semantics_model.half()
-            self._num_register_tokens = 0
         elif self.params.semantics.lower() == "dinov3-hf":
             size_to_hf_name = {
                 "small": "facebook/dinov3-vits16-pretrain-lvd1689m",
@@ -184,6 +199,10 @@ class SegmenterBase:
                     f"Invalid semantics_size for dinov3-hf: {self.params.semantics_size}. "
                     f"Choose from {list(size_to_hf_name.keys())}."
                 )
+            if self.params.use_trt_semantics:
+                self._init_trt_semantics(hf_name)
+                self._num_register_tokens = self.semantics_model.num_prefix - 1
+                return
             self.semantics_preprocess = AutoImageProcessor.from_pretrained(
                 hf_name, do_center_crop=False
             )
@@ -229,6 +248,22 @@ class SegmenterBase:
                 f"Choose from 'dino', 'dinov3', 'dinov3-hf', or 'none'."
             )
 
+    def _trt_cache_dir(self):
+        """Where compiled engines live: beside the segmentation weights."""
+        return os.path.dirname(os.path.abspath(self.params.weights_path))
+
+    def _init_trt_semantics(self, model_name):
+        """Load the semantics backbone as a TRT engine cached beside the weights."""
+        from meridian.tensorrt import DinoSemanticsTRT
+
+        self.semantics_model = DinoSemanticsTRT(
+            model_name,
+            self._trt_cache_dir(),
+            fp16=self._fp16_enabled(self.params.semantics_fp16),
+        )
+        self.semantics_model.warmup()
+        self.semantics_preprocess = None
+
     def _run_segmentation(self, image_rgb):
         """Run segmentation model on an RGB image.
 
@@ -240,7 +275,12 @@ class SegmenterBase:
                 or an empty list if none found.
         """
         self._ensure_segmentation_model()
-        if self.params.get_model_type() == "fastsam":
+        if self.params.get_model_type() == "fastsam" and self.params.use_trt_segmentation:
+            # FastSAMTRT flips channels like the predictor, so same array, same pixels.
+            masks = self.model.segment(image_rgb)
+            if masks is None or len(masks) == 0:
+                return []
+        elif self.params.get_model_type() == "fastsam":
             # Cache the predictor to avoid per-frame warmup + AutoBackend init.
             # We call preprocess/model/postprocess directly instead of going
             # through stream_inference, which has issues with empty results
@@ -316,7 +356,10 @@ class SegmenterBase:
             output_patches: (1, h, w, C) tensor of patch features.
         """
         self._ensure_semantics_model()
-        if self.params.semantics in ("dino", "dinov3-hf"):
+        if self.params.semantics in ("dino", "dinov3-hf") and self.params.use_trt_semantics:
+            # The engine reshapes with the model's own patch size and prefix count.
+            return self.semantics_model.embed(img_bgr, reshape=True).float()
+        elif self.params.semantics in ("dino", "dinov3-hf"):
             img_rgb = cv.cvtColor(img_bgr, cv.COLOR_BGR2RGB)
             preprocessed = self.semantics_preprocess(
                 images=img_rgb, return_tensors="pt"
@@ -549,6 +592,7 @@ class SegmenterBase:
             desc_layer=self.params.anyloc_layer,
             fp16=self._fp16_enabled(self.params.vpr_fp16),
             device=self.params.device,
+            trt_dir=self._trt_cache_dir() if self.params.use_trt_vpr else None,
         )
 
     def _compute_anyloc_descriptor(self, img_bgr):
@@ -572,6 +616,7 @@ class SegmenterBase:
             self._vpr_ckpt(),
             fp16=self._fp16_enabled(self.params.vpr_fp16),
             device=self.params.device,
+            trt_dir=self._trt_cache_dir() if self.params.use_trt_vpr else None,
         )
 
     def _compute_meridian_vpr_descriptor(self, img_bgr):

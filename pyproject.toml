@@ -36,6 +36,9 @@ readme = "README.md"
 license = "MIT"
 
 [project.optional-dependencies]
+# meridian.tensorrt: export to ONNX and compile TensorRT engines.
+tensorrt = ["tensorrt", "onnx", "onnxsim"]
+
 # ROS-side tooling that runs in the meridian env but isn't imported by the core
 # library -- e.g. the ros_system_monitor status table, which needs spark_config.
 # Install with:  pip install -e '.[ros]'

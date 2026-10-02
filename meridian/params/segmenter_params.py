@@ -43,6 +43,12 @@ class SegmenterParamsBase(ParamsBase):
     # SALAD params (used when frame_descriptor == "salad")
     salad_path: str = "${SALAD_PATH}"
 
+    # TensorRT. Engines are compiled on first use, 
+    # then cached next to model weights. CUDA only.
+    use_trt_segmentation: bool = False
+    use_trt_semantics: bool = False
+    use_trt_vpr: bool = False
+
     def get_model_type(self):
         return self.model_type.lower()
 

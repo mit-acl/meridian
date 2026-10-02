@@ -42,24 +42,36 @@ class AnyLocPipeline(torch.nn.Module):
     MODEL = "dinov2_vitg14"
 
     def __init__(self, centers: torch.Tensor, desc_layer: int = 31,
-                 fp16: bool = True, device: torch.device | str = "cuda"):
+                 fp16: bool = True, device: torch.device | str = "cuda",
+                 trt_dir: str | None = None, trt_shapes=()):
         super().__init__()
         self.device = torch.device(device)
         self.desc_layer = desc_layer
         self.fp16 = fp16
         self.dtype = torch.float16 if fp16 else torch.float32
 
-        self.backbone = torch.hub.load("facebookresearch/dinov2", self.MODEL)
-        self.backbone = self.backbone.to(self.device, self.dtype).eval()
-        for p in self.backbone.parameters():
-            p.requires_grad_(False)
-        if desc_layer >= len(self.backbone.blocks):
-            raise ValueError(f"desc_layer {desc_layer} >= {len(self.backbone.blocks)} blocks")
-
-        # Capture the "value" facet exactly like AnyLoc: hook blocks[L].attn.qkv.
+        self.trt = trt_dir is not None
         self._qkv = None
-        self.backbone.blocks[desc_layer].attn.qkv.register_forward_hook(
-            lambda _m, _i, out: setattr(self, "_qkv", out))
+        if self.trt:
+            from meridian.tensorrt import DinoVprTRT
+
+            # The engine directly outputs the facet.
+            self.backbone = DinoVprTRT(
+                self.MODEL, trt_dir, layer=desc_layer, facet="value",
+                source="hub", shapes=trt_shapes, fp16=fp16,
+            )
+        else:
+            self.backbone = torch.hub.load("facebookresearch/dinov2", self.MODEL)
+            self.backbone = self.backbone.to(self.device, self.dtype).eval()
+            for p in self.backbone.parameters():
+                p.requires_grad_(False)
+            if desc_layer >= len(self.backbone.blocks):
+                raise ValueError(
+                    f"desc_layer {desc_layer} >= {len(self.backbone.blocks)} blocks")
+
+            # Capture the "value" facet exactly like AnyLoc: hook blocks[L].attn.qkv.
+            self.backbone.blocks[desc_layer].attn.qkv.register_forward_hook(
+                lambda _m, _i, out: setattr(self, "_qkv", out))
 
         self.vlad = VprVLAD(centers, metric="cosine").to(self.device).eval()
 
@@ -92,6 +104,10 @@ class AnyLocPipeline(torch.nn.Module):
         later blocks + final norm are skipped), then -- like AnyLoc -- drops the
         CLS token, slices the "value" third of qkv, and L2-normalizes.
         """
+        if self.trt:
+            # The engine already dropped the CLS token and sliced the facet.
+            return F.normalize(self.backbone(img).float(), dim=-1)
+
         img = img.to(self.device, self.dtype)
         x = self.backbone.prepare_tokens_with_masks(img)
         for blk in self.backbone.blocks[:self.desc_layer + 1]:
@@ -146,7 +162,7 @@ class MeridianVprPipeline(torch.nn.Module):
     """
 
     def __init__(self, ckpt_path: str, fp16: bool = True,
-                 device: torch.device | str = "cuda"):
+                 device: torch.device | str = "cuda", trt_dir: str | None = None):
         super().__init__()
         from vpr.data.transforms import default_transform
         from vpr.models.backbone import DinoBackbone
@@ -164,14 +180,29 @@ class MeridianVprPipeline(torch.nn.Module):
                 f"cross-view checkpoint")
         bcfg, hcfg = ckpt["config"]["backbone"], ckpt["config"]["head"]
 
+        patch = bcfg["patch_size"]
+        size = bcfg["size"]
+        if not isinstance(size, dict):
+            size = {"sat": size, "grd": size}
+
         key = (bcfg["model_name"], bcfg["source"], bcfg["layer"], bcfg["facet"],
-               str(self.device), self.dtype)
+               str(self.device), self.dtype, trt_dir)
         backbone = _BACKBONE_CACHE.get(key)
         if backbone is None:
-            backbone = DinoBackbone(
-                bcfg["model_name"], layer=bcfg["layer"], facet=bcfg["facet"],
-                source=bcfg["source"],
-            ).to(self.device, self.dtype).eval()
+            if trt_dir is not None:
+                from meridian.tensorrt import DinoVprTRT
+
+                fixed = [tuple(v) for v in size.values() if not isinstance(v, int)]
+                backbone = DinoVprTRT(
+                    bcfg["model_name"], trt_dir, layer=bcfg["layer"],
+                    facet=bcfg["facet"], source=bcfg["source"],
+                    shapes=fixed, fp16=fp16,
+                )
+            else:
+                backbone = DinoBackbone(
+                    bcfg["model_name"], layer=bcfg["layer"], facet=bcfg["facet"],
+                    source=bcfg["source"],
+                ).to(self.device, self.dtype).eval()
             _BACKBONE_CACHE[key] = backbone
         self.backbone = backbone
 
@@ -189,10 +220,6 @@ class MeridianVprPipeline(torch.nn.Module):
         self.head.load_state_dict(ckpt["model"])
 
         # Tokens are cast to fp32 for the head, whose weights load as fp32.
-        patch = bcfg["patch_size"]
-        size = bcfg["size"]
-        if not isinstance(size, dict):
-            size = {"sat": size, "grd": size}
         self.transforms = {
             view: default_transform(
                 tuple(s) if isinstance(s, list) else s, patch)

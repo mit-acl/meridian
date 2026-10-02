@@ -109,6 +109,7 @@ class VoxelGrid:
         max_corner = np.array(
             [np.ceil(np.max(points, axis=0) / voxel_size) * voxel_size]
         )
+        # match open3d convention
         origin = np.min(points, axis=0) - voxel_size / 2
         indices = np.floor((points - origin) / voxel_size).astype(np.int64)
         voxels = np.zeros(
