@@ -25,6 +25,7 @@ from meridian.params import (
     GroundSegmenterParams,
 )
 from meridian.cross_view.place_recognition import CrossViewPlaceRecognition
+from meridian.vpr.vpr import check_frame_descriptors_match
 from meridian.pipeline.data import CrossViewLocalizationData
 from meridian.utils import expandvars_recursive
 from meridian.segmenter.aerial_segmenter import AerialSegmenter
@@ -71,17 +72,19 @@ def _aerial_viz_worker(
     general_segments,
     sparse_segments,
     crop,
+    i,
+    j,
     pixel_len_m,
+    segment_border_type,
+    segment_border_grid_downsample,
+    segment_border_max_n_pts,
+    concave_hull_ratio,
     alpha_shape_alpha,
-    alpha_shape_grid_downsample,
-    alpha_shape_max_n_pts,
     alpha_shape_ref_size_m,
     aerial_viz_downsample,
     aerial_viz_line_width_m,
     aerial_viz_target_size_kb,
     px_per_m,
-    i,
-    j,
 ):
     """Render 3 aerial viz images for one patch. Returns list of (filename, bytes)."""
     results = []
@@ -92,11 +95,13 @@ def _aerial_viz_worker(
         crop,
         pixel_len_m,
         alpha_shape_alpha,
-        alpha_shape_grid_downsample,
-        alpha_shape_max_n_pts,
+        segment_border_grid_downsample,
+        segment_border_max_n_pts,
         alpha_shape_ref_size_m,
         aerial_viz_downsample,
         line_width_m=aerial_viz_line_width_m,
+        segment_border_type=segment_border_type,
+        concave_hull_ratio=concave_hull_ratio,
     )
     viz_bytes = downsample_to_target_size(aerial_viz, aerial_viz_target_size_kb)
     results.append((f"{i}_{j}_segments.jpg", viz_bytes))
@@ -131,9 +136,11 @@ def _ground_viz_worker(
     aerial_segments,
     general_segments,
     sparse_segments,
+    segment_border_type,
+    segment_border_grid_downsample,
+    segment_border_max_n_pts,
+    concave_hull_ratio,
     alpha_shape_alpha,
-    alpha_shape_grid_downsample,
-    alpha_shape_max_n_pts,
     alpha_shape_ref_size_m,
     show_sm_origin,
 ):
@@ -147,10 +154,12 @@ def _ground_viz_worker(
         general_segments,
         sparse_segments,
         alpha_shape_alpha,
-        alpha_shape_grid_downsample,
-        alpha_shape_max_n_pts,
+        segment_border_grid_downsample,
+        segment_border_max_n_pts,
         alpha_shape_ref_size_m,
         show_origin=show_sm_origin,
+        segment_border_type=segment_border_type,
+        concave_hull_ratio=concave_hull_ratio,
     )
     buf = io.BytesIO()
     fig.savefig(buf, format="png", dpi=400)
@@ -380,10 +389,14 @@ class CrossViewMatchingPipeline:
                     intermediates.general_segments,
                     submap.segments,
                     crop,
+                    i,
+                    j,
                     pixel_len_m,
+                    conv_params.segment_border_type,
+                    conv_params.segment_border_grid_downsample,
+                    conv_params.segment_border_max_n_pts,
+                    conv_params.concave_hull_ratio,
                     conv_params.alpha_shape_alpha,
-                    conv_params.alpha_shape_grid_downsample,
-                    conv_params.alpha_shape_max_n_pts,
                     conv_params.alpha_shape_ref_size_m,
                     max(
                         1, round(self._viz_params.aerial_viz_pixel_size_m / pixel_len_m)
@@ -391,8 +404,6 @@ class CrossViewMatchingPipeline:
                     self._viz_params.aerial_viz_line_width_m,
                     self._viz_params.aerial_viz_target_size_kb,
                     px_per_m,
-                    i,
-                    j,
                 )
                 futures[future] = crop
 
@@ -459,9 +470,11 @@ class CrossViewMatchingPipeline:
                         intermediates.aerial_segments,
                         intermediates.general_segments,
                         submap_2d.segments,
+                        conv_params.segment_border_type,
+                        conv_params.segment_border_grid_downsample,
+                        conv_params.segment_border_max_n_pts,
+                        conv_params.concave_hull_ratio,
                         conv_params.alpha_shape_alpha,
-                        conv_params.alpha_shape_grid_downsample,
-                        conv_params.alpha_shape_max_n_pts,
                         conv_params.alpha_shape_ref_size_m,
                         ground_params.viz_show_sm_origin,
                     )
@@ -670,9 +683,7 @@ class CrossViewMatchingPipeline:
                         camera_pose = None
                         if ground_key in ground_submaps:
                             ground_segments_all = ground_submaps[ground_key].segments
-                            camera_pose = ground_submaps[ground_key].metadata.get(
-                                "camera_pose"
-                            )
+                            camera_pose = ground_submaps[ground_key].camera_pose
 
                         # Prepare pose viz args (pre-crop aerial image)
                         aerial_img_crop = None
@@ -865,7 +876,14 @@ def cross_view_matching(
         pr_params = None
     if pr_params is None and pipeline_params.matching_mode == "vpr":
         pr_params = CrossViewPlaceRecognitionParams()
-    place_recognition = CrossViewPlaceRecognition(pr_params) if pr_params else None
+    descriptor_type = (
+        check_frame_descriptors_match(params, pr_params.comparison)
+        if pr_params is not None
+        else None
+    )
+    place_recognition = (
+        CrossViewPlaceRecognition(pr_params, descriptor_type) if pr_params else None
+    )
 
     aerial_segmenter = AerialSegmenter(AerialSegmenterParams.load(params))
     converter = SegmentToPrimitiveConverter(conversion_params)
@@ -1056,6 +1074,10 @@ if __name__ == "__main__":
     if not os.path.isdir(args.output):
         os.mkdir(expandvars_recursive(args.output))
 
+    aerial_dir = CrossViewLocalizationDataParams.load(args.params).resolve_aerial_dir(
+        args.aerial, required=False
+    )
+
     cross_view_matching(
         args.params,
         args.output,
@@ -1063,6 +1085,6 @@ if __name__ == "__main__":
         args.skip_ground,
         args.skip_match,
         save_viz=args.viz,
-        aerial_dir=args.aerial,
+        aerial_dir=aerial_dir,
         ground_dir=args.ground,
     )

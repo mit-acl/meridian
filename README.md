@@ -31,7 +31,13 @@ M. Peterson, Q. Li, Y. Jia, F. Cladera, C. Nieto-Granda, C.J. Taylor, and J.P. H
 
 We recommend using this repo with a Python virtual environment. This software has been tested with Python 3.12 on Ubuntu 24.04.
 
-To install, clone and `cd` into this repo, activate your environment, and run
+Prerequisites include CMake, g++, Eigen, `python3-dev`, and OpenBLAS. If these are not currently installed, run
+
+```
+sudo apt install cmake build-essential libeigen3-dev python3-dev libopenblas-dev
+```
+
+To install Meridian, clone and `cd` into this repo, activate your environment, and run
 
 ```
 source ./install/install.sh
@@ -43,11 +49,35 @@ After installation, set the following environment variable in your `bashrc` or `
 export MERIDIAN_WEIGHTS=<path to meridian repo>/weights
 ```
 
-<!-- Clone this repo and `pip install .`
-
-Additionally follow the instructions for installing AnyLoc [here](git@github.com:AnyLoc/AnyLoc.git). -->
-
 <!-- For use beyond the vanilla install, check out the [optional set up steps](#optional-set-up) -->
+
+### Place recognition weights
+
+Weights ship in `third_party/vpr/weights/`; `$VPR_CKPT` overrides with
+another file.
+
+| `frame_descriptor` | bundled weights | notes |
+|---|---|---|
+| `meridian-vpr` | `cvmnet_k64.pt` | default; trained for this task |
+| `anyloc` | `anyloc_c_centers.pt` | AnyLoc's urban `l31_value_c32` vocabulary |
+| `dino-gem` | — | no weights, weakest on large maps |
+
+**meridian-vpr** is a two-tower NetVLAD head trained on VIGOR and CVUSA
+cross-view pairs, over the frozen DINOv2 ViT-G/14 layer-31 value facet AnyLoc
+also uses. The checkpoint carries its backbone and head configs, so it
+is the whole model. From the [`vpr`](https://github.com/liqyn/vpr) submodule:
+
+```
+git submodule update --init third_party/vpr
+pip install -e third_party/vpr
+```
+
+To switch backends, set `segmenter.frame_descriptor` and
+`aerial_segmenter.frame_descriptor` to the same value.
+
+`cross_view_place_recognition.comparison` picks what is compared: 
+`image` (default) uses the frame descriptors, `semantic-point-line`
+uses segment `cos_feature`s.
 
 ## Pipeline Demo
 
@@ -76,7 +106,6 @@ Then, the meridian demo can be run with (from the root of the `meridian` repo)
 
 ```
 python3 -m meridian.pipeline.cross_view_incremental \
-  --aerial $MERIDIAN_DEMO_DATA/aerial_primitive_map \
   -p ./cfg/demo.yaml \
   -o ./demo_output/ \
   -m --live

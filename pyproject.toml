@@ -20,7 +20,7 @@ dependencies = [
     "numba",
     "yolov7-package",
     "robotdatapy",
-    "gdown"
+    "gdown",
     # for dinov3
     #"torchmetrics",
     #"termcolor",
@@ -34,5 +34,18 @@ authors = [
 description = "Package for localizing a ground robot from aerial ortho-imagery, providing meter-level pose estimates without any initial pose information or environmental fine-tuning."
 readme = "README.md"
 license = "MIT"
+
+[project.optional-dependencies]
+# ROS-side tooling that runs in the meridian env but isn't imported by the core
+# library -- e.g. the ros_system_monitor status table, which needs spark_config.
+# Install with:  pip install -e '.[ros]'
+ros = [
+    "spark_config @ git+https://github.com/MIT-SPARK/Spark-Config.git",
+]
+
+# Allow the git+https direct reference above (hatchling blocks direct URL
+# references by default).
+[tool.hatch.metadata]
+allow-direct-references = true
 
 

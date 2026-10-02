@@ -1,26 +1,62 @@
+import atexit
 import logging
-from concurrent.futures import ProcessPoolExecutor, as_completed
+import signal
+from concurrent.futures import ProcessPoolExecutor
+from time import perf_counter as _perf
 from typing import List, Optional, Tuple
 
-import alphashape
 import circle_fit
 import numpy as np
-import shapely
 
 from meridian.map2d.map_processing import clean_up_line_map
 from meridian.params.segment_to_primitive_params import (
     SegmentToPrimitiveConversionParams,
 )
-from meridian.map2d.segment2d import Segment2D, _grid_downsample_2d
+from meridian.map2d.segment2d import Segment2D, compute_segment_border
 from meridian.primitive.primitive import LinePrimitive, PointPrimitive
 from meridian.primitive.primitive_list import PrimitiveList
-from meridian.utils import suppress_alphashape_singular_warnings
 
 logger = logging.getLogger(__name__)
 
-# Drop the noisy "Singular matrix. Likely caused by all points lying in an
-# N-1 space." warnings that alphashape emits per colinear Delaunay simplex.
-suppress_alphashape_singular_warnings()
+# A single ProcessPoolExecutor reused across convert() calls. The per-call pool
+# used previously paid fork+pickle-of-workers overhead on every submap/window,
+# which almost entirely cancelled the parallel speedup. Forking once and reusing
+# amortizes that. Workers only run _classify_single_segment (pure CPU numpy /
+# shapely), so they never touch CUDA.
+_PERSISTENT_POOL = None
+_PERSISTENT_POOL_WORKERS = None
+
+
+def _ignore_sigint():
+    """Pool-worker initializer: ignore SIGINT so a Ctrl-C on the process group
+    is handled only by the parent. Otherwise every idle worker (blocked in
+    call_queue.get) raises KeyboardInterrupt and dumps an identical traceback.
+    Workers are pure CPU (numpy/shapely) with no state to flush, so it's safe
+    for the parent to tear them down instead."""
+    signal.signal(signal.SIGINT, signal.SIG_IGN)
+
+
+def _shutdown_persistent_pool():
+    global _PERSISTENT_POOL
+    if _PERSISTENT_POOL is not None:
+        _PERSISTENT_POOL.shutdown(wait=False, cancel_futures=True)
+        _PERSISTENT_POOL = None
+
+
+atexit.register(_shutdown_persistent_pool)
+
+
+def _get_persistent_pool(max_workers):
+    global _PERSISTENT_POOL, _PERSISTENT_POOL_WORKERS
+    if _PERSISTENT_POOL is None or _PERSISTENT_POOL_WORKERS != max_workers:
+        if _PERSISTENT_POOL is not None:
+            _PERSISTENT_POOL.shutdown(wait=False)
+        _PERSISTENT_POOL = ProcessPoolExecutor(
+            max_workers=max_workers, initializer=_ignore_sigint
+        )
+        _PERSISTENT_POOL_WORKERS = max_workers
+    return _PERSISTENT_POOL
+
 
 Crop = Tuple[int, int, int, int]
 
@@ -28,36 +64,6 @@ Crop = Tuple[int, int, int, int]
 # ---------------------------------------------------------------------------
 # Module-level worker functions (picklable for ProcessPoolExecutor)
 # ---------------------------------------------------------------------------
-
-
-def _compute_alpha_shape(
-    points: np.ndarray,
-    alpha: float,
-    grid_downsample: float,
-    max_n_pts: int,
-    alpha_ref_size: float,
-    max_extent: float,
-) -> Optional[np.ndarray]:
-    """Compute alpha shape from raw points. Standalone for pickling."""
-    if alpha_ref_size is not None:
-        alpha = alpha * min(1.0, alpha_ref_size / max(max_extent, 1e-6))
-
-    pts = points.copy()
-    if grid_downsample is not None:
-        pts = _grid_downsample_2d(pts, grid_downsample)
-    if max_n_pts is not None and len(pts) > max_n_pts:
-        voxel = grid_downsample if grid_downsample is not None else 0.1
-        while len(pts) > max_n_pts:
-            voxel *= 2.0
-            pts = _grid_downsample_2d(points, voxel)
-    try:
-        shape = alphashape.alphashape(pts, alpha=alpha)
-    except Exception:
-        return None
-    if isinstance(shape, shapely.geometry.polygon.Polygon):
-        x, y = shape.exterior.xy
-        return np.vstack([x, y]).T
-    return None
 
 
 def _classify_single_segment(
@@ -96,6 +102,26 @@ def _classify_single_segment(
     def pt_within_border(pt):
         return x1_border <= pt[0] <= x2_border and y1_border <= pt[1] <= y2_border
 
+    # Compute the segment border once, up front. This folds in the separate
+    # (serial) border filter pass that convert_submap_to_sparse_2d used to
+    # run — a None border drops the segment, exactly matching that filter —
+    # and provides the shape reused by the circle/line branches below, so the
+    # border is computed exactly once per segment (previously once in the filter
+    # AND again here). Computed before the point/line short-circuits to preserve
+    # the filter's drop semantics for small/thin segments with a None border.
+    segment_border = compute_segment_border(
+        points,
+        alpha=params.alpha_shape_alpha,
+        grid_downsample=params.segment_border_grid_downsample,
+        max_n_pts=params.segment_border_max_n_pts,
+        alpha_ref_size=params.alpha_shape_ref_size_m,
+        max_extent=max_extent,
+        segment_border_type=params.segment_border_type,
+        concave_hull_ratio=params.concave_hull_ratio,
+    )
+    if segment_border is None:
+        return []
+
     if area < params.min_area_m_sq:
         return []
 
@@ -114,11 +140,10 @@ def _classify_single_segment(
             )
         ]
 
-    # Thin (essentially 1-D) clouds: skip alphashape (which would emit noisy
-    # "Singular matrix" warnings on colinear simplices and often drop the
-    # segment entirely) and emit a LinePrimitive directly via PCA. We gate on
-    # the raw minor-axis variance (in m²) so long-but-not-thin road segments
-    # still go through alphashape and can split into multiple lines.
+    # Thin (essentially 1-D) clouds: emit a LinePrimitive directly via PCA.
+    # We gate on the raw minor-axis variance (in m²) so long-but-not-thin
+    # road segments still go through the border and can split into
+    # multiple lines.
     if len(points) >= 2 and params.line_min_minor_axis_var_m2 > 0:
         mean_pt = points.mean(axis=0)
         centered = points - mean_pt
@@ -146,27 +171,15 @@ def _classify_single_segment(
                 )
             ]
 
-    # Compute alpha shape
-    alpha_shape = _compute_alpha_shape(
-        points,
-        alpha=params.alpha_shape_alpha,
-        grid_downsample=params.alpha_shape_grid_downsample,
-        max_n_pts=params.alpha_shape_max_n_pts,
-        alpha_ref_size=params.alpha_shape_ref_size_m,
-        max_extent=max_extent,
-    )
-    if alpha_shape is None:
-        return []
-
     # Circle fit check for medium segments
     if area < params.circle_point_max_area:
-        alpha_pts = alpha_shape
-        if alpha_pts.size == 0:
+        border_pts = segment_border
+        if border_pts.size == 0:
             return []
-        if np.allclose(alpha_pts[0], alpha_pts[-1]):
-            alpha_pts = alpha_pts[:-1]
-        if len(alpha_pts) >= 3:
-            xc, yc, r, s = circle_fit.least_squares_circle(alpha_pts)
+        if np.allclose(border_pts[0], border_pts[-1]):
+            border_pts = border_pts[:-1]
+        if len(border_pts) >= 3:
+            xc, yc, r, s = circle_fit.least_squares_circle(border_pts)
             if (
                 r > 0
                 and s < params.circle_point_rad_frac_fit_err * r
@@ -186,10 +199,10 @@ def _classify_single_segment(
                     ]
                 return []
 
-    # Extract lines from alpha shape edges
+    # Extract lines from segment border edges
     lines = []
-    for i, pt0 in enumerate(alpha_shape):
-        pt1 = alpha_shape[i + 1 if i + 1 < len(alpha_shape) else 0]
+    for i, pt0 in enumerate(segment_border):
+        pt1 = segment_border[i + 1 if i + 1 < len(segment_border) else 0]
         keep = np.linalg.norm(pt1 - pt0) > params.line_min_length_m
         keep &= pt_within_border(pt0) and pt_within_border(pt1)
         if keep:
@@ -219,6 +232,8 @@ class SegmentToPrimitiveConverter:
         crop: Crop = None,
         border_dist_m: float = 0.5,
         convert_to_infinite: bool = True,
+        timings: Optional[dict] = None,
+        parallel: bool = True,
     ) -> PrimitiveList:
         """Convert aerial segments to sparse point/line primitives.
 
@@ -228,6 +243,10 @@ class SegmentToPrimitiveConverter:
             crop: (x1, y1, x2, y2) pixel crop bounds for border filtering.
             border_dist_m: Minimum distance from border for segment inclusion.
             convert_to_infinite: Whether to convert long lines to infinite.
+            parallel: If False, classify segments serially (skip the persistent
+                process pool). Callers that are themselves running inside a process
+                pool (e.g. the aerial per-patch workers) pass False so we don't nest
+                pools into ``sparse_conversion_max_threads`` squared processes.
 
         Returns:
             PrimitiveList of sparse PointPrimitive and LinePrimitive primitives.
@@ -259,18 +278,38 @@ class SegmentToPrimitiveConverter:
                 )
             )
 
-        if max_workers > 1 and len(tasks) > 1:
-            with ProcessPoolExecutor(max_workers=max_workers) as executor:
-                futures = {
-                    executor.submit(_classify_single_segment, *task): i
-                    for i, task in enumerate(tasks)
-                }
-                for future in as_completed(futures):
-                    all_primitives.extend(future.result())
+        _tc = _perf()
+        if parallel and max_workers > 1 and len(tasks) > 1:
+            # Classify segments in parallel across a reused ("persistent") process
+            # pool. Separate processes give true parallelism (bypassing the GIL,
+            # which alphashape/shapely otherwise hold); reusing the pool avoids
+            # re-forking it every submap.
+            #
+            # Longest-processing-time scheduling: submit segments with the most
+            # points first so the few large (expensive) alpha shapes start
+            # immediately and small ones backfill idle workers, keeping the
+            # makespan near max(largest job, total/n_workers). Results are placed
+            # back in original order so the downstream (order-dependent) line
+            # merge stays deterministic.
+            order = sorted(
+                range(len(tasks)), key=lambda k: len(tasks[k][8]), reverse=True
+            )
+            results = [None] * len(tasks)
+            executor = _get_persistent_pool(max_workers)
+            futures = [
+                (k, executor.submit(_classify_single_segment, *tasks[k])) for k in order
+            ]
+            for k, fut in futures:
+                results[k] = fut.result()
+            for r in results:
+                all_primitives.extend(r)
         else:
             for task in tasks:
                 all_primitives.extend(_classify_single_segment(*task))
+        if timings is not None:
+            timings["classify"] = _perf() - _tc
 
+        _tc = _perf()
         result = PrimitiveList(all_primitives)
         result.reindex()
 
@@ -278,9 +317,14 @@ class SegmentToPrimitiveConverter:
         result = self._cleanup_and_merge(
             result, convert_to_infinite=convert_to_infinite
         )
+        if timings is not None:
+            timings["cleanup_merge"] = _perf() - _tc
 
         if self.params.concat_nearby_descriptors:
+            _tc = _perf()
             result = self._concat_nearby_descriptors(result)
+            if timings is not None:
+                timings["concat_desc"] = _perf() - _tc
 
         return result
 

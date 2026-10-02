@@ -8,6 +8,7 @@ from fastsam import FastSAMPrompt, FastSAM
 from segment_anything import sam_model_registry, SamAutomaticMaskGenerator
 from transformers import AutoImageProcessor, AutoModel
 
+from meridian.params.cross_view_params import STANDALONE_DESCRIPTORS
 from meridian.params.segmenter_params import SegmenterParamsBase
 
 # Patch torch.load to disable weights_only loading for torch>2.4. FastSAM's
@@ -53,6 +54,10 @@ class SegmenterBase:
     (DINO/DINOv3/DINOv3-HF), feature extraction, and frame descriptors.
     """
 
+    # Which side of the cross-view pair this segmenter's images come from.
+    # Only the two-tower descriptors read it; AerialSegmenter overrides it.
+    VIEW = "ground"
+
     def __init__(self, params: SegmenterParamsBase):
         self.params = params
         self.semantic_patches_shape = None
@@ -62,25 +67,43 @@ class SegmenterBase:
         self._semantics_model_loaded = False
         self._anyloc_loaded = False
         self._salad_loaded = False
+        self._meridian_vpr_loaded = False
 
         self.model = None
         self.semantics_model = None
         self.semantics_preprocess = None
 
         self.frame_descriptor_type = params.frame_descriptor
-        self._anyloc_extractor = None
-        self._anyloc_vlad = None
-        self._anyloc_transform = None
+        self._anyloc_pipeline = None
+        self._meridian_vpr_pipeline = None
         self._salad_model = None
         self._salad_transform = None
         if params.frame_descriptor is not None:
-            assert params.semantics in (
-                "dino",
-                "dinov3",
-                "dinov3-hf",
-            ) or params.frame_descriptor in ("anyloc", "salad"), (
-                "Frame descriptor only supported with DINO, DINOv3, DINOv3-HF semantics, or 'anyloc'/'salad'."
+            assert (
+                params.semantics in ("dino", "dinov3", "dinov3-hf")
+                or params.frame_descriptor in STANDALONE_DESCRIPTORS
+            ), (
+                "Frame descriptor only supported with DINO, DINOv3, DINOv3-HF "
+                f"semantics, or one of {STANDALONE_DESCRIPTORS}."
             )
+
+        self.preload_models()
+
+    def preload_models(self):
+        """Load every model this config will use."""
+        self._ensure_segmentation_model()
+        if self.params.semantics is not None:
+            self._ensure_semantics_model()
+        if self.frame_descriptor_type == "anyloc":
+            self._ensure_anyloc()
+        elif self.frame_descriptor_type == "salad":
+            self._ensure_salad()
+        elif self.frame_descriptor_type == "meridian-vpr":
+            self._ensure_meridian_vpr()
+
+    def _fp16_enabled(self, flag: bool) -> bool:
+        """fp16 only on CUDA — half precision is unreliable/unsupported on CPU."""
+        return bool(flag) and "cuda" in str(self.params.device)
 
     def _ensure_segmentation_model(self):
         if not self._segmentation_model_loaded:
@@ -101,6 +124,11 @@ class SegmenterBase:
         if not self._salad_loaded:
             self._init_salad()
             self._salad_loaded = True
+
+    def _ensure_meridian_vpr(self):
+        if not self._meridian_vpr_loaded:
+            self._init_meridian_vpr()
+            self._meridian_vpr_loaded = True
 
     def _init_segmentation_model(self):
         if self.params.get_model_type() == "fastsam":
@@ -141,7 +169,7 @@ class SegmenterBase:
             self.semantics_model = AutoModel.from_pretrained(dino_model_name)
             self.semantics_model.eval()
             self.semantics_model.to(self.params.device)
-            if self.params.dino_half:
+            if self._fp16_enabled(self.params.semantics_fp16):
                 self.semantics_model.half()
             self._num_register_tokens = 0
         elif self.params.semantics.lower() == "dinov3-hf":
@@ -162,7 +190,7 @@ class SegmenterBase:
             self.semantics_model = AutoModel.from_pretrained(hf_name)
             self.semantics_model.eval()
             self.semantics_model.to(self.params.device)
-            if self.params.dino_half:
+            if self._fp16_enabled(self.params.semantics_fp16):
                 self.semantics_model.half()
             self._num_register_tokens = self.semantics_model.config.num_register_tokens
         elif self.params.semantics.lower() == "dinov3":
@@ -187,7 +215,7 @@ class SegmenterBase:
             )
             self.semantics_model.eval()
             self.semantics_model.to(self.params.device)
-            if self.params.dino_half:
+            if self._fp16_enabled(self.params.semantics_fp16):
                 self.semantics_model.half()
             self.dinov3_transform = T.Compose(
                 [
@@ -208,7 +236,8 @@ class SegmenterBase:
             image_rgb: RGB image as numpy array.
 
         Returns:
-            masks: (N, H, W) numpy array of binary masks, or empty list if none found.
+            masks: (N, H, W) binary masks as a torch tensor on the model's device,
+                or an empty list if none found.
         """
         self._ensure_segmentation_model()
         if self.params.get_model_type() == "fastsam":
@@ -230,6 +259,7 @@ class SegmenterBase:
                 overrides["iou"] = self.params.iou
                 overrides["mode"] = "predict"
                 overrides["save"] = False
+                overrides["half"] = self._fp16_enabled(self.params.segmentation_fp16)
                 self._fastsam_predictor = FastSAMPredictor(overrides=overrides)
                 self._fastsam_predictor.setup_model(
                     model=self.model.model, verbose=False
@@ -259,7 +289,9 @@ class SegmenterBase:
             )
             masks = prompt_process.everything_prompt()
         elif self.params.get_model_type() == "segment_anything":
-            masks_output = self.model.generate(image_rgb)
+            use_fp16 = self._fp16_enabled(self.params.segmentation_fp16)
+            with torch.autocast("cuda", dtype=torch.float16, enabled=use_fp16):
+                masks_output = self.model.generate(image_rgb)
             mask_list = []
             for obj in masks_output:
                 mask_list.append(obj["segmentation"].astype(np.uint8))
@@ -269,9 +301,7 @@ class SegmenterBase:
                 f"Unsupported segmenter model type: {self.params.model_type}"
             )
 
-        if len(masks) > 0:
-            masks = masks.cpu().numpy()
-        else:
+        if len(masks) == 0:
             return []
 
         return masks
@@ -283,9 +313,7 @@ class SegmenterBase:
             img_bgr: BGR image as numpy array.
 
         Returns:
-            Tuple of (per_pixel_features, output_patches):
-                per_pixel_features: (H, W, C) tensor of per-pixel features.
-                output_patches: (1, h, w, C) tensor of patch features.
+            output_patches: (1, h, w, C) tensor of patch features.
         """
         self._ensure_semantics_model()
         if self.params.semantics in ("dino", "dinov3-hf"):
@@ -293,38 +321,28 @@ class SegmenterBase:
             preprocessed = self.semantics_preprocess(
                 images=img_rgb, return_tensors="pt"
             ).to(self.params.device)
-            if self.params.dino_half:
+            if self._fp16_enabled(self.params.semantics_fp16):
                 preprocessed["pixel_values"] = preprocessed["pixel_values"].half()
             dino_output = self.semantics_model(**preprocessed)
-            output_patches = self.get_output_patches(
-                model_output=dino_output.last_hidden_state,
+            return self.get_output_patches(
+                model_output=dino_output.last_hidden_state.float(),
                 img_shape=img_bgr.shape,
                 feature_dim=self.params.semantics_dim,
             )
-            per_pixel = self.get_per_pixel_features(
-                model_output_patches=output_patches, img_shape=img_bgr.shape
-            )
-            return per_pixel, output_patches
         elif self.params.semantics == "dinov3":
             img_rgb = cv.cvtColor(img_bgr, cv.COLOR_BGR2RGB)
             img_tensor = (
                 self.dinov3_transform(img_rgb).unsqueeze(0).to(self.params.device)
             )
-            if self.params.dino_half:
+            if self._fp16_enabled(self.params.semantics_fp16):
                 img_tensor = img_tensor.half()
             with torch.no_grad():
                 features = self.semantics_model.get_intermediate_layers(
                     img_tensor, n=1, reshape=True, return_class_token=False, norm=True
-                )[0]  # (B, C, H_patches, W_patches)
-            output_patches = features.permute(0, 2, 3, 1)  # (1, H, W, C)
-            per_pixel = torch.nn.functional.interpolate(
-                features,
-                size=(img_bgr.shape[0], img_bgr.shape[1]),
-                mode="bilinear",
-            )[0].permute(1, 2, 0)  # (H, W, C)
-            return per_pixel, output_patches
+                )[0].float()  # (B, C, H_patches, W_patches)
+            return features.permute(0, 2, 3, 1)  # (1, H, W, C)
         else:
-            return None, None
+            return None
 
     def _compute_gem_descriptor(self, patch_features):
         """Compute GeM (Generalized Mean) pooling descriptor.
@@ -361,67 +379,6 @@ class SegmenterBase:
             mean = mean / mean.norm().clamp(min=1e-12)
         return mean
 
-    def _compute_mean_dino_descriptor(
-        self, dino_features, mask, dino_frame_embedding=None
-    ):
-        """Compute mean DINO descriptor over a binary mask.
-
-        Args:
-            dino_features: (H, W, C) tensor of per-pixel features.
-            mask: (H, W) binary mask.
-            dino_frame_embedding: optional (C,) torch tensor — the L2-normalized
-                mean of all patch tokens for this frame. When provided, it is
-                subtracted from the segment's normalized mean and the result is
-                re-normalized, so the descriptor encodes how the masked region
-                differs from the rest of the frame.
-
-        Returns:
-            Normalized 1-D numpy array of shape (C,).
-        """
-        with torch.no_grad():
-            mask_tensor = torch.from_numpy(mask.astype(bool)).to(dino_features.device)
-            dino_mask = dino_features[mask_tensor].float()  # (K, C) on GPU, float32
-            mean_dino = dino_mask.mean(dim=0)  # (C,) on GPU
-            mean_dino = mean_dino / mean_dino.norm().clamp(min=1e-12)
-            if dino_frame_embedding is not None:
-                mean_dino = mean_dino - dino_frame_embedding
-                mean_dino = mean_dino / mean_dino.norm().clamp(min=1e-12)
-        return mean_dino.cpu().numpy()
-
-    def _compute_batch_mean_dino_descriptors(
-        self, dino_features, masks, dino_frame_embedding=None
-    ):
-        """Compute normalized mean DINO descriptors for multiple masks at once.
-
-        Uses a single GPU matmul instead of per-mask transfers.
-
-        Args:
-            dino_features: (H, W, C) tensor of per-pixel features on GPU.
-            masks: list of (H, W) numpy binary masks.
-            dino_frame_embedding: optional (C,) torch tensor — see
-                _compute_mean_dino_descriptor.
-
-        Returns:
-            List of normalized numpy arrays, each of shape (C,).
-        """
-        with torch.no_grad():
-            H, W, C = dino_features.shape
-            # Cast to float32 for accumulation to avoid float16 overflow
-            features_flat = dino_features.reshape(H * W, C).float()
-            mask_np = np.stack([m.astype(bool).ravel() for m in masks])
-            mask_tensor = torch.from_numpy(mask_np.astype(np.float32)).to(
-                dino_features.device
-            )
-            counts = mask_tensor.sum(dim=1, keepdim=True).clamp(min=1)
-            means = (mask_tensor @ features_flat) / counts
-            norms = means.norm(dim=1, keepdim=True).clamp(min=1e-12)
-            descriptors = means / norms
-            if dino_frame_embedding is not None:
-                descriptors = descriptors - dino_frame_embedding.unsqueeze(0)
-                new_norms = descriptors.norm(dim=1, keepdim=True).clamp(min=1e-12)
-                descriptors = descriptors / new_norms
-        return list(descriptors.cpu().numpy())
-
     def get_output_patches(
         self, model_output: ArrayLike, img_shape: ArrayLike, feature_dim: int
     ) -> ArrayLike:
@@ -448,36 +405,59 @@ class SegmenterBase:
         )
         return model_output_patches
 
-    def get_per_pixel_features(
-        self, model_output_patches: ArrayLike, img_shape: ArrayLike
-    ) -> ArrayLike:
-        """Interpolate patch features to per-pixel resolution.
+    def get_mask_features(
+        self, model_output_patches, masks, dino_frame_embedding=None
+    ):
+        """Normalized mean of the bilinearly upsampled DINO features within each mask.
+
+        Upsampling is linear (F_up = Ry F Rx^T per channel), so the sum over mask M
+        equals <Ry^T M Rx, F> (cyclic trace), and the full-resolution feature map is
+        never materialized.
 
         Args:
-            model_output_patches: (1, h, w, C) patch features.
-            img_shape: Original image shape (H, W, ...).
+            model_output_patches: Reshaped patch features, 1 x h x w x feature_dim.
+            masks: N x H x W masks in the same frame as the patches.
+            dino_frame_embedding: optional (C,) torch tensor subtracted from each
+                normalized descriptor, which is then re-normalized.
 
         Returns:
-            Per-pixel features of shape (H, W, C).
+            N x feature_dim unit-norm numpy descriptors.
         """
-        per_pixel_features = torch.nn.functional.interpolate(
-            model_output_patches.permute(0, 3, 1, 2),
-            size=(img_shape[0], img_shape[1]),
-            mode="bilinear",
+        if len(masks) == 0:
+            return np.zeros((0, model_output_patches.shape[-1]), dtype=np.float32)
+        _, h, w, feature_dim = model_output_patches.shape
+        device = model_output_patches.device
+        # rows of the 1D bilinear upsampling matrices, matching interpolate(mode='bilinear')
+        Ry = torch.nn.functional.interpolate(
+            torch.eye(h, device=device)[None], size=masks.shape[1], mode="linear"
+        )[0].T
+        Rx = torch.nn.functional.interpolate(
+            torch.eye(w, device=device)[None], size=masks.shape[2], mode="linear"
+        )[0].T
+
+        masks_t = torch.from_numpy(np.ascontiguousarray(masks) != 0).to(device).float()
+        patch_weights = Ry.T @ masks_t @ Rx  # N x h x w
+        feature_sums = patch_weights.reshape(len(masks), -1) @ (
+            model_output_patches.reshape(-1, feature_dim).float()
         )
-        per_pixel_features = per_pixel_features[0].permute(1, 2, 0)
-        return per_pixel_features
+        descriptors = torch.nn.functional.normalize(feature_sums, dim=1)
+        if dino_frame_embedding is not None:
+            descriptors = torch.nn.functional.normalize(
+                descriptors - dino_frame_embedding.unsqueeze(0), dim=1
+            )
+        return descriptors.cpu().detach().numpy()
 
     def get_frame_descriptor(
         self, dino_features: torch.Tensor, img_bgr=None
     ) -> np.ndarray:
         """Compute a frame-level descriptor from patch features.
 
-        Supports 'dino-gap', 'dino-gmp', 'dino-gem', 'anyloc', and 'salad'.
+        Supports 'dino-gap', 'dino-gmp', 'dino-gem', and everything in
+        STANDALONE_DESCRIPTORS.
 
         Args:
             dino_features: Patch features tensor.
-            img_bgr: BGR image (only needed for 'anyloc' or 'salad').
+            img_bgr: BGR image (only needed for the STANDALONE_DESCRIPTORS).
 
         Returns:
             Normalized 1-D numpy descriptor, or None if no frame_descriptor configured.
@@ -485,10 +465,8 @@ class SegmenterBase:
         if self.frame_descriptor_type is None:
             return None
 
-        if self.frame_descriptor_type == "anyloc":
-            return self._compute_anyloc_descriptor(img_bgr)
-        elif self.frame_descriptor_type == "salad":
-            return self._compute_salad_descriptor(img_bgr)
+        if self.frame_descriptor_type in STANDALONE_DESCRIPTORS:
+            return self.image_descriptor(img_bgr)
 
         with torch.no_grad():
             dino_features_flat = dino_features.view(-1, dino_features.shape[-1])
@@ -503,56 +481,75 @@ class SegmenterBase:
                 )
             else:
                 raise ValueError(
-                    "frame descriptor must be one of 'dino-gap', 'dino-gmp', 'dino-gem', 'anyloc', or 'salad'."
+                    "frame descriptor must be one of 'dino-gap', 'dino-gmp', "
+                    f"'dino-gem', or {STANDALONE_DESCRIPTORS}."
                 )
 
             frame_descriptor /= torch.norm(frame_descriptor)
 
         return frame_descriptor.cpu().detach().numpy()
 
+    # Weights shipped in third_party/vpr, used when $VPR_CKPT is unset.
+    _BUNDLED_WEIGHTS = {
+        "anyloc": "anyloc_c_centers.pt",
+        "meridian-vpr": "cvmnet_k64.pt",
+    }
+
+    def _vpr_ckpt(self):
+        """`params.vpr_ckpt` if set, else the weights bundled with `vpr`."""
+        path = self.params.vpr_ckpt
+        if path is None:
+            name = self._BUNDLED_WEIGHTS.get(self.frame_descriptor_type)
+            if name is None:
+                raise ValueError(
+                    f"frame_descriptor={self.frame_descriptor_type!r} has no "
+                    f"bundled weights -- set $VPR_CKPT "
+                    f"(params.vpr_ckpt = {path!r})."
+                )
+            try:
+                import vpr
+            except ImportError as e:
+                raise ImportError(
+                    f"frame_descriptor={self.frame_descriptor_type!r} needs "
+                    f"the vpr package: pip install -e third_party/vpr"
+                ) from e
+            path = os.path.join(
+                os.path.dirname(os.path.dirname(os.path.abspath(vpr.__file__))),
+                "weights", name,
+            )
+        if not os.path.exists(path):
+            raise FileNotFoundError(
+                f"frame_descriptor={self.frame_descriptor_type!r} weights not "
+                f"found at {path}"
+            )
+        return path
+
+    def image_descriptor(self, img_bgr):
+        """Global descriptor for a raw BGR image, for the STANDALONE_DESCRIPTORS.
+
+        Shared by `get_frame_descriptor` (ground) and `get_crop_descriptor`
+        (aerial); the two differ only in `self.VIEW`.
+        """
+        if self.frame_descriptor_type == "anyloc":
+            return self._compute_anyloc_descriptor(img_bgr)
+        if self.frame_descriptor_type == "meridian-vpr":
+            return self._compute_meridian_vpr_descriptor(img_bgr)
+        if self.frame_descriptor_type == "salad":
+            return self._compute_salad_descriptor(img_bgr)
+        raise ValueError(
+            f"{self.frame_descriptor_type!r} is not one of {STANDALONE_DESCRIPTORS}"
+        )
+
     def _init_anyloc(self):
-        """Initialize AnyLoc DINOv2 extractor and VLAD vocabulary."""
-        import sys
-        import torchvision.transforms as tvf
+        """Initialize the AnyLoc DINOv2 + VLAD pipeline."""
+        from meridian.vpr import AnyLocPipeline
 
-        sys.path.insert(0, os.path.join(self.params.anyloc_path, "demo"))
-        from utilities import DinoV2ExtractFeatures, VLAD
-
-        self._anyloc_extractor = DinoV2ExtractFeatures(
-            self.params.anyloc_dino_model,
-            self.params.anyloc_layer,
-            self.params.anyloc_facet,
+        self._anyloc_pipeline = AnyLocPipeline.from_cached_centers(
+            self._vpr_ckpt(),
+            desc_layer=self.params.anyloc_layer,
+            fp16=self._fp16_enabled(self.params.vpr_fp16),
             device=self.params.device,
         )
-        self._anyloc_transform = tvf.Compose(
-            [
-                tvf.ToTensor(),
-                tvf.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
-            ]
-        )
-
-        ext_specifier = (
-            f"{self.params.anyloc_dino_model}/"
-            f"l{self.params.anyloc_layer}_{self.params.anyloc_facet}"
-            f"_c{self.params.anyloc_num_clusters}"
-        )
-        c_centers_file = os.path.join(
-            self.params.anyloc_vocab_dir,
-            "vocabulary",
-            ext_specifier,
-            self.params.anyloc_domain,
-            "c_centers.pt",
-        )
-        assert os.path.isfile(c_centers_file), (
-            f"AnyLoc vocabulary not found: {c_centers_file}"
-        )
-
-        self._anyloc_vlad = VLAD(
-            self.params.anyloc_num_clusters,
-            desc_dim=None,
-            cache_dir=os.path.dirname(c_centers_file),
-        )
-        self._anyloc_vlad.fit(None)
 
     def _compute_anyloc_descriptor(self, img_bgr):
         """Compute AnyLoc (DINOv2 + VLAD) descriptor from a BGR image.
@@ -564,23 +561,34 @@ class SegmenterBase:
             Normalized 1-D numpy array of shape (num_clusters * desc_dim,).
         """
         self._ensure_anyloc()
-        import torchvision.transforms as tvf
-        from PIL import Image as PILImage
-
         img_rgb = cv.cvtColor(img_bgr, cv.COLOR_BGR2RGB)
-        pil_img = PILImage.fromarray(img_rgb)
-        img_pt = self._anyloc_transform(pil_img).to(self.params.device)
+        return self._anyloc_pipeline.describe(img_rgb)
 
-        c, h, w = img_pt.shape
-        h_new = (h // 14) * 14
-        w_new = (w // 14) * 14
-        img_pt = tvf.CenterCrop((h_new, w_new))(img_pt)[None, ...]
+    def _init_meridian_vpr(self):
+        """Initialize the trained cross-view head from third_party/vpr."""
+        from meridian.vpr import MeridianVprPipeline
 
-        with torch.no_grad():
-            ret = self._anyloc_extractor(img_pt)
-            gd = self._anyloc_vlad.generate(ret.cpu().squeeze())
+        self._meridian_vpr_pipeline = MeridianVprPipeline(
+            self._vpr_ckpt(),
+            fp16=self._fp16_enabled(self.params.vpr_fp16),
+            device=self.params.device,
+        )
 
-        return gd.numpy()
+    def _compute_meridian_vpr_descriptor(self, img_bgr):
+        """Compute the trained cross-view descriptor from a BGR image.
+
+        `self.VIEW` picks the branch. Both views land in one embedding space --
+        their cosine is the retrieval score.
+
+        Args:
+            img_bgr: BGR image as numpy array.
+
+        Returns:
+            Normalized 1-D numpy array of shape (num_clusters * feature_dim,).
+        """
+        self._ensure_meridian_vpr()
+        img_rgb = cv.cvtColor(img_bgr, cv.COLOR_BGR2RGB)
+        return self._meridian_vpr_pipeline.describe(img_rgb, self.VIEW)
 
     def _init_salad(self):
         """Initialize SALAD (DINOv2 + optimal transport aggregation) model."""
@@ -592,6 +600,8 @@ class SegmenterBase:
 
         self._salad_model = dinov2_salad(backbone="dinov2_vitb14", pretrained=True)
         self._salad_model.eval().to(self.params.device)
+        if self._fp16_enabled(self.params.vpr_fp16):
+            self._salad_model.half()
         self._salad_transform = tvf.Compose(
             [
                 tvf.ToTensor(),
@@ -620,9 +630,11 @@ class SegmenterBase:
         h_new = (h // 14) * 14
         w_new = (w // 14) * 14
         img_pt = tvf.CenterCrop((h_new, w_new))(img_pt)[None, ...]
+        if self._fp16_enabled(self.params.vpr_fp16):
+            img_pt = img_pt.half()
 
         with torch.no_grad():
-            descriptor = self._salad_model(img_pt)
+            descriptor = self._salad_model(img_pt).float()
 
         descriptor = descriptor.cpu().squeeze().numpy()
         norm = np.linalg.norm(descriptor)

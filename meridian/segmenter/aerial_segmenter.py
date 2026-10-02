@@ -8,10 +8,13 @@ from typing import List
 
 from meridian.map2d.segment2d import Segment2D
 from meridian.params import AerialSegmenterParams
+from meridian.params.cross_view_params import STANDALONE_DESCRIPTORS
 from meridian.segmenter.segmenter_base import SegmenterBase
 
 
 class AerialSegmenter(SegmenterBase):
+    VIEW = "satellite"
+
     def __init__(self, params: AerialSegmenterParams):
         import copy
 
@@ -26,12 +29,16 @@ class AerialSegmenter(SegmenterBase):
 
         Returns:
             Normalized 1-D numpy descriptor array, or None if semantics is
-            disabled and frame_descriptor is not "anyloc".
+            disabled and frame_descriptor is not an image descriptor.
         """
         if crop is not None:
             img_bgr = img_bgr[crop[1] : crop[3], crop[0] : crop[2]]
 
-        if self.params.downsample_factor > 1:
+        # meridian-vpr resizes the crop to its fixed trained size
+        if (
+            self.frame_descriptor_type != "meridian-vpr"
+            and self.params.downsample_factor > 1
+        ):
             img_bgr = cv.resize(
                 img_bgr,
                 (
@@ -41,10 +48,8 @@ class AerialSegmenter(SegmenterBase):
                 interpolation=cv.INTER_LINEAR,
             )
 
-        if self.frame_descriptor_type == "anyloc":
-            return self._compute_anyloc_descriptor(img_bgr)
-        elif self.frame_descriptor_type == "salad":
-            return self._compute_salad_descriptor(img_bgr)
+        if self.frame_descriptor_type in STANDALONE_DESCRIPTORS:
+            return self.image_descriptor(img_bgr)
 
         self._ensure_semantics_model()
         if self.semantics_model is None:
@@ -99,14 +104,14 @@ class AerialSegmenter(SegmenterBase):
 
         if len(masks) == 0:
             return []
+        masks = masks.cpu().numpy()
 
         # Extract DINO features
-        dino_features = None
         dino_output_patches = None
         if self.params.semantics in ("dino", "dinov3", "dinov3-hf"):
             # Convert downsampled RGB back to BGR for _extract_dino_features
             img_bgr_ds = cv.cvtColor(image_rgb, cv.COLOR_RGB2BGR)
-            dino_features, dino_output_patches = self._extract_dino_features(img_bgr_ds)
+            dino_output_patches = self._extract_dino_features(img_bgr_ds)
 
         # First pass: filter masks by area and compute geometry
         valid_entries = []
@@ -128,21 +133,15 @@ class AerialSegmenter(SegmenterBase):
 
         # Batch-compute DINO descriptors on GPU
         descriptors = [None] * len(valid_entries)
-        if dino_features is not None and valid_entries:
-            valid_masks = [entry[1] for entry in valid_entries]
-            assert (
-                valid_masks[0].shape[0] == dino_features.shape[0]
-                and valid_masks[0].shape[1] == dino_features.shape[1]
-            ), "Mask and DINO features must have the same shape."
+        if dino_output_patches is not None and valid_entries:
             dino_frame_embedding = (
                 self._compute_dino_frame_embedding(dino_output_patches)
                 if self.params.subtract_frame_descriptor
-                and dino_output_patches is not None
                 else None
             )
-            descriptors = self._compute_batch_mean_dino_descriptors(
-                dino_features,
-                valid_masks,
+            descriptors = self.get_mask_features(
+                dino_output_patches,
+                np.stack([entry[1] for entry in valid_entries]),
                 dino_frame_embedding=dino_frame_embedding,
             )
 

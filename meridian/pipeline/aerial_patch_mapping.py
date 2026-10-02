@@ -50,8 +50,16 @@ def aerial_patch_mapping(params, output_dir):
     except Exception:
         pr_params = None
     from meridian.cross_view.place_recognition import CrossViewPlaceRecognition
+    from meridian.vpr.vpr import check_frame_descriptors_match
 
-    place_recognition = CrossViewPlaceRecognition(pr_params) if pr_params else None
+    descriptor_type = (
+        check_frame_descriptors_match(params, pr_params.comparison)
+        if pr_params is not None
+        else None
+    )
+    place_recognition = (
+        CrossViewPlaceRecognition(pr_params, descriptor_type) if pr_params else None
+    )
 
     # Load aerial image
     print("Loading aerial image...")
@@ -118,17 +126,19 @@ def aerial_patch_mapping(params, output_dir):
                 intermediates.general_segments,
                 submap.segments,
                 crop,
+                i,
+                j,
                 pixel_len_m,
+                conversion_params.segment_border_type,
+                conversion_params.segment_border_grid_downsample,
+                conversion_params.segment_border_max_n_pts,
+                conversion_params.concave_hull_ratio,
                 conversion_params.alpha_shape_alpha,
-                conversion_params.alpha_shape_grid_downsample,
-                conversion_params.alpha_shape_max_n_pts,
                 conversion_params.alpha_shape_ref_size_m,
                 max(1, round(viz_params.aerial_viz_pixel_size_m / pixel_len_m)),
                 viz_params.aerial_viz_line_width_m,
                 viz_params.aerial_viz_target_size_kb,
                 px_per_m,
-                i,
-                j,
             )
             futures[future] = crop
 

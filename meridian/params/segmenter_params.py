@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from typing import ClassVar, List, Tuple
+from typing import ClassVar, List, Optional, Tuple
 
 import numpy as np
 
@@ -18,12 +18,13 @@ class SegmenterParamsBase(ParamsBase):
     conf: float = 0.2
     iou: float = 0.9
     device: str = "cuda"
+    segmentation_fp16: bool = True
 
     # Semantics
     semantics: str = "dino"
     semantics_dim: int = 1024
     semantics_size: str = "large"
-    dino_half: bool = False
+    semantics_fp16: bool = True
     dinov3_path: str = "~/code/dinov3"
     dinov3_weights: str = None
     subtract_frame_descriptor: bool = False
@@ -32,16 +33,12 @@ class SegmenterParamsBase(ParamsBase):
     triangle_ignore_masks: List[
         Tuple[Tuple[int, int], Tuple[int, int], Tuple[int, int]]
     ] = None
-    frame_descriptor: str = "anyloc"  # anyloc, dino-gem, salad
+    frame_descriptor: str = "meridian-vpr"  # meridian-vpr, anyloc, dino-gem, salad
 
-    # AnyLoc params (used when frame_descriptor == "anyloc")
-    anyloc_path: str = "${ANYLOC_PATH}"
-    anyloc_vocab_dir: str = "${ANYLOC_VOCAB_DIR}"
-    anyloc_domain: str = "urban"
-    anyloc_num_clusters: int = 32
-    anyloc_dino_model: str = "dinov2_vitg14"
-    anyloc_layer: int = 31
-    anyloc_facet: str = "value"
+    # Weights override; unset -> the third_party/vpr/weights bundle.
+    vpr_ckpt: Optional[str] = "${VPR_CKPT}"
+    vpr_fp16: bool = True  # fp16 for whichever frame descriptor is selected
+    anyloc_layer: int = 31 # DINOv2 block for AnyLoc vocabulary
 
     # SALAD params (used when frame_descriptor == "salad")
     salad_path: str = "${SALAD_PATH}"
@@ -61,8 +58,11 @@ class SegmenterParamsBase(ParamsBase):
         self.dinov3_path = expandvars_recursive(self.dinov3_path)
         if self.dinov3_weights is not None:
             self.dinov3_weights = expandvars_recursive(self.dinov3_weights)
-        self.anyloc_path = expandvars_recursive(self.anyloc_path)
-        self.anyloc_vocab_dir = expandvars_recursive(self.anyloc_vocab_dir)
+        # Unset $VPR_CKPT survives expansion as the literal "${VPR_CKPT}".
+        if self.vpr_ckpt is not None:
+            self.vpr_ckpt = expandvars_recursive(self.vpr_ckpt)
+            if self.vpr_ckpt.startswith("$"):
+                self.vpr_ckpt = None
         self.salad_path = expandvars_recursive(self.salad_path)
 
 
@@ -95,6 +95,11 @@ class SegmenterParams(SegmenterParamsBase):
     outlier_removal_dbscan_eps: float = 0.5
     outlier_removal_dbscan_min_points: int = 10
     min_occluded_unoccluded_dist_m: float = 0.1
+
+    # ROS params
+    ros_odom_frame_id: str = "odom"
+    ros_min_dt: float = 0.1
+    ros_timing_window: int = 10
 
     def __post_init__(self):
         super().__post_init__()

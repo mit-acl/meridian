@@ -10,6 +10,8 @@
 #
 ###########################################################
 
+import time
+
 import numpy as np
 from typing import Dict, List, Set, Union
 
@@ -66,6 +68,7 @@ class SegmentMapper:
         self._submap_intermediates = []
         self._submap_counter: int = 0
         self._last_submap_time: float = -np.inf
+        self._last_submap_comp_stats: Dict[str, float] = {}
 
     def update(
         self,
@@ -345,6 +348,22 @@ class SegmentMapper:
             segments.remove(seg)
         return segments
 
+    @staticmethod
+    def bbox_iou(bbox1, bbox2):
+        """
+        IOU of two (upper_left, lower_right) pixel boxes; same as IOU of masks
+        """
+        if bbox1 is None or bbox2 is None:
+            return 0.0
+        (ul1, lr1), (ul2, lr2) = bbox1, bbox2
+        area1 = int(lr1[0] - ul1[0]) * int(lr1[1] - ul1[1])
+        area2 = int(lr2[0] - ul2[0]) * int(lr2[1] - ul2[1])
+        iw = max(0, min(lr1[0], lr2[0]) - max(ul1[0], ul2[0]))
+        ih = max(0, min(lr1[1], lr2[1]) - max(ul1[1], ul2[1]))
+        intersection = int(iw) * int(ih)
+        union = area1 + area2 - intersection
+        return intersection / union if union > 0 else 0.0
+
     def merge(self):
         """
         Merge segments with high overlap
@@ -384,11 +403,10 @@ class SegmentMapper:
 
                     # 2D IOU check
                     if self.params.min_2d_iou is not None:
-                        mask1 = seg1.reconstruct_mask(self.last_pose)
-                        mask2 = seg2.reconstruct_mask(self.last_pose)
-                        intersection2d = np.logical_and(mask1, mask2).sum()
-                        union2d = np.logical_or(mask1, mask2).sum()
-                        iou2d = intersection2d / union2d if union2d > 0 else 0.0
+                        iou2d = self.bbox_iou(
+                            seg1.reprojected_bbox(self.last_pose),
+                            seg2.reprojected_bbox(self.last_pose),
+                        )
 
                         merge_flag |= iou2d >= self.params.min_2d_iou
 
@@ -507,16 +525,23 @@ class SegmentMapper:
         if not selected_segs:
             return
 
+        # Reset per-build timing stats. Populated below (and inside
+        # convert_submap_to_sparse_2d) so the mapper node can report which stage
+        # of the 3D->2D submap conversion is the tall pole.
+        self._last_submap_comp_stats = {}
+
         # Apply final_cleanup (statistical outlier removal + DBSCAN largest-cluster
         # pruning) to active segments before they go into the submap. Inactive /
         # graveyard segments already had it applied at transition time.
         active_ids = {seg.id for seg in self.segments}
+        _t0 = time.perf_counter()
         for seg in selected_segs:
             if seg.id in active_ids and seg.points is not None and len(seg.points) > 0:
                 try:
                     seg.final_cleanup()
                 except Exception as e:
                     logger.debug(f"final_cleanup failed for active seg {seg.id}: {e}")
+        self._last_submap_comp_stats["final_cleanup"] = time.perf_counter() - _t0
         # Cleanup may zero out points for some segments; drop those from the
         # submap AND from self.segments so the next frame's global_nearest_neighbor
         # doesn't try to compute IoU on a zero-point segment (which raises in
@@ -604,6 +629,7 @@ class SegmentMapper:
         rad_m = gs_params.ground_submap_rad_m if gs_params is not None else None
 
         # Convert MapSegments to DenseSegments
+        _t0 = time.perf_counter()
         dense_segments = []
         for seg in selected_segs:
             if seg.points is None or len(seg.points) == 0:
@@ -659,20 +685,22 @@ class SegmentMapper:
             ds.point = np.mean(ds.dense_points, axis=0)
             ds.voxel_size = self.params.segment_voxel_size
             dense_segments.append(ds)
+        self._last_submap_comp_stats["dense_segment_build"] = time.perf_counter() - _t0
 
         if not dense_segments:
             return
 
-        # Attach place recognition descriptor (semantic-gem / anyloc)
+        # Attach place recognition descriptor (image comparison)
         submap_descriptor = None
-        if self.place_recognition is not None and self.place_recognition.method in (
-            "semantic-gem",
-            "anyloc",
-            "salad",
+        if (
+            self.place_recognition is not None
+            and self.place_recognition.comparison == "image"
         ):
-            submap_descriptor = self._compute_gem_descriptor_from_history(
+            _t0 = time.perf_counter()
+            submap_descriptor = self._stacked_frame_descriptors_from_history(
                 dense_segments, center=center, max_dist_m=rad_m
             )
+            self._last_submap_comp_stats["gem_descriptor"] = time.perf_counter() - _t0
 
         # Build 3D submap in CAMERA frame
         submap_3d = Submap(
@@ -692,21 +720,27 @@ class SegmentMapper:
         # convert_submap_to_sparse_2d transforms segments back to odom before
         # flattening, so the flattened_submap consumed by the ground viz is in
         # odom frame. Anchor coordinate-frame axes at the camera's odom pose
-        # (matches the metadata stamp at ground_submap_primitive_mapping.py:291).
-        submap_3d.metadata = {"camera_pose": submap_pose}
+        # (matches the camera_pose stamp at ground_submap_primitive_mapping.py:291).
+        submap_3d.camera_pose = submap_pose
 
-        # Convert to sparse 2D
+        # Convert to sparse 2D. Pass the stats dict so the converter records its
+        # internal stages (flatten_3d, segment_border, converter_convert, ...).
+        _t0 = time.perf_counter()
         submap_2d, intermediate = (
             self._ground_submap_mapping.convert_submap_to_sparse_2d(
-                submap_3d, return_intermediates=True
+                submap_3d,
+                return_intermediates=True,
+                timings=self._last_submap_comp_stats,
             )
         )
+        self._last_submap_comp_stats["convert_2d_total"] = time.perf_counter() - _t0
 
         # Recompute descriptor for semantic-point-line
         if (
             self.place_recognition is not None
-            and self.place_recognition.method == "semantic-point-line"
+            and self.place_recognition.comparison == "semantic-point-line"
         ):
+            _t0 = time.perf_counter()
             submap_2d = Submap(
                 id=submap_2d.id,
                 time=submap_2d.time,
@@ -716,8 +750,10 @@ class SegmentMapper:
                 descriptor=self.place_recognition.ground_descriptor(
                     None, submap_segments=submap_2d.segments
                 ),
+                camera_pose=submap_2d.camera_pose,
                 metadata=submap_2d.metadata,
             )
+            self._last_submap_comp_stats["spl_descriptor"] = time.perf_counter() - _t0
 
         self.submaps_2d.append(submap_2d)
         self._submap_intermediates.append(intermediate)
@@ -729,22 +765,19 @@ class SegmentMapper:
             f"Created 2D submap {self._submap_counter - 1} with "
             f"{len(submap_2d.segments)} primitives at t={submap_time:.2f}"
         )
+        return submap_2d
 
-    def _compute_gem_descriptor_from_history(
+    def _stacked_frame_descriptors_from_history(
         self, submap_segments, center=None, max_dist_m=None
     ):
-        """Compute semantic-gem descriptor from frame descriptor history.
-
-        Replicates the logic of CrossViewPlaceRecognition._ground_descriptor_gem()
-        but reads directly from the mapper's live history arrays. When
-        ``center`` and ``max_dist_m`` are provided, frames captured from camera
-        poses farther than ``max_dist_m`` from ``center`` are excluded so the
-        descriptor reflects only the area inside the submap radius.
-        """
+        """CrossViewPlaceRecognition._stacked_frame_descriptors, but reading
+        the mapper's live history arrays instead of a precomputed cache."""
         seg_first = [s.first_seen for s in submap_segments if s.first_seen is not None]
         seg_last = [s.last_seen for s in submap_segments if s.last_seen is not None]
         if not seg_first or not seg_last:
-            return None
+            # No usable segment timestamps to form a window; fall back so the
+            # submap still gets a descriptor rather than None.
+            return self._nearest_frame_descriptor(center)
 
         start_time = min(
             s.last_seen for s in submap_segments if s.last_seen is not None
@@ -781,4 +814,50 @@ class SegmentMapper:
 
         if stacked:
             return np.vstack(stacked)
-        return None
+        # No frame descriptor fell inside the submap's time window / radius.
+        # Fall back to the nearest available descriptor so downstream never
+        # receives None (which breaks submap serialization and matching).
+        logger.warning(
+            "No frame descriptor within submap window/radius; falling back to "
+            "nearest available descriptor."
+        )
+        return self._nearest_frame_descriptor(center)
+
+    def _nearest_frame_descriptor(self, center=None):
+        """Return the single nearest available frame descriptor as a (1, D)
+        array, or None only if the history contains no descriptors at all.
+
+        Used as a fallback so a submap always receives a descriptor even when no
+        frame was captured inside its time window / radius. "Nearest" is by
+        camera distance to ``center`` when provided, otherwise the most recent
+        frame.
+        """
+        # update() appends to all three histories together, so they stay aligned
+        assert (
+            len(self.frame_descriptors_history)
+            == len(self.poses_cam_history)
+            == len(self.times_history)
+        ), "frame descriptor, pose, and time histories are out of sync"
+
+        # No center: most recent available descriptor
+        if center is None:
+            for desc_i in reversed(self.frame_descriptors_history):
+                if desc_i is not None:
+                    return np.atleast_2d(desc_i)
+            return None
+
+        # Center given: descriptor captured closest to center
+        best_desc = None
+        best_dist = None
+        for desc_i, pose_i in zip(
+            self.frame_descriptors_history, self.poses_cam_history
+        ):
+            if desc_i is None:
+                continue
+            dist = float(np.linalg.norm(pose_i[:3, 3] - center))
+            if best_dist is None or dist < best_dist:
+                best_dist = dist
+                best_desc = desc_i
+        if best_desc is None:
+            return None
+        return np.atleast_2d(best_desc)

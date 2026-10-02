@@ -43,6 +43,7 @@ from robotdatapy.data.robot_data import NoDataNearTimeException
 from meridian.cross_view.incremental_localization import IncrementalLocalization
 from meridian.cross_view.matching import CrossViewMatching
 from meridian.cross_view.place_recognition import CrossViewPlaceRecognition
+from meridian.vpr.vpr import check_frame_descriptors_match
 from meridian.map2d.ground_submap_primitive_mapping import (
     GroundSubmapPrimitiveMapping,
 )
@@ -500,6 +501,9 @@ class CrossViewIncremental:
             trajectory=self.mapper.poses_cam_history,
             times=self.mapper.times_history,
             descriptors=descriptors,
+            descriptor_type=(
+                self.segmenter.frame_descriptor_type if descriptors else None
+            ),
         )
         segment_map.save(str(out / "segment_map.pkl"))
 
@@ -568,10 +572,12 @@ class CrossViewIncremental:
                     intermediate.general_segments,
                     submap_2d.segments,
                     self.conversion_params.alpha_shape_alpha,
-                    self.conversion_params.alpha_shape_grid_downsample,
-                    self.conversion_params.alpha_shape_max_n_pts,
+                    self.conversion_params.segment_border_grid_downsample,
+                    self.conversion_params.segment_border_max_n_pts,
                     self.conversion_params.alpha_shape_ref_size_m,
                     show_origin=ground_submap_params.viz_show_sm_origin,
+                    segment_border_type=self.conversion_params.segment_border_type,
+                    concave_hull_ratio=self.conversion_params.concave_hull_ratio,
                 )
                 fig.savefig(viz_dir / f"{k}.png", dpi=400)
                 plt.close(fig)
@@ -900,13 +906,6 @@ def cross_view_incremental(
     movie: bool = False,
     live: bool = False,
 ):
-    if not aerial_dir:
-        # TODO: enable setting aerial in a params file instead.
-        raise ValueError(
-            "--aerial is required: point to a directory containing segments/*.pkl "
-            "(produced by `cross_view_matching --skip-match --skip-ground` or equivalent)."
-        )
-
     print("Loading parameters...")
     mapping_params = SegmentMappingParams.load(params_path, run=run)
     mapping_data_params = SegmentMappingDataParams.load(params_path, run=run)
@@ -927,6 +926,7 @@ def cross_view_incremental(
     rpgo_params = CrossViewRPGOParams.load(params_path, run=run)
     incremental_params = CrossViewIncrementalParams.load(params_path, run=run)
     loc_data_params = CrossViewLocalizationDataParams.load(params_path, run=run)
+    aerial_dir = loc_data_params.resolve_aerial_dir(aerial_dir, required=True)
 
     try:
         viz_params = CrossViewVisualizationParams.load(params_path, run=run)
@@ -939,8 +939,15 @@ def cross_view_incremental(
         pr_params = None
     if pr_params is None and pipeline_params.matching_mode == "vpr":
         pr_params = CrossViewPlaceRecognitionParams()
+    descriptor_type = (
+        check_frame_descriptors_match(params_path, pr_params.comparison, run=run)
+        if pr_params is not None
+        else None
+    )
     place_recognition = (
-        CrossViewPlaceRecognition(pr_params) if pr_params is not None else None
+        CrossViewPlaceRecognition(pr_params, descriptor_type)
+        if pr_params is not None
+        else None
     )
 
     os.makedirs(output_dir, exist_ok=True)
@@ -970,20 +977,6 @@ def cross_view_incremental(
     if bag_t_range is not None:
         full_t0, full_tf = bag_t_range
         print(f"Bag time range: {full_t0:.2f} to {full_tf:.2f}")
-        # Honor user-specified time_range in params so chunking stops at the
-        # requested end instead of the bag's end.
-        user_range = (mapping_data_params.img_data or {}).get("time_range")
-        if user_range is not None:
-            relative = (mapping_data_params.img_data or {}).get(
-                "time_range_relative", False
-            )
-            user_t0, user_tf = user_range
-            if relative:
-                user_t0 = full_t0 + user_t0
-                user_tf = full_t0 + user_tf
-            full_t0 = max(full_t0, user_t0)
-            full_tf = min(full_tf, user_tf)
-            print(f"Clamped to user time_range: {full_t0:.2f} to {full_tf:.2f}")
     else:
         full_t0, full_tf = None, None
 
@@ -1135,8 +1128,9 @@ if __name__ == "__main__":
     parser.add_argument(
         "--aerial",
         type=str,
-        required=True,
-        help="Path to aerial directory containing segments/*.pkl.",
+        default=None,
+        help="Path to aerial directory containing segments/*.pkl. If omitted, falls "
+        "back to `aerial_primitives_dir` in the cross_view_localization_data params.",
     )
     parser.add_argument("-r", "--run", type=str, default=None)
     parser.add_argument(

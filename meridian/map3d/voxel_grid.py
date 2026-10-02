@@ -1,6 +1,5 @@
 import numpy as np
 from dataclasses import dataclass
-import open3d as o3d
 import functools
 
 
@@ -110,13 +109,8 @@ class VoxelGrid:
         max_corner = np.array(
             [np.ceil(np.max(points, axis=0) / voxel_size) * voxel_size]
         )
-        pcd_o3d = o3d.geometry.PointCloud()
-        pcd_o3d.points = o3d.utility.Vector3dVector(points)
-        voxels_o3d = o3d.geometry.VoxelGrid.create_from_point_cloud(
-            pcd_o3d, voxel_size=voxel_size
-        )
-        voxel_o3d_list = voxels_o3d.get_voxels()  # returns list of voxels
-        indices = np.stack(list(vx.grid_index for vx in voxel_o3d_list))
+        origin = np.min(points, axis=0) - voxel_size / 2
+        indices = np.floor((points - origin) / voxel_size).astype(np.int64)
         voxels = np.zeros(
             ((max_corner - min_corner) / voxel_size + 2).astype(np.uint32).reshape(-1),
             dtype=np.uint8,

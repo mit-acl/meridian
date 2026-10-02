@@ -4,7 +4,7 @@ segment_mapping:
   fastsam_conf: 0.4
 
 segmenter:
-  frame_descriptor: dino-gem
+  frame_descriptor: meridian-vpr
 
 segment_mapping_data:
 
@@ -38,6 +38,7 @@ segment_mapping_data:
 
 cross_view_localization_data:
   aerial_img_path: ${MERIDIAN_DEMO_DATA}/aerial.tiff
+  aerial_primitives_dir: ${MERIDIAN_DEMO_DATA}/aerial_primitive_map
   gt_pose_data:
     type: "csv"
     path: "${MERIDIAN_DEMO_DATA}/gt.csv"
@@ -69,8 +70,8 @@ cross_view_matching:
   matching_mode: vpr
 
 aerial_segmenter: 
-  downsample_factor: 5
-  frame_descriptor: dino-gem
+  downsample_factor: 5 # not used by vpr, which resizes to trained res
+  frame_descriptor: meridian-vpr
 
 primitive_match: {}
 register: {}
