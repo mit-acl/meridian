@@ -13,10 +13,12 @@ Usage:
 """
 
 import argparse
+import logging
 import pathlib
 import sys
 from concurrent.futures import ProcessPoolExecutor, as_completed
 
+from meridian.cross_view.place_recognition import CrossViewPlaceRecognition
 from meridian.params import (
     AerialSegmenterParams,
     SegmentToPrimitiveConversionParams,
@@ -34,6 +36,8 @@ from meridian.map2d.aerial_patch_primitive_mapping import (
 )
 from meridian.pipeline.cross_view_matching import _aerial_viz_worker
 from meridian.pipeline.data import CrossViewLocalizationData
+from meridian.utils import save_commit_hash, save_params
+from meridian.vpr.vpr import check_frame_descriptors_match
 
 
 def aerial_patch_mapping(
@@ -59,17 +63,16 @@ def aerial_patch_mapping(
         aerial_patch_params = AerialPatchParams.load(params)
         conversion_params = SegmentToPrimitiveConversionParams.load(params)
         viz_params = CrossViewVisualizationParams.load(params)
-        try:
-            pr_params = CrossViewPlaceRecognitionParams.load(params)
-        except Exception:
-            pr_params = None
+        # A missing section loads defaults; real config errors should raise
+        # rather than silently produce submaps without descriptors.
+        pr_params = CrossViewPlaceRecognitionParams.load(params)
     else:
         data_params = CrossViewLocalizationDataParams(aerial_img_path=aerial_img_path)
         aerial_segmenter_params = AerialSegmenterParams()
         aerial_patch_params = AerialPatchParams()
         conversion_params = SegmentToPrimitiveConversionParams()
         viz_params = CrossViewVisualizationParams()
-        pr_params = None
+        pr_params = CrossViewPlaceRecognitionParams()
 
     # Command-line overrides
     if params is not None and aerial_img_path is not None:
@@ -88,17 +91,17 @@ def aerial_patch_mapping(
     if downsample_factor is not None:
         aerial_segmenter_params.downsample_factor = downsample_factor
 
-    from meridian.cross_view.place_recognition import CrossViewPlaceRecognition
-    from meridian.vpr.vpr import check_frame_descriptors_match
-
+    # Model that makes the aerial descriptors: checked against the ground
+    # segmenter's when a params file configures either; otherwise the aerial
+    # segmenter's (possibly default) frame_descriptor.
     descriptor_type = (
         check_frame_descriptors_match(params, pr_params.comparison)
-        if pr_params is not None
+        if params is not None
         else None
     )
-    place_recognition = (
-        CrossViewPlaceRecognition(pr_params, descriptor_type) if pr_params else None
-    )
+    if descriptor_type is None:
+        descriptor_type = aerial_segmenter_params.frame_descriptor
+    place_recognition = CrossViewPlaceRecognition(pr_params, descriptor_type)
 
     # Load aerial image
     print("Loading aerial image...")
@@ -189,17 +192,14 @@ def aerial_patch_mapping(
     print(f"Saved visualizations to {viz_output_dir}")
 
     # Save params and commit hash
-    from meridian.utils import save_params, save_commit_hash
-
     all_params = [
         data_params,
         aerial_segmenter_params,
         aerial_patch_params,
         conversion_params,
         viz_params,
+        pr_params,
     ]
-    if pr_params is not None:
-        all_params.append(pr_params)
     save_params(str(output_dir), *all_params)
     save_commit_hash(str(output_dir))
 
@@ -252,8 +252,6 @@ if __name__ == "__main__":
         parser.error("one of -p/--params or -a/--aerial-img is required")
 
     if args.debug:
-        import logging
-
         logging.basicConfig(
             level=logging.INFO, format="%(levelname)s:%(name)s:%(message)s"
         )
