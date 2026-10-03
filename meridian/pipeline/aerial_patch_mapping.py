@@ -37,7 +37,6 @@ from meridian.map2d.aerial_patch_primitive_mapping import (
 from meridian.pipeline.cross_view_matching import _aerial_viz_worker
 from meridian.pipeline.data import CrossViewLocalizationData
 from meridian.utils import save_commit_hash, save_params
-from meridian.vpr.vpr import check_frame_descriptors_match
 
 
 def aerial_patch_mapping(
@@ -91,17 +90,9 @@ def aerial_patch_mapping(
     if downsample_factor is not None:
         aerial_segmenter_params.downsample_factor = downsample_factor
 
-    # Model that makes the aerial descriptors: checked against the ground
-    # segmenter's when a params file configures either; otherwise the aerial
-    # segmenter's (possibly default) frame_descriptor.
-    descriptor_type = (
-        check_frame_descriptors_match(params, pr_params.comparison)
-        if params is not None
-        else None
+    place_recognition = CrossViewPlaceRecognition(
+        pr_params, aerial_segmenter_params.frame_descriptor
     )
-    if descriptor_type is None:
-        descriptor_type = aerial_segmenter_params.frame_descriptor
-    place_recognition = CrossViewPlaceRecognition(pr_params, descriptor_type)
 
     # Load aerial image
     print("Loading aerial image...")

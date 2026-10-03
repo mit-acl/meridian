@@ -842,7 +842,7 @@ def cross_view_matching(
     # A missing section loads defaults; real config errors should raise rather
     # than silently produce aerial submaps without descriptors.
     pr_params = CrossViewPlaceRecognitionParams.load(params)
-    descriptor_type = check_frame_descriptors_match(params, pr_params.comparison)
+    descriptor_type = check_frame_descriptors_match(params)
     place_recognition = CrossViewPlaceRecognition(pr_params, descriptor_type)
 
     aerial_segmenter = AerialSegmenter(AerialSegmenterParams.load(params))
