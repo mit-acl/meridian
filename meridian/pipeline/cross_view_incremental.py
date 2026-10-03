@@ -43,7 +43,6 @@ from robotdatapy.data.robot_data import NoDataNearTimeException
 from meridian.cross_view.incremental_localization import IncrementalLocalization
 from meridian.cross_view.matching import CrossViewMatching
 from meridian.cross_view.place_recognition import CrossViewPlaceRecognition
-from meridian.vpr.vpr import check_frame_descriptors_match
 from meridian.map2d.ground_submap_primitive_mapping import (
     GroundSubmapPrimitiveMapping,
 )
@@ -896,21 +895,9 @@ def cross_view_incremental(
     except Exception:
         viz_params = CrossViewVisualizationParams()
 
-    try:
-        pr_params = CrossViewPlaceRecognitionParams.load(params_path, run=run)
-    except Exception:
-        pr_params = None
-    if pr_params is None and pipeline_params.matching_mode == "vpr":
-        pr_params = CrossViewPlaceRecognitionParams()
-    descriptor_type = (
-        check_frame_descriptors_match(params_path, pr_params.comparison, run=run)
-        if pr_params is not None
-        else None
-    )
-    place_recognition = (
-        CrossViewPlaceRecognition(pr_params, descriptor_type)
-        if pr_params is not None
-        else None
+    pr_params = CrossViewPlaceRecognitionParams.load(params_path, run=run)
+    place_recognition = CrossViewPlaceRecognition(
+        pr_params, segmenter_params.frame_descriptor
     )
 
     os.makedirs(output_dir, exist_ok=True)
@@ -934,6 +921,7 @@ def cross_view_incremental(
     aerial_submaps = matching_pipeline.load_submaps_from_dir(aerial_seg_dir)
     if not aerial_submaps:
         raise ValueError(f"No aerial submaps found in {aerial_seg_dir}")
+    place_recognition.check_submaps("Aerial submaps", aerial_submaps)
 
     print("Loading bag time range...")
     bag_t_range = SegmentMappingData.get_bag_time_range(mapping_data_params)
@@ -1022,9 +1010,8 @@ def cross_view_incremental(
         incremental_params,
         loc_data_params,
         viz_params,
+        pr_params,
     ]
-    if pr_params is not None:
-        all_params.append(pr_params)
     save_params(output_dir, *all_params)
     save_commit_hash(output_dir)
 

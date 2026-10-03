@@ -22,6 +22,11 @@ class CrossViewPlaceRecognition:
         params: CrossViewPlaceRecognitionParams,
         descriptor_type: str = None,
     ):
+        if params.comparison == "image" and descriptor_type is None:
+            raise ValueError(
+                "cross_view_place_recognition.comparison='image' compares frame "
+                "descriptors, but frame_descriptor is unset."
+            )
         self.params = params
         self.comparison = params.comparison
         self.descriptor_type = descriptor_type
@@ -256,8 +261,6 @@ class CrossViewPlaceRecognition:
         """
         ground_tag = self._tag_of(ground_submaps)
         aerial_tag = self._tag_of(aerial_submaps)
-        self._check_source("Ground submaps", ground_tag)
-        self._check_source("Aerial submaps", aerial_tag)
         if None not in (ground_tag, aerial_tag) and ground_tag != aerial_tag:
             raise ValueError(
                 f"Ground submap descriptors came from {ground_tag!r} and aerial "
@@ -277,13 +280,22 @@ class CrossViewPlaceRecognition:
 
         return sim_matrix, ground_keys, aerial_keys
 
+    @property
+    def submap_tag(self):
+        """What a submap descriptor is: the model for "image", else the comparison."""
+        return self.descriptor_type if self.comparison == "image" else self.comparison
+
     def tag(self, submap):
-        """Record which model made `submap.descriptor`, for the disk round trip."""
-        if submap.descriptor is None or self.descriptor_type is None:
+        """Record what made `submap.descriptor`, for the disk round trip."""
+        if submap.descriptor is None or self.submap_tag is None:
             return
         if submap.metadata is None:
             submap.metadata = {}
-        submap.metadata["descriptor_type"] = self.descriptor_type
+        submap.metadata["descriptor_type"] = self.submap_tag
+
+    def check_submaps(self, what, submaps):
+        """Raise if prebuilt `submaps` were made differently than this run's."""
+        self._check_source(what, self._tag_of(submaps), self.submap_tag)
 
     @staticmethod
     def _tag_of(submaps):
@@ -295,13 +307,14 @@ class CrossViewPlaceRecognition:
                     return tag
         return None
 
-    def _check_source(self, what, found):
-        """Raise if `found` contradicts the configured model. None = untagged."""
-        if found is None or self.descriptor_type is None:
+    def _check_source(self, what, found, expected=None):
+        """Raise if `found` contradicts `expected` (default: the model). None = untagged."""
+        expected = self.descriptor_type if expected is None else expected
+        if found is None or expected is None:
             return
-        if found != self.descriptor_type:
+        if found != expected:
             raise ValueError(
                 f"{what} descriptors came from {found!r} but this run uses "
-                f"{self.descriptor_type!r}. Rebuild them, or set "
-                "frame_descriptor to match."
+                f"{expected!r}. Rebuild them, or set frame_descriptor/comparison "
+                "to match."
             )
