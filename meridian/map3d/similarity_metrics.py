@@ -420,21 +420,11 @@ class AlignmentEvaluator:
     """ICP-style full-submap alignment scoring for point + line primitive maps.
 
     The ground submap is transformed into the aerial frame by the estimated
-    transform and scored against the *full* aerial submap (not just the matched
-    inliers). Only ground primitives that at least partly lie within the aerial
-    patch are counted, so partial overlap is not penalized. Ground points are
-    matched to aerial points and ground lines to aerial lines.
-
-    Quality only selects each ground primitive's best match; the reported
-    ``fitness`` is the Wilson lower bound of the resulting inlier ratio,
-    rewarding dense overlap while resisting small-support inflation. Hypotheses
-    with fewer than ``min_in_patch`` in-patch primitives score 0 (too little
-    overlap to trust).
-
-    Everything is evaluated as whole-matrix numpy expressions over
-    (n_ground x n_aerial), since the per-pair Python geometry calls this
-    replaces dominated the matcher's runtime. The submaps are unpacked once per
-    evaluator, so scoring many hypotheses for a submap pair pays for it once.
+    transform and scored against the full aerial submap. Only ground primitives 
+    that at least partly lie within the aerial patch are counted. Ground points are
+    matched to aerial points and ground lines to aerial lines. Reported ``fitness`` 
+    is the Wilson lower bound of the resulting inlier ratio, rewarding dense 
+    overlap while resisting small-support inflation.
     """
 
     def __init__(
@@ -447,6 +437,7 @@ class AlignmentEvaluator:
         line_min_overlap: float,
         wilson_z: float,
         min_in_patch: int,
+        min_inliers: int,
         patch_bounds: Optional[Tuple[float, float, float, float]] = None,
     ):
         self.point_inlier_thresh_m = point_inlier_thresh_m
@@ -455,6 +446,7 @@ class AlignmentEvaluator:
         self.line_min_overlap = line_min_overlap
         self.wilson_z = wilson_z
         self.min_in_patch = min_in_patch
+        self.min_inliers = min_inliers
 
         self._aerial = _prepare(aerial_segments, "aerial_segments")
         self._ground = _prepare(ground_segments, "ground_segments")
@@ -579,7 +571,7 @@ class AlignmentEvaluator:
         n_in_patch = assoc.n_in_patch
         inlier_ratio = n_inliers / n_in_patch if n_in_patch > 0 else 0.0
         mean_quality = float(np.mean(assoc.qualities)) if assoc.qualities else 0.0
-        if n_in_patch < self.min_in_patch:
+        if n_in_patch < self.min_in_patch or n_inliers < self.min_inliers:
             fitness = 0.0
         else:
             fitness = _wilson_lower_bound(n_inliers, n_in_patch, self.wilson_z)
@@ -601,7 +593,6 @@ class AlignmentEvaluator:
         self,
         T_aerial_ground: np.ndarray,
         max_iters: int = 3,
-        min_inliers: int = 6,
         max_correction_m: float = 0.0,
     ) -> AlignmentRefinementResult:
         """Re-fit the transform to its own fitness inliers, ICP style.
@@ -628,7 +619,7 @@ class AlignmentEvaluator:
         for i in range(max_iters):
             if i > 0:
                 assoc = self._associate(_as_se2(T_init, R, t))
-            if len(assoc.pairs) < min_inliers:
+            if len(assoc.pairs) < self.min_inliers:
                 break
             step = _gauss_newton_step(assoc)
             if step is None:
@@ -708,6 +699,7 @@ class AlignmentFitness:
         line_min_overlap: float,
         wilson_z: float,
         min_in_patch: int,
+        min_inliers: int,
         patch_bounds: Optional[Tuple[float, float, float, float]] = None,
     ) -> AlignmentFitnessResult:
         return AlignmentEvaluator(
@@ -719,6 +711,7 @@ class AlignmentFitness:
             line_min_overlap=line_min_overlap,
             wilson_z=wilson_z,
             min_in_patch=min_in_patch,
+            min_inliers=min_inliers,
             patch_bounds=patch_bounds,
         ).fitness(T_aerial_ground)
 

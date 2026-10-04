@@ -14,6 +14,7 @@ PARAMS = dict(
     line_min_overlap=0.25,
     wilson_z=2.576,
     min_in_patch=10,
+    min_inliers=0,
 )
 
 # Submap size that reproduces the runtime seen on real short-map-matching data.
@@ -253,6 +254,13 @@ class TestFitnessValue:
         result = compute(aerial, ground, min_in_patch=10)
         assert result.n_inliers == 1 and result.fitness == 0.0
 
+    def test_below_min_inliers_scores_zero(self):
+        aerial = box_submap()
+        aerial.append(PointPrimitive(id=2, point=np.array([10.0, 10.0])))
+        ground = PrimitiveList([PointPrimitive(id=0, point=np.array([10.0, 10.0]))])
+        assert compute(aerial, ground, min_in_patch=1, min_inliers=2).fitness == 0.0
+        assert compute(aerial, ground, min_in_patch=1, min_inliers=1).fitness > 0.0
+
     def test_empty_aerial_map_scores_zero(self):
         ground = PrimitiveList([PointPrimitive(id=0, point=np.array([0.0, 0.0]))])
         result = compute(PrimitiveList(), ground)
@@ -344,8 +352,8 @@ class TestRefinement:
         aerial = box_submap()
         aerial.append(PointPrimitive(id=2, point=np.array([10.0, 10.0])))
         ground = PrimitiveList([PointPrimitive(id=0, point=np.array([10.4, 10.0]))])
-        refined = evaluator(aerial, ground, min_in_patch=1).refine(
-            np.eye(4), min_inliers=6
+        refined = evaluator(aerial, ground, min_in_patch=1, min_inliers=6).refine(
+            np.eye(4)
         )
         assert not refined.applied and refined.n_iterations == 0
         assert refined.fitness.n_inliers == 1
@@ -370,8 +378,8 @@ class TestRefinement:
         ground = PrimitiveList(
             [segment(0, [5.0, 0.6], [35.0, 0.6]), segment(1, [5.0, 20.6], [35.0, 20.6])]
         )
-        ev = evaluator(aerial, ground, min_in_patch=1)
-        refined = ev.refine(np.eye(4), min_inliers=2)
+        ev = evaluator(aerial, ground, min_in_patch=1, min_inliers=2)
+        refined = ev.refine(np.eye(4))
 
         assert refined.applied
         t = refined.T_aerial_ground[:2, -1]
