@@ -393,9 +393,9 @@ class CrossViewRPGO:
           ``lc_score_fitness_ref`` and clamped to 1.0, so it stays comparable
           across submaps instead of only within a pair.
 
-        Both fitness methods require ``CrossViewMatchingParams.compute_fitness``;
-        if any candidate lacks a finite fitness (older match results, or fitness
-        disabled) the whole set falls back to "frequency-ratio".
+        Both fitness methods require ``RegisterParams.compute_fitness``;
+        if any candidate lacks a finite fitness the whole set falls back 
+        to "frequency-ratio".
         """
         method = self.params.lc_score_method
         if method not in ("frequency-ratio", "fitness-ratio", "fitness-norm"):
@@ -419,7 +419,7 @@ class CrossViewRPGO:
                 logger.warning(
                     f"lc_score_method={method!r} but not all candidates carry a "
                     "finite fitness; falling back to frequency-ratio. Enable "
-                    "cross_view_matching.compute_fitness and regenerate the match "
+                    "register.compute_fitness and regenerate the match "
                     "results to use fitness."
                 )
 
