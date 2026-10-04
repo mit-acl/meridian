@@ -509,10 +509,11 @@ class CrossViewMatching:
             ]
 
         # When fitness re-ranks hypotheses, keep a deeper shortlist (M) than we return (N),
-        n_keep = self.registerer.params.max_hypotheses
+        rp = self.registerer.params
+        n_keep = rp.max_hypotheses
         n_scored = n_keep
-        if self.pipeline_params.compute_fitness and n_keep > 0:
-            prescreen = self.pipeline_params.fitness_prescreen_hypotheses
+        if rp.compute_fitness and n_keep > 0:
+            prescreen = rp.fitness_prescreen_hypotheses
             n_scored = max(n_keep, prescreen) if prescreen > 0 else 0
         if len(raw_results) > 1:
             results = self.registerer.cluster_hypotheses(
@@ -525,20 +526,19 @@ class CrossViewMatching:
             results = []
 
         # Full-submap alignment fitness
-        if self.pipeline_params.compute_fitness and results:
-            point_m, line_m, angle_rad = self.fitness_thresholds(  # TEMP(fitness-simplify)
-                self.pipeline_params, self.matcher.params, self.registerer.params
-            )
+        if rp.compute_fitness and results:
+            point_m, line_m, angle_rad = self.fitness_thresholds(self.matcher.params, rp)  # TEMP(fitness-simplify)
             evaluator = AlignmentEvaluator(
                 aerial_segments=aerial_segs_j,
                 ground_segments=ground_segs_i,
                 point_inlier_thresh_m=point_m,
                 line_inlier_thresh_m=line_m,
                 line_angle_thresh_rad=angle_rad,
-                line_min_overlap=self.pipeline_params.fitness_line_min_overlap,
-                wilson_z=self.pipeline_params.fitness_wilson_z,
-                min_inliers=self.pipeline_params.fitness_min_inliers,
-                use_wilson=self.pipeline_params.fitness_use_wilson,  # TEMP(fitness-simplify)
+                line_min_overlap=rp.fitness_line_min_overlap,
+                wilson_z=rp.fitness_wilson_z,
+                min_in_patch=rp.fitness_min_in_patch,
+                min_inliers=rp.fitness_min_inliers,
+                use_wilson=rp.fitness_use_wilson,  # TEMP(fitness-simplify)
             )
             for result in results:
                 self._store_fitness(
@@ -549,15 +549,14 @@ class CrossViewMatching:
             if n_keep > 0:
                 results = results[:n_keep]
 
-            # Only the hypotheses we return are worth polishing.
-            if self.pipeline_params.refine_hypotheses:
-                max_correction_m = self.pipeline_params.refine_max_correction_m
-                if self.pipeline_params.refine_simplified:  # TEMP(fitness-simplify)
+            if rp.refine_hypotheses:
+                max_correction_m = rp.refine_max_correction_m
+                if rp.refine_simplified:  # TEMP(fitness-simplify)
                     max_correction_m = 2.0 * point_m
                 for result in results:
                     refinement = evaluator.refine(
                         result.T_aerial_ground_odom_2d,
-                        max_iters=self.pipeline_params.refine_max_iters,
+                        max_iters=rp.refine_max_iters,
                         max_correction_m=max_correction_m,
                     )
                     if refinement.applied:
@@ -584,14 +583,14 @@ class CrossViewMatching:
         return results
 
     @staticmethod
-    def fitness_thresholds(pipeline_params, match_params, register_params):
+    def fitness_thresholds(match_params, register_params):
         """TEMP(fitness-simplify): (point_m, line_m, angle_rad) for fitness, per fitness_thresholds_from."""
-        source = pipeline_params.fitness_thresholds_from
+        source = register_params.fitness_thresholds_from
         if source == "shipped":
             return (
-                pipeline_params.fitness_point_inlier_thresh_m,
-                pipeline_params.fitness_line_inlier_thresh_m,
-                np.deg2rad(pipeline_params.fitness_line_angle_thresh_deg),
+                register_params.fitness_point_inlier_thresh_m,
+                register_params.fitness_line_inlier_thresh_m,
+                np.deg2rad(register_params.fitness_line_angle_thresh_deg),
             )
         if source == "matcher":
             d = match_params.epsilon_dist

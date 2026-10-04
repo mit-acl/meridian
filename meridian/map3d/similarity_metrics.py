@@ -420,21 +420,11 @@ class AlignmentEvaluator:
     """ICP-style full-submap alignment scoring for point + line primitive maps.
 
     The ground submap is transformed into the aerial frame by the estimated
-    transform and scored against the *full* aerial submap (not just the matched
-    inliers). Only ground primitives that at least partly lie within the aerial
-    patch are counted, so partial overlap is not penalized. Ground points are
-    matched to aerial points and ground lines to aerial lines.
-
-    Quality only selects each ground primitive's best match; the reported
-    ``fitness`` is the Wilson lower bound of the resulting inlier ratio,
-    rewarding dense overlap while resisting small-support inflation. Hypotheses
-    with fewer than ``min_inliers`` inliers score 0 and are not refined
-    (0 disables the gate).
-
-    Everything is evaluated as whole-matrix numpy expressions over
-    (n_ground x n_aerial), since the per-pair Python geometry calls this
-    replaces dominated the matcher's runtime. The submaps are unpacked once per
-    evaluator, so scoring many hypotheses for a submap pair pays for it once.
+    transform and scored against the full aerial submap. Only ground primitives 
+    that at least partly lie within the aerial patch are counted. Ground points are
+    matched to aerial points and ground lines to aerial lines. Reported ``fitness`` 
+    is the Wilson lower bound of the resulting inlier ratio, rewarding dense 
+    overlap while resisting small-support inflation.
     """
 
     def __init__(
@@ -446,6 +436,7 @@ class AlignmentEvaluator:
         line_angle_thresh_rad: float,
         line_min_overlap: float,
         wilson_z: float,
+        min_in_patch: int,
         min_inliers: int,
         patch_bounds: Optional[Tuple[float, float, float, float]] = None,
         use_wilson: bool = True,  # TEMP(fitness-simplify): False scores the plain inlier ratio
@@ -455,6 +446,7 @@ class AlignmentEvaluator:
         self.line_angle_thresh_rad = line_angle_thresh_rad
         self.line_min_overlap = line_min_overlap
         self.wilson_z = wilson_z
+        self.min_in_patch = min_in_patch
         self.min_inliers = min_inliers
         self.use_wilson = use_wilson  # TEMP(fitness-simplify)
 
@@ -581,7 +573,7 @@ class AlignmentEvaluator:
         n_in_patch = assoc.n_in_patch
         inlier_ratio = n_inliers / n_in_patch if n_in_patch > 0 else 0.0
         mean_quality = float(np.mean(assoc.qualities)) if assoc.qualities else 0.0
-        if n_inliers < self.min_inliers:
+        if n_in_patch < self.min_in_patch or n_inliers < self.min_inliers:
             fitness = 0.0
         elif not self.use_wilson:  # TEMP(fitness-simplify)
             fitness = inlier_ratio
@@ -710,6 +702,7 @@ class AlignmentFitness:
         line_angle_thresh_rad: float,
         line_min_overlap: float,
         wilson_z: float,
+        min_in_patch: int,
         min_inliers: int,
         patch_bounds: Optional[Tuple[float, float, float, float]] = None,
         use_wilson: bool = True,  # TEMP(fitness-simplify)
@@ -722,6 +715,7 @@ class AlignmentFitness:
             line_angle_thresh_rad=line_angle_thresh_rad,
             line_min_overlap=line_min_overlap,
             wilson_z=wilson_z,
+            min_in_patch=min_in_patch,
             min_inliers=min_inliers,
             patch_bounds=patch_bounds,
             use_wilson=use_wilson,

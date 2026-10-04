@@ -13,7 +13,8 @@ PARAMS = dict(
     line_angle_thresh_rad=np.deg2rad(5.0),
     line_min_overlap=0.25,
     wilson_z=2.576,
-    min_inliers=6,
+    min_in_patch=10,
+    min_inliers=0,
 )
 
 # Submap size that reproduces the runtime seen on real short-map-matching data.
@@ -128,7 +129,7 @@ class TestPoints:
         aerial = box_submap()
         aerial.append(PointPrimitive(id=2, point=np.array([10.0, 10.0])))
         ground = PrimitiveList([PointPrimitive(id=0, point=np.array([10.5, 10.0]))])
-        result = compute(aerial, ground, min_inliers=0)
+        result = compute(aerial, ground, min_in_patch=1)
         assert result.n_in_patch == 1
         assert result.inlier_pairs == [(0, 2)]
         assert result.mean_inlier_quality == pytest.approx(0.5)
@@ -137,14 +138,14 @@ class TestPoints:
         aerial = box_submap()
         aerial.append(PointPrimitive(id=2, point=np.array([10.0, 10.0])))
         ground = PrimitiveList([PointPrimitive(id=0, point=np.array([12.0, 10.0]))])
-        result = compute(aerial, ground, min_inliers=0)
+        result = compute(aerial, ground, min_in_patch=1)
         assert (result.n_in_patch, result.n_inliers) == (1, 0)
 
     def test_outside_patch_is_not_counted(self):
         aerial = box_submap()
         aerial.append(PointPrimitive(id=2, point=np.array([10.0, 10.0])))
         ground = PrimitiveList([PointPrimitive(id=0, point=np.array([100.0, 100.0]))])
-        result = compute(aerial, ground, min_inliers=0)
+        result = compute(aerial, ground, min_in_patch=1)
         assert (result.n_in_patch, result.n_inliers) == (0, 0)
 
     def test_nearest_aerial_point_wins(self):
@@ -152,21 +153,21 @@ class TestPoints:
         aerial.append(PointPrimitive(id=2, point=np.array([10.0, 10.0])))
         aerial.append(PointPrimitive(id=3, point=np.array([10.4, 10.0])))
         ground = PrimitiveList([PointPrimitive(id=0, point=np.array([10.5, 10.0]))])
-        assert compute(aerial, ground, min_inliers=0).inlier_pairs == [(0, 3)]
+        assert compute(aerial, ground, min_in_patch=1).inlier_pairs == [(0, 3)]
 
 
 class TestLines:
     def test_parallel_and_close_is_an_inlier(self):
         aerial = box_submap() + PrimitiveList([segment(2, [2.0, 10.0], [18.0, 10.0])])
         ground = PrimitiveList([segment(0, [4.0, 10.5], [16.0, 10.5])])
-        result = compute(aerial, ground, min_inliers=0)
+        result = compute(aerial, ground, min_in_patch=1)
         assert result.inlier_pairs == [(0, 2)]
 
     def test_angle_gate_rejects(self):
         aerial = box_submap() + PrimitiveList([segment(2, [2.0, 10.0], [18.0, 10.0])])
         d = np.array([np.cos(np.deg2rad(20.0)), np.sin(np.deg2rad(20.0))])
         ground = PrimitiveList([segment(0, [10.0, 10.2], [10.0, 10.2] + d * 8.0)])
-        result = compute(aerial, ground, min_inliers=0)
+        result = compute(aerial, ground, min_in_patch=1)
         assert (result.n_in_patch, result.n_inliers) == (1, 0)
 
     def test_reversed_direction_is_still_parallel(self):
@@ -174,12 +175,12 @@ class TestLines:
         [0, pi/2]."""
         aerial = box_submap() + PrimitiveList([segment(2, [2.0, 10.0], [18.0, 10.0])])
         ground = PrimitiveList([segment(0, [16.0, 10.5], [4.0, 10.5])])
-        assert compute(aerial, ground, min_inliers=0).inlier_pairs == [(0, 2)]
+        assert compute(aerial, ground, min_in_patch=1).inlier_pairs == [(0, 2)]
 
     def test_distance_gate_rejects(self):
         aerial = box_submap() + PrimitiveList([segment(2, [2.0, 10.0], [18.0, 10.0])])
         ground = PrimitiveList([segment(0, [4.0, 13.0], [16.0, 13.0])])
-        result = compute(aerial, ground, min_inliers=0)
+        result = compute(aerial, ground, min_in_patch=1)
         assert (result.n_in_patch, result.n_inliers) == (1, 0)
 
     def test_disjoint_collinear_lines_are_outliers(self):
@@ -189,7 +190,7 @@ class TestLines:
             [segment(2, [0.0, 10.0], [10.0, 10.0])]
         )
         ground = PrimitiveList([segment(0, [25.0, 10.0], [35.0, 10.0])])
-        result = compute(aerial, ground, min_inliers=0, line_min_overlap=0.0)
+        result = compute(aerial, ground, min_in_patch=1, line_min_overlap=0.0)
         assert (result.n_in_patch, result.n_inliers) == (1, 0)
 
     def test_extent_overlap_gate_rejects_barely_overlapping_lines(self):
@@ -197,15 +198,15 @@ class TestLines:
             [segment(2, [0.0, 10.0], [10.0, 10.0])]
         )
         ground = PrimitiveList([segment(0, [9.0, 10.0], [19.0, 10.0])])  # IoM = 0.1
-        assert compute(aerial, ground, min_inliers=0).n_inliers == 0
-        assert compute(aerial, ground, min_inliers=0, line_min_overlap=0.05).n_inliers == 1
+        assert compute(aerial, ground, min_in_patch=1).n_inliers == 0
+        assert compute(aerial, ground, min_in_patch=1, line_min_overlap=0.05).n_inliers == 1
 
     def test_overlap_is_intersection_over_minimum(self):
         """A short ground fragment lying fully alongside a long aerial road
         scores full overlap (IoM, not IoU)."""
         aerial = box_submap() + PrimitiveList([segment(2, [0.0, 10.0], [20.0, 10.0])])
         ground = PrimitiveList([segment(0, [9.0, 10.0], [11.0, 10.0])])
-        result = compute(aerial, ground, min_inliers=0)
+        result = compute(aerial, ground, min_in_patch=1)
         assert result.n_inliers == 1
         assert result.mean_inlier_quality == pytest.approx(1.0)
 
@@ -219,8 +220,8 @@ class TestLines:
         d = np.array([np.cos(np.deg2rad(1.0)), np.sin(np.deg2rad(1.0))])
         far = PrimitiveList([line(0, [0.0, 30.0], d)])
         near = PrimitiveList([line(0, [0.0, 10.5], d)])
-        assert compute(aerial, far, min_inliers=0).n_inliers == 0
-        assert compute(aerial, near, min_inliers=0).n_inliers == 1
+        assert compute(aerial, far, min_in_patch=1).n_inliers == 0
+        assert compute(aerial, near, min_in_patch=1).n_inliers == 1
 
     def test_ray_pointing_away_does_not_overlap(self):
         """A ray extends from its endpoint along +direction only, so a ray
@@ -230,8 +231,8 @@ class TestLines:
         )
         toward = PrimitiveList([ray(0, [30.0, 10.0], [-1.0, 0.0])])
         away = PrimitiveList([ray(0, [30.0, 10.0], [1.0, 0.0])])
-        assert compute(aerial, toward, min_inliers=0).n_inliers == 1
-        assert compute(aerial, away, min_inliers=0).n_inliers == 0
+        assert compute(aerial, toward, min_in_patch=1).n_inliers == 1
+        assert compute(aerial, away, min_in_patch=1).n_inliers == 0
 
 
 class TestFitnessValue:
@@ -241,17 +242,24 @@ class TestFitnessValue:
         row = lambda n: PrimitiveList(  # noqa: E731
             [PointPrimitive(id=i, point=np.array([float(i), 0.0])) for i in range(n)]
         )
-        f_few = compute(patch + row(1), row(1), min_inliers=0)
-        f_many = compute(patch + row(40), row(40), min_inliers=0)
+        f_few = compute(patch + row(1), row(1), min_in_patch=1)
+        f_many = compute(patch + row(40), row(40), min_in_patch=1)
         assert f_few.inlier_ratio == f_many.inlier_ratio == 1.0
         assert f_few.fitness < f_many.fitness < 1.0
+
+    def test_below_min_in_patch_scores_zero(self):
+        aerial = box_submap()
+        aerial.append(PointPrimitive(id=2, point=np.array([10.0, 10.0])))
+        ground = PrimitiveList([PointPrimitive(id=0, point=np.array([10.0, 10.0]))])
+        result = compute(aerial, ground, min_in_patch=10)
+        assert result.n_inliers == 1 and result.fitness == 0.0
 
     def test_below_min_inliers_scores_zero(self):
         aerial = box_submap()
         aerial.append(PointPrimitive(id=2, point=np.array([10.0, 10.0])))
         ground = PrimitiveList([PointPrimitive(id=0, point=np.array([10.0, 10.0]))])
-        result = compute(aerial, ground, min_inliers=10)
-        assert result.n_inliers == 1 and result.fitness == 0.0
+        assert compute(aerial, ground, min_in_patch=1, min_inliers=2).fitness == 0.0
+        assert compute(aerial, ground, min_in_patch=1, min_inliers=1).fitness > 0.0
 
     def test_empty_aerial_map_scores_zero(self):
         ground = PrimitiveList([PointPrimitive(id=0, point=np.array([0.0, 0.0]))])
@@ -344,7 +352,9 @@ class TestRefinement:
         aerial = box_submap()
         aerial.append(PointPrimitive(id=2, point=np.array([10.0, 10.0])))
         ground = PrimitiveList([PointPrimitive(id=0, point=np.array([10.4, 10.0]))])
-        refined = evaluator(aerial, ground, min_inliers=6).refine(np.eye(4))
+        refined = evaluator(aerial, ground, min_in_patch=1, min_inliers=6).refine(
+            np.eye(4)
+        )
         assert not refined.applied and refined.n_iterations == 0
         assert refined.fitness.n_inliers == 1
 
@@ -368,7 +378,8 @@ class TestRefinement:
         ground = PrimitiveList(
             [segment(0, [5.0, 0.6], [35.0, 0.6]), segment(1, [5.0, 20.6], [35.0, 20.6])]
         )
-        refined = evaluator(aerial, ground, min_inliers=2).refine(np.eye(4))
+        ev = evaluator(aerial, ground, min_in_patch=1, min_inliers=2)
+        refined = ev.refine(np.eye(4))
 
         assert refined.applied
         t = refined.T_aerial_ground[:2, -1]

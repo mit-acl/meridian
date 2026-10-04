@@ -11,7 +11,7 @@ class LangevinMatcherParams(ParamsBase):
 
     params_key: ClassVar[str] = "langevin"
 
-    n_particles: int = 1000
+    n_particles: int = 3000
     n_iter: int = 1000
     step_size: float = 1.0
     adagrad: bool = True
