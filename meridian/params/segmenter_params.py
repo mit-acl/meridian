@@ -123,7 +123,7 @@ class AerialSegmenterParams(SegmenterParamsBase):
     pixel_len_m: float = 0.01
     min_area: float = 0.01
     max_area: float = np.inf
-    downsample_factor: int = 5
+    downsample_factor: int = 1
 
     # SamAutomaticMaskGenerator knobs (used when model_type == "segment_anything").
     # None => use SAM's defaults; SAM defaults shown in comments.

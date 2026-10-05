@@ -1,4 +1,5 @@
 import io
+import logging
 import numpy as np
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import dataclass, field
@@ -27,7 +28,7 @@ from meridian.params import (
 from meridian.cross_view.place_recognition import CrossViewPlaceRecognition
 from meridian.vpr.vpr import check_frame_descriptors_match
 from meridian.pipeline.data import CrossViewLocalizationData
-from meridian.utils import expandvars_recursive
+from meridian.utils import expandvars_recursive, save_commit_hash, save_params
 from meridian.segmenter.aerial_segmenter import AerialSegmenter
 from meridian.map2d.segment_to_primitive import SegmentToPrimitiveConverter
 from meridian.map2d.aerial_patch_primitive_mapping import (
@@ -145,7 +146,6 @@ def _ground_viz_worker(
 ):
     """Render ground viz for one submap. Returns PNG bytes."""
     matplotlib.use("Agg")
-    import matplotlib.pyplot as plt
 
     fig, ax = viz_ground_segments(
         flattened_submap,
@@ -187,7 +187,6 @@ def _match_viz_worker(
 ):
     """Render match + pose viz for one ground-aerial pair. Returns list of (tag, bytes)."""
     matplotlib.use("Agg")
-    import matplotlib.pyplot as plt
 
     results = []
 
@@ -840,20 +839,11 @@ def cross_view_matching(
     aerial_patch_params = AerialPatchParams.load(params)
     ground_submap_params = GroundSubmapParams.load(params)
 
-    try:
-        pr_params = CrossViewPlaceRecognitionParams.load(params)
-    except Exception:
-        pr_params = None
-    if pr_params is None and pipeline_params.matching_mode == "vpr":
-        pr_params = CrossViewPlaceRecognitionParams()
-    descriptor_type = (
-        check_frame_descriptors_match(params, pr_params.comparison)
-        if pr_params is not None
-        else None
-    )
-    place_recognition = (
-        CrossViewPlaceRecognition(pr_params, descriptor_type) if pr_params else None
-    )
+    # A missing section loads defaults; real config errors should raise rather
+    # than silently produce aerial submaps without descriptors.
+    pr_params = CrossViewPlaceRecognitionParams.load(params)
+    descriptor_type = check_frame_descriptors_match(params)
+    place_recognition = CrossViewPlaceRecognition(pr_params, descriptor_type)
 
     aerial_segmenter = AerialSegmenter(AerialSegmenterParams.load(params))
     converter = SegmentToPrimitiveConverter(conversion_params)
@@ -921,8 +911,6 @@ def cross_view_matching(
     match_output_dir = os.path.join(output_dir, "match")
 
     # Save all params (including defaults) and commit hash
-    from meridian.utils import save_params, save_commit_hash
-
     all_params = [
         data_params,
         pipeline_params,
@@ -932,9 +920,8 @@ def cross_view_matching(
         primitive_match_params,
         algorithm.registerer.params,
         aerial_segmenter.params,
+        pr_params,
     ]
-    if pr_params is not None:
-        all_params.append(pr_params)
     save_params(output_dir, *all_params)
     save_commit_hash(output_dir)
 
@@ -1035,8 +1022,6 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     if args.debug:
-        import logging
-
         logging.basicConfig(
             level=logging.INFO, format="%(levelname)s:%(name)s:%(message)s"
         )

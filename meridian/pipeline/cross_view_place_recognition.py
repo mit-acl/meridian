@@ -486,7 +486,7 @@ def cross_view_place_recognition(
         pr_params = CrossViewPlaceRecognitionParams()
 
     pr_descriptor = CrossViewPlaceRecognition(
-        pr_params, check_frame_descriptors_match(params, pr_params.comparison, run=run)
+        pr_params, check_frame_descriptors_match(params, run=run)
     )
     sim_matrix, ground_keys, aerial_keys = pr_descriptor.compute_similarity_matrix(
         ground_submaps, aerial_submaps
