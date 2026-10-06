@@ -109,10 +109,9 @@ class CrossViewRPGOParams(ParamsBase):
     # both normalized per aerial-ground pair, or "fitness-norm" (fitness scaled
     # by lc_score_fitness_ref, so it stays comparable across submaps). The
     # fitness methods require RegisterParams.compute_fitness.
-    lc_score_method: str = "fitness-norm"
-    # Fitness mapping to a score of 1.0. Raw fitness tops out near 0.29, which
-    # sits far below CLIPPER's unit diagonal and collapses the densest clique.
-    lc_score_fitness_ref: float = 0.3
+    lc_score_method: str = "fitness-ratio"
+    # fitness-norm only: fitness mapping to a clamped score of 1.0. 
+    lc_score_fitness_ref: float = 0.35
     min_num_associations: int = 3
     min_num_associations_rerun: Optional[int] = None
 
