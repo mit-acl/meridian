@@ -38,7 +38,7 @@ class SegmenterParamsBase(ParamsBase):
     # Weights override; unset -> the third_party/vpr/weights bundle.
     vpr_ckpt: Optional[str] = "${VPR_CKPT}"
     vpr_fp16: bool = True  # fp16 for whichever frame descriptor is selected
-    anyloc_layer: int = 31 # DINOv2 block for AnyLoc vocabulary
+    anyloc_layer: int = 31  # DINOv2 block for AnyLoc vocabulary
 
     # SALAD params (used when frame_descriptor == "salad")
     salad_path: str = "${SALAD_PATH}"

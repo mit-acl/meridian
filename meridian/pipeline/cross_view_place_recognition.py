@@ -308,8 +308,19 @@ class CrossViewPlaceRecognitionPipeline:
         return float(np.sum(np.diff(np.r_[0.0, recall]) * precision))
 
     @staticmethod
-    def save_results(precision, recall, thresholds, y_true, sim_matrix, aps,
-                     first_ranks, recalls, k_config, output_dir, run=None):
+    def save_results(
+        precision,
+        recall,
+        thresholds,
+        y_true,
+        sim_matrix,
+        aps,
+        first_ranks,
+        recalls,
+        k_config,
+        output_dir,
+        run=None,
+    ):
         """Write similarity_matrix.npy, metrics.npz, the plots and results.yaml/.txt.
 
         Counts come off the same scored-pair mask the pooled curve uses, so the
@@ -327,23 +338,26 @@ class CrossViewPlaceRecognitionPipeline:
         results = {"run": run}
         # Recall at the configured k is the number matching actually depends on.
         results.update({f"recall@{k}": v for k, v in recalls.items()})
-        results.update({
-            "mean_average_precision": CrossViewPlaceRecognitionPipeline.mean_average_precision(
-                aps
-            ),
-            "k_nearest_neighbors": int(k_config),
-            "candidate_fraction": k_config / float(n_aerial) if n_aerial else
-            float("nan"),
-            "num_queries": int(aps.size),
-            "num_unrecoverable_queries": int(np.isinf(first_ranks).sum()),
-            "num_ground_submaps": int(y_true.shape[0]),
-            "num_aerial_patches": n_aerial,
-            "num_scored_pairs": n_scored,
-            "num_unscored_pairs": int(y_true.size - n_scored),
-            "num_positive_pairs": n_pos,
-            "pooled_pr_auc": auc,
-            "chance_pr_auc": n_pos / float(n_scored) if n_scored else float("nan"),
-        })
+        results.update(
+            {
+                "mean_average_precision": CrossViewPlaceRecognitionPipeline.mean_average_precision(
+                    aps
+                ),
+                "k_nearest_neighbors": int(k_config),
+                "candidate_fraction": k_config / float(n_aerial)
+                if n_aerial
+                else float("nan"),
+                "num_queries": int(aps.size),
+                "num_unrecoverable_queries": int(np.isinf(first_ranks).sum()),
+                "num_ground_submaps": int(y_true.shape[0]),
+                "num_aerial_patches": n_aerial,
+                "num_scored_pairs": n_scored,
+                "num_unscored_pairs": int(y_true.size - n_scored),
+                "num_positive_pairs": n_pos,
+                "pooled_pr_auc": auc,
+                "chance_pr_auc": n_pos / float(n_scored) if n_scored else float("nan"),
+            }
+        )
         with open(output_dir / "results.yaml", "w") as f:
             yaml.safe_dump(results, f, sort_keys=False)
 
@@ -370,14 +384,15 @@ class CrossViewPlaceRecognitionPipeline:
         if np.isfinite(vs).any():
             fig, ax = plt.subplots(figsize=(5, 5))
             ax.plot(ks, vs, marker="o", lw=1.5)
-            ax.axvline(k_config, color="gray", ls="--", lw=1,
-                       label=f"k = {k_config}")
+            ax.axvline(k_config, color="gray", ls="--", lw=1, label=f"k = {k_config}")
             ax.set_xscale("log")
             ax.set_xlabel("k (candidates kept per query)")
             ax.set_ylabel("recall@k")
             ax.set_ylim(0, 1.02)
-            ax.set_title(f"{run or 'place recognition'}  "
-                         f"R@{int(k_config)} = {recalls.get(int(k_config), float('nan')):.4f}")
+            ax.set_title(
+                f"{run or 'place recognition'}  "
+                f"R@{int(k_config)} = {recalls.get(int(k_config), float('nan')):.4f}"
+            )
             ax.legend(loc="lower right")
             fig.tight_layout()
             fig.savefig(output_dir / "recall_at_k.png", dpi=150)
@@ -386,8 +401,9 @@ class CrossViewPlaceRecognitionPipeline:
         if precision.size:
             fig, ax = plt.subplots(figsize=(5, 5))
             ax.plot(recall, precision, lw=1.5)
-            ax.axhline(results["chance_pr_auc"], color="gray", ls="--", lw=1,
-                       label="chance")
+            ax.axhline(
+                results["chance_pr_auc"], color="gray", ls="--", lw=1, label="chance"
+            )
             ax.set_xlabel("recall")
             ax.set_ylabel("precision")
             ax.set_xlim(0, 1)

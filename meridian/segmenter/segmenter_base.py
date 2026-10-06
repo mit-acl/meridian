@@ -405,9 +405,7 @@ class SegmenterBase:
         )
         return model_output_patches
 
-    def get_mask_features(
-        self, model_output_patches, masks, dino_frame_embedding=None
-    ):
+    def get_mask_features(self, model_output_patches, masks, dino_frame_embedding=None):
         """Normalized mean of the bilinearly upsampled DINO features within each mask.
 
         Upsampling is linear (F_up = Ry F Rx^T per channel), so the sum over mask M
@@ -515,7 +513,8 @@ class SegmenterBase:
                 ) from e
             path = os.path.join(
                 os.path.dirname(os.path.dirname(os.path.abspath(vpr.__file__))),
-                "weights", name,
+                "weights",
+                name,
             )
         if not os.path.exists(path):
             raise FileNotFoundError(

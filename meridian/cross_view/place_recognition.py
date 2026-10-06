@@ -55,9 +55,9 @@ class CrossViewPlaceRecognition:
         self._map_descriptors = np.vstack(
             [d for d in ground_map.descriptors if d is not None]
         )
-        self._map_positions = np.array(
-            [p[:3, 3] for p in ground_map.trajectory]
-        )[valid_mask]
+        self._map_positions = np.array([p[:3, 3] for p in ground_map.trajectory])[
+            valid_mask
+        ]
 
     def aerial_descriptor(
         self, aerial_submap, aerial_segmenter=None, img_bgr=None, crop=None
@@ -115,8 +115,7 @@ class CrossViewPlaceRecognition:
         else:
             raise ValueError(f"Unknown comparison: {self.comparison}")
 
-    def _stacked_frame_descriptors(self, submap_segments, center=None,
-                                   max_dist_m=None):
+    def _stacked_frame_descriptors(self, submap_segments, center=None, max_dist_m=None):
         """Stack cached frame descriptors for a ground submap. Works for every
         model -- frames hold whatever backend the segmenter ran.
 
@@ -164,8 +163,7 @@ class CrossViewPlaceRecognition:
         for fd, fp in zip(frame_descs, frame_pos):
             if (
                 last_pos is None
-                or np.linalg.norm(fp - last_pos)
-                >= self.params.ground_descriptor_dist_m
+                or np.linalg.norm(fp - last_pos) >= self.params.ground_descriptor_dist_m
             ):
                 stacked.append(fd)
                 last_pos = fp

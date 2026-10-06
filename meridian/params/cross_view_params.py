@@ -46,6 +46,7 @@ class CrossViewVisualizationParams(ParamsBase):
     estimated_trajectory_color: str = "#fa5ff7"  # light magenta
     gt_trajectory_color: str = "#89fe05"  # lime green
 
+
 # Values `frame_descriptor` accepts, on either segmenter.
 # Pooled from the segmenter's DINO patch features
 POOLED_DESCRIPTORS = ("dino-gap", "dino-gmp", "dino-gem")

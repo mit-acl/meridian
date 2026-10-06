@@ -329,7 +329,10 @@ class SegmentMappingData:
             # bag_t_range reads ROS recording timestamps from bag metadata, which
             # differ from header timestamps when ignore_ros_time=True. Use the
             # actual header timestamps from the first/last messages instead.
-            t0, tf = ImgData.topic_t0(bag_path, topic), ImgData.topic_tf(bag_path, topic)
+            t0, tf = (
+                ImgData.topic_t0(bag_path, topic),
+                ImgData.topic_tf(bag_path, topic),
+            )
         else:
             t0, tf = ImgData.bag_t_range(bag_path)
 

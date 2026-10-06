@@ -459,7 +459,7 @@ class Segmenter(SegmenterBase):
             .astype(np.float32)
             .astype(np.float64)
         )
-        v, u = np.mgrid[0:depth.shape[0]:s, 0:depth.shape[1]:s]
+        v, u = np.mgrid[0 : depth.shape[0] : s, 0 : depth.shape[1] : s]
         fx, fy = self.open3d_cam_intrinsics.get_focal_length()
         cx, cy = self.open3d_cam_intrinsics.get_principal_point()
         xyz = np.stack([(u - cx) * z / fx, (v - cy) * z / fy, z], axis=-1)
@@ -483,8 +483,7 @@ class Segmenter(SegmenterBase):
             keep_t = torch.from_numpy(keep_mask != 0).to(masks.device)
             intersection = (nonzero & keep_t).sum(dim=(1, 2))
             keep &= (
-                intersection
-                >= self.params.keep_mask_minimal_intersection * num_pixels
+                intersection >= self.params.keep_mask_minimal_intersection * num_pixels
             )
 
         return masks[keep].to(torch.uint8).cpu().numpy()
