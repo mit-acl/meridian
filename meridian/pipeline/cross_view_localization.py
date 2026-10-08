@@ -1007,13 +1007,9 @@ def cross_view_localization(
         primitive_match_params = PrimitiveMatchParams.load(params)
         primitive_match_params.dim = 2
 
-        try:
-            pr_params = CrossViewPlaceRecognitionParams.load(params)
-        except Exception:
-            pr_params = None
-        if pr_params is None and pipeline_params.matching_mode == "vpr":
-            pr_params = CrossViewPlaceRecognitionParams()
-        place_recognition = CrossViewPlaceRecognition(pr_params) if pr_params else None
+        place_recognition = CrossViewPlaceRecognition(
+            CrossViewPlaceRecognitionParams.load(params)
+        )
 
         algorithm = CrossViewMatching(
             pipeline_params=pipeline_params,

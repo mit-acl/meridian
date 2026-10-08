@@ -13,9 +13,8 @@ from meridian.pipeline.cross_view_matching import (
     CrossViewMatchingPipeline,
     cross_view_matching,
 )
-from meridian.params import CrossViewPlaceRecognitionParams
 from meridian.cross_view.place_recognition import CrossViewPlaceRecognition
-from meridian.vpr.vpr import check_frame_descriptors_match
+from meridian.params import CrossViewPlaceRecognitionParams
 
 logger = logging.getLogger(__name__)
 
@@ -496,13 +495,8 @@ def cross_view_place_recognition(
 
     gt_pose_data = PoseData.from_dict(data_params.gt_pose_data)
 
-    try:
-        pr_params = CrossViewPlaceRecognitionParams.load(params, run=run)
-    except FileNotFoundError:
-        pr_params = CrossViewPlaceRecognitionParams()
-
     pr_descriptor = CrossViewPlaceRecognition(
-        pr_params, check_frame_descriptors_match(params, run=run)
+        CrossViewPlaceRecognitionParams.load(params, run=run)
     )
     sim_matrix, ground_keys, aerial_keys = pr_descriptor.compute_similarity_matrix(
         ground_submaps, aerial_submaps
@@ -522,7 +516,7 @@ def cross_view_place_recognition(
     aps, first_ranks = pipeline.per_query(sim_matrix, y_true)
 
     # A k past the map size is the same operating point as keeping everything.
-    k_config = pr_params.k_nearest_neighbors
+    k_config = pr_descriptor.params.k_nearest_neighbors
     ks = sorted({k for k in (*RECALL_KS, k_config) if k <= len(aerial_keys)})
     recalls = pipeline.recall_at_k(first_ranks, ks)
 
