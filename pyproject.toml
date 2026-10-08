@@ -18,6 +18,7 @@ dependencies = [
     "open3d",
     "transformers",
     "numba",
+    "scikit-learn",
     "yolov7-package",
     "robotdatapy",
     "gdown",

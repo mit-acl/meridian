@@ -8,30 +8,21 @@ logger = logging.getLogger(__name__)
 
 
 class CrossViewPlaceRecognition:
-    """Descriptor computation and similarity for cross-view place recognition.
+    """Frame-descriptor place recognition between ground and aerial submaps.
 
-    `params.comparison` selects what is compared, not which model runs:
-    - "image": the segmenters' frame/crop descriptors, max cosine over the
-      submap's frame stack
-    - "semantic-point-line": segment cos_features (mean point + mean line),
-      plain cosine
+    A ground submap's descriptor is a stack of the segmenter's frame descriptors
+    (N, D); an aerial submap's is the aerial segmenter's crop descriptor (D,).
+    Similarity is the max cosine over the ground stack.
+
+    Submaps are tagged with the model (frame_descriptor type) behind their
+    descriptor; the type always comes from the data source (segmenter, ground
+    map, or a submap's tag), never from this class.
     """
 
-    def __init__(
-        self,
-        params: CrossViewPlaceRecognitionParams,
-        descriptor_type: str = None,
-    ):
-        if params.comparison == "image" and descriptor_type is None:
-            raise ValueError(
-                "cross_view_place_recognition.comparison='image' compares frame "
-                "descriptors, but frame_descriptor is unset."
-            )
+    def __init__(self, params: CrossViewPlaceRecognitionParams):
         self.params = params
-        self.comparison = params.comparison
-        self.descriptor_type = descriptor_type
 
-        # Frame cache for the image comparison; filled by precompute_ground_map_data.
+        # Frame cache for ground_descriptor; filled by precompute_ground_map_data.
         self._map_times = None
         self._map_descriptors = None
         self._map_positions = None
@@ -47,7 +38,6 @@ class CrossViewPlaceRecognition:
         self._map_times = self._map_descriptors = self._map_positions = None
         if ground_map.descriptors is None:
             return
-        self._check_source("Ground map", getattr(ground_map, "descriptor_type", None))
         valid_mask = np.array([d is not None for d in ground_map.descriptors])
         if not valid_mask.any():
             return
@@ -59,68 +49,13 @@ class CrossViewPlaceRecognition:
             valid_mask
         ]
 
-    def aerial_descriptor(
-        self, aerial_submap, aerial_segmenter=None, img_bgr=None, crop=None
-    ):
-        """Compute a descriptor for an aerial submap.
+    def ground_descriptor(self, submap_segments, center=None, max_dist_m=None):
+        """Stacked frame descriptors for a ground submap, from the cache filled by
+        precompute_ground_map_data. Works for every model -- frames hold whatever
+        backend the segmenter ran.
 
         Args:
-            aerial_submap: Submap with .segments (semantic-point-line)
-            aerial_segmenter: AerialSegmenter (required for "image")
-            img_bgr: BGR image (required for "image")
-            crop: (x1, y1, x2, y2) pixel crop (required for "image")
-
-        Returns:
-            np.ndarray descriptor, or None
-        """
-        if self.comparison == "image":
-            return aerial_segmenter.get_crop_descriptor(img_bgr, crop=crop)
-        elif self.comparison == "semantic-point-line":
-            return self._segment_cos_descriptor(aerial_submap.segments)
-        else:
-            raise ValueError(f"Unknown comparison: {self.comparison}")
-
-    def ground_descriptor(
-        self,
-        ground_submap,
-        submap_segments=None,
-        center=None,
-        max_dist_m=None,
-    ):
-        """Compute a descriptor for a ground submap.
-
-        Args:
-            ground_submap: Submap, or None if submap_segments is provided
-            submap_segments: segments for this submap. "image" takes
-                DenseSegments (time-window extraction); semantic-point-line a
-                PrimitiveList.
-            center: optional 3D submap center (odom frame)
-            max_dist_m: with ``center``, drops frames captured farther than
-                this from it
-
-        Returns:
-            np.ndarray descriptor, or None
-        """
-        if self.comparison == "image":
-            return self._stacked_frame_descriptors(
-                submap_segments, center=center, max_dist_m=max_dist_m
-            )
-        elif self.comparison == "semantic-point-line":
-            segments = (
-                submap_segments
-                if submap_segments is not None
-                else ground_submap.segments
-            )
-            return self._segment_cos_descriptor(segments)
-        else:
-            raise ValueError(f"Unknown comparison: {self.comparison}")
-
-    def _stacked_frame_descriptors(self, submap_segments, center=None, max_dist_m=None):
-        """Stack cached frame descriptors for a ground submap. Works for every
-        model -- frames hold whatever backend the segmenter ran.
-
-        Args:
-            submap_segments: segments with .first_seen/.last_seen
+            submap_segments: DenseSegments with .first_seen/.last_seen
             center: optional 3D submap center (odom frame)
             max_dist_m: with ``center``, drops frames captured farther than
                 this from it
@@ -170,42 +105,9 @@ class CrossViewPlaceRecognition:
 
         return np.vstack(stacked) if stacked else None
 
-    def _segment_cos_descriptor(self, segments):
-        """Mean-point + mean-line cosine features, L2-normalized.
-
-        Args:
-            segments: PrimitiveList
-
-        Returns:
-            np.ndarray of shape (2 * cos_feature_dim,), or None
-        """
-        point_features = [
-            seg.cos_feature
-            for seg in segments.get_points()
-            if seg.cos_feature is not None
-        ]
-        line_features = [
-            seg.cos_feature
-            for seg in segments.get_lines()
-            if seg.cos_feature is not None
-        ]
-        if not point_features and not line_features:
-            return None
-
-        dim = (point_features or line_features)[0].shape[0]
-        v1 = np.mean(point_features, axis=0) if point_features else np.zeros(dim)
-        v2 = np.mean(line_features, axis=0) if line_features else np.zeros(dim)
-        descriptor = np.concatenate([v1, v2])
-        norm = np.linalg.norm(descriptor)
-        if norm < 1e-12:
-            return None
-        return descriptor / norm
-
     def similarity(self, ground_desc, aerial_desc):
-        """Similarity between a ground and an aerial descriptor.
-
-        "image": max cosine over the ground frame stack (N, D) vs the
-        aerial (D,). semantic-point-line: plain cosine.
+        """Similarity between a ground and an aerial descriptor: max cosine over
+        the ground frame stack (N, D) vs the aerial (D,).
 
         Args:
             ground_desc: ground descriptor array
@@ -217,30 +119,21 @@ class CrossViewPlaceRecognition:
         if ground_desc is None or aerial_desc is None:
             return np.nan
 
-        if self.comparison == "image":
-            g = np.asarray(ground_desc, dtype=np.float32)
-            aerial_desc = np.asarray(aerial_desc, dtype=np.float32)
-            if g.ndim == 1:
-                g = g.reshape(1, -1)
-            g_norms = np.linalg.norm(g, axis=1, keepdims=True)
-            g_norms = np.where(g_norms < 1e-12, 1.0, g_norms)
-            g_norm = g / g_norms
+        g = np.asarray(ground_desc, dtype=np.float32)
+        aerial_desc = np.asarray(aerial_desc, dtype=np.float32)
+        if g.ndim == 1:
+            g = g.reshape(1, -1)
+        g_norms = np.linalg.norm(g, axis=1, keepdims=True)
+        g_norms = np.where(g_norms < 1e-12, 1.0, g_norms)
+        g_norm = g / g_norms
 
-            a_norm_val = np.linalg.norm(aerial_desc)
-            if a_norm_val < 1e-12:
-                return np.nan
-            a_norm = aerial_desc / a_norm_val
+        a_norm_val = np.linalg.norm(aerial_desc)
+        if a_norm_val < 1e-12:
+            return np.nan
+        a_norm = aerial_desc / a_norm_val
 
-            dots = g_norm @ a_norm
-            return float(np.max(dots))
-        elif self.comparison == "semantic-point-line":
-            g_norm_val = np.linalg.norm(ground_desc)
-            a_norm_val = np.linalg.norm(aerial_desc)
-            if g_norm_val < 1e-12 or a_norm_val < 1e-12:
-                return np.nan
-            return float(np.dot(ground_desc / g_norm_val, aerial_desc / a_norm_val))
-        else:
-            raise ValueError(f"Unknown comparison: {self.comparison}")
+        dots = g_norm @ a_norm
+        return float(np.max(dots))
 
     def compute_similarity_matrix(self, ground_submaps, aerial_submaps):
         """Pairwise `similarity` over precomputed submap.descriptor values.
@@ -257,13 +150,10 @@ class CrossViewPlaceRecognition:
         Raises:
             ValueError: either side's descriptors came from another model
         """
-        ground_tag = self._tag_of(ground_submaps)
-        aerial_tag = self._tag_of(aerial_submaps)
-        if None not in (ground_tag, aerial_tag) and ground_tag != aerial_tag:
-            raise ValueError(
-                f"Ground submap descriptors came from {ground_tag!r} and aerial "
-                f"from {aerial_tag!r}; rebuild one side."
-            )
+        self.check_descriptors_match(
+            ground=self.get_submaps_tag(ground_submaps),
+            aerial=self.get_submaps_tag(aerial_submaps),
+        )
 
         ground_keys = sorted(ground_submaps.keys(), key=lambda k: int(k))
         aerial_keys = sorted(aerial_submaps.keys())
@@ -278,41 +168,44 @@ class CrossViewPlaceRecognition:
 
         return sim_matrix, ground_keys, aerial_keys
 
-    @property
-    def submap_tag(self):
-        """What a submap descriptor is: the model for "image", else the comparison."""
-        return self.descriptor_type if self.comparison == "image" else self.comparison
-
-    def tag(self, submap):
-        """Record what made `submap.descriptor`, for the disk round trip."""
-        if submap.descriptor is None or self.submap_tag is None:
+    @staticmethod
+    def tag(submap, frame_descriptor):
+        """Record which model made `submap.descriptor`, for the disk round trip."""
+        if submap.descriptor is None or frame_descriptor is None:
             return
         if submap.metadata is None:
             submap.metadata = {}
-        submap.metadata["descriptor_type"] = self.submap_tag
-
-    def check_submaps(self, what, submaps):
-        """Raise if prebuilt `submaps` were made differently than this run's."""
-        self._check_source(what, self._tag_of(submaps), self.submap_tag)
+        submap.metadata["descriptor_type"] = frame_descriptor
 
     @staticmethod
-    def _tag_of(submaps):
-        """First stamped descriptor_type among `submaps`, or None if untagged."""
+    def get_tag(submap):
+        """The model `submap.descriptor` was tagged with, or None if untagged."""
+        if submap.descriptor is None or not submap.metadata:
+            return None
+        return submap.metadata.get("descriptor_type")
+
+    @classmethod
+    def get_submaps_tag(cls, submaps):
+        """First tagged model among `submaps` (dict of key -> Submap), or None."""
         for submap in submaps.values():
-            if submap.descriptor is not None and submap.metadata:
-                tag = submap.metadata.get("descriptor_type")
-                if tag is not None:
-                    return tag
+            tag = cls.get_tag(submap)
+            if tag is not None:
+                return tag
         return None
 
-    def _check_source(self, what, found, expected=None):
-        """Raise if `found` contradicts `expected` (default: the model). None = untagged."""
-        expected = self.descriptor_type if expected is None else expected
-        if found is None or expected is None:
+    @staticmethod
+    def check_descriptors_match(ground, aerial):
+        """Raise if the ground and aerial descriptor models are both known and differ.
+
+        Pipelines call this whenever they have both sources (segmenter params,
+        a ground map's descriptor_type, or prebuilt submaps' tags). None means
+        unknown (e.g. untagged submaps) and skips the check.
+        """
+        if ground is None or aerial is None or ground == aerial:
             return
-        if found != expected:
-            raise ValueError(
-                f"{what} descriptors came from {found!r} but this run uses "
-                f"{expected!r}. Rebuild them, or set frame_descriptor/comparison "
-                "to match."
-            )
+        raise ValueError(
+            f"Ground descriptors come from {ground!r} but aerial from {aerial!r}; "
+            "cross-view similarity between two different models is meaningless. "
+            "Rebuild one side, or set segmenter / aerial_segmenter frame_descriptor "
+            "to match."
+        )

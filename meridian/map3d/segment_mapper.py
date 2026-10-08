@@ -21,9 +21,11 @@ from robotdatapy.data.img_data import CameraParams
 
 from meridian.map3d.similarity_metrics import ChamferDistance
 from meridian.map3d.map_segment import MapSegment
-from meridian.map3d.observation import Observation
+from meridian.map3d.observation import FrameObservations, Observation
 from meridian.map3d.global_nearest_neighbor import global_nearest_neighbor
 from meridian.params.segment_mapping_params import SegmentMappingParams
+from meridian.params.cross_view_params import CrossViewPlaceRecognitionParams
+from meridian.cross_view.place_recognition import CrossViewPlaceRecognition
 from meridian.map3d.submap import FrameType, Submap
 from meridian.primitive.primitive_list import PrimitiveList
 from meridian.primitive.dense_segment import (
@@ -43,7 +45,7 @@ class SegmentMapper:
         params: SegmentMappingParams,
         camera_params: CameraParams,
         ground_submap_mapping=None,
-        place_recognition=None,
+        place_recognition_params: CrossViewPlaceRecognitionParams = None,
     ):
         self.params = params
         self.camera_params = camera_params
@@ -57,10 +59,13 @@ class SegmentMapper:
         self.poses_cam_history = []
         self.times_history = []
         self.frame_descriptors_history = []
+        # Model behind the frame descriptors, carried from FrameObservations to
+        # the submaps / segment map; not interpreted here.
+        self.frame_descriptor_type = None
 
         # Incremental 2D ground submap state
         self._ground_submap_mapping = ground_submap_mapping
-        self.place_recognition = place_recognition
+        self.place_recognition_params = place_recognition_params
         self._seg_ids_not_in_sm: List[int] = []
         self._seg_last_updated: Dict[int, float] = {}
         self._known_seg_ids: Set[int] = set()
@@ -70,16 +75,20 @@ class SegmentMapper:
         self._last_submap_time: float = -np.inf
         self._last_submap_comp_stats: Dict[str, float] = {}
 
-    def update(
-        self,
-        t: float,
-        pose: np.array,
-        observations: List[Observation],
-        frame_descriptor: np.ndarray,
-    ):
+    def update(self, frame: FrameObservations):
+        t, pose, observations = frame.time, frame.pose, frame.observations
         self.poses_cam_history.append(pose)
         self.times_history.append(t)
-        self.frame_descriptors_history.append(frame_descriptor)  # may be None
+        self.frame_descriptors_history.append(frame.frame_descriptor)  # may be None
+        if frame.frame_descriptor is not None:
+            if self.frame_descriptor_type is None:
+                self.frame_descriptor_type = frame.frame_descriptor_type
+            elif frame.frame_descriptor_type != self.frame_descriptor_type:
+                raise ValueError(
+                    f"Frame descriptor type changed mid-run from "
+                    f"{self.frame_descriptor_type!r} to "
+                    f"{frame.frame_descriptor_type!r}."
+                )
 
         if len(observations) == 0:  # nothing to update
             return
@@ -690,12 +699,9 @@ class SegmentMapper:
         if not dense_segments:
             return
 
-        # Attach place recognition descriptor (image comparison)
+        # Attach place recognition descriptor (stacked frame descriptors)
         submap_descriptor = None
-        if (
-            self.place_recognition is not None
-            and self.place_recognition.comparison == "image"
-        ):
+        if self.place_recognition_params is not None:
             _t0 = time.perf_counter()
             submap_descriptor = self._stacked_frame_descriptors_from_history(
                 dense_segments, center=center, max_dist_m=rad_m
@@ -711,6 +717,7 @@ class SegmentMapper:
             segment_frame=FrameType.CAMERA,
             descriptor=submap_descriptor,
         )
+        CrossViewPlaceRecognition.tag(submap_3d, self.frame_descriptor_type)
 
         # Transform segments to submap-local (camera) frame
         T_submap_odom = np.linalg.inv(submap_pose)
@@ -735,26 +742,6 @@ class SegmentMapper:
         )
         self._last_submap_comp_stats["convert_2d_total"] = time.perf_counter() - _t0
 
-        # Recompute descriptor for semantic-point-line
-        if (
-            self.place_recognition is not None
-            and self.place_recognition.comparison == "semantic-point-line"
-        ):
-            _t0 = time.perf_counter()
-            submap_2d = Submap(
-                id=submap_2d.id,
-                time=submap_2d.time,
-                segments=submap_2d.segments,
-                pose=submap_2d.pose,
-                segment_frame=submap_2d.segment_frame,
-                descriptor=self.place_recognition.ground_descriptor(
-                    None, submap_segments=submap_2d.segments
-                ),
-                camera_pose=submap_2d.camera_pose,
-                metadata=submap_2d.metadata,
-            )
-            self._last_submap_comp_stats["spl_descriptor"] = time.perf_counter() - _t0
-
         self.submaps_2d.append(submap_2d)
         self._submap_intermediates.append(intermediate)
         self._last_submap_time = submap_time
@@ -770,7 +757,7 @@ class SegmentMapper:
     def _stacked_frame_descriptors_from_history(
         self, submap_segments, center=None, max_dist_m=None
     ):
-        """CrossViewPlaceRecognition._stacked_frame_descriptors, but reading
+        """CrossViewPlaceRecognition.ground_descriptor, but reading
         the mapper's live history arrays instead of a precomputed cache."""
         seg_first = [s.first_seen for s in submap_segments if s.first_seen is not None]
         seg_last = [s.last_seen for s in submap_segments if s.last_seen is not None]
@@ -792,11 +779,7 @@ class SegmentMapper:
         # Filter history to time range, skipping None descriptors
         stacked = []
         last_pos = None
-        dist_thresh = (
-            self.place_recognition.params.ground_descriptor_dist_m
-            if self.place_recognition is not None
-            else 5.0
-        )
+        dist_thresh = self.place_recognition_params.ground_descriptor_dist_m
         for i, (t_i, desc_i) in enumerate(
             zip(self.times_history, self.frame_descriptors_history)
         ):

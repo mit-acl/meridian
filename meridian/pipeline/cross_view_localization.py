@@ -9,14 +9,17 @@ from typing import Dict, List, Optional, Tuple
 import cv2 as cv
 import matplotlib.pyplot as plt
 import numpy as np
+from robotdatapy.data import PoseData
 
 from meridian.cross_view.candidates import (
     LocalizationContext,
     build_candidates_from_match_result,
 )
+from meridian.cross_view.place_recognition import CrossViewPlaceRecognition
 from meridian.cross_view.rpgo import (
     CrossViewRPGO,
     CrossViewRPGOResult,
+    densify_trajectory,
     pose_data_from_trajectory,
     se2_from_xytheta,
     se2_to_se3,
@@ -24,7 +27,16 @@ from meridian.cross_view.rpgo import (
     yaw_from_se2,
 )
 from meridian.map3d.submap import Submap
-from meridian.params import CrossViewRPGOParams, CrossViewVisualizationParams
+from meridian.match.primitive_matcher import PrimitiveMatcher
+from meridian.params import (
+    AerialPatchParams,
+    CrossViewMatchingParams,
+    CrossViewPlaceRecognitionParams,
+    CrossViewRPGOParams,
+    CrossViewVisualizationParams,
+    PrimitiveMatchParams,
+    RegisterParams,
+)
 from meridian.pipeline.cross_view_matching import (
     CrossViewMatching,
     CrossViewMatchingPipeline,
@@ -33,7 +45,12 @@ from meridian.pipeline.cross_view_matching import (
 )
 from meridian.pipeline.data import CrossViewLocalizationData
 from meridian.pipeline.result import PoseEstimationResultMatrix
-from meridian.params.data_params import CrossViewLocalizationDataParams
+from meridian.params.data_params import (
+    CrossViewLocalizationDataParams,
+    SegmentMappingDataParams,
+)
+from meridian.register.registerer import Registerer2D
+from meridian.utils import save_params
 
 logger = logging.getLogger(__name__)
 
@@ -134,6 +151,7 @@ class CrossViewLocalization:
         save_viz: bool = True,
         match_trans_err_m: Optional[float] = None,
         match_rot_err_deg: Optional[float] = None,
+        dense_pose_data: Optional[PoseData] = None,
     ) -> Optional[CrossViewRPGOResult]:
         """Run the full localization pipeline.
 
@@ -147,6 +165,10 @@ class CrossViewLocalization:
             aerial_img: Optional aerial image for visualizations during rerun.
             main_output_dir: Top-level output dir, used to find ground dense
                 points when rerunning from a subdirectory.
+            dense_pose_data: Optional full-rate T_odom_camera odometry (the
+                source of the ground map trajectory). If given, the final 3D
+                solution is densified onto it and saved as
+                dense_trajectory_3d.csv next to the final results.
 
         Returns CrossViewRPGOResult, or None if localization fails.
         """
@@ -216,8 +238,20 @@ class CrossViewLocalization:
                 save_viz=save_viz,
             )
             if rerun_result is not None:
+                if dense_pose_data is not None:
+                    self._save_dense_trajectory(
+                        rerun_result,
+                        trajectory,
+                        dense_pose_data,
+                        data.T_camera_flu,
+                        output_dir / "rerun",
+                    )
                 return rerun_result
 
+        if dense_pose_data is not None:
+            self._save_dense_trajectory(
+                result, trajectory, dense_pose_data, data.T_camera_flu, output_dir
+            )
         return result
 
     # ------------------------------------------------------------------
@@ -589,11 +623,47 @@ class CrossViewLocalization:
         np.save(output_dir / "inlier_indices.npy", result.inlier_indices)
         with open(output_dir / "optimized_trajectory.pkl", "wb") as f:
             pickle.dump(result.optimized_trajectory, f)
+        if result.optimized_trajectory_3d is not None:
+            with open(output_dir / "optimized_trajectory_3d.pkl", "wb") as f:
+                pickle.dump(result.optimized_trajectory_3d, f)
         logger.info(
             f"Saved T_utm_odom, {len(result.candidates)} candidates, "
             f"{len(result.inlier_indices)} inliers, "
             f"optimized_trajectory to {output_dir}"
         )
+
+    @staticmethod
+    def _save_dense_trajectory(
+        result: CrossViewRPGOResult,
+        trajectory: List[np.ndarray],
+        dense_pose_data: PoseData,
+        T_camera_flu: Optional[np.ndarray],
+        output_dir: pathlib.Path,
+    ):
+        """Densify the 3D solution onto full-rate odometry and save it as a
+        robotdatapy CSV of T_utm_body poses (dense_trajectory_3d.csv).
+
+        Args:
+            result: Solve result with optimized_trajectory_3d and times.
+            trajectory: 4x4 T_odom_camera odometry at the solution's nodes.
+            dense_pose_data: Full-rate T_odom_camera odometry.
+            T_camera_flu: Optional 4x4 transform from camera to FLU body frame.
+            output_dir: Directory to write dense_trajectory_3d.csv to.
+        """
+        if result.optimized_trajectory_3d is None:
+            logger.warning("No 3D trajectory in result; skipping dense trajectory.")
+            return
+        dense_poses = densify_trajectory(
+            result.times,
+            result.optimized_trajectory_3d,
+            trajectory,
+            dense_pose_data.times,
+            dense_pose_data.all_poses(),
+            T_camera_flu,
+        )
+        path = pathlib.Path(output_dir) / "dense_trajectory_3d.csv"
+        PoseData.from_times_and_poses(dense_pose_data.times, dense_poses).to_csv(path)
+        logger.info(f"Saved {len(dense_poses)} dense 3D poses to {path}")
 
     @staticmethod
     def _visualize_and_report(
@@ -920,15 +990,11 @@ def cross_view_localization(
     _maybe_resolve_ground_map_path(data_params, ground_dir)
     data = CrossViewLocalizationData.from_params(data_params)
 
-    from meridian.params import CrossViewMatchingParams as _CVMatchParams
-
-    _matching_params = _CVMatchParams.load(params)
+    _matching_params = CrossViewMatchingParams.load(params)
     match_trans_err_m = _matching_params.match_trans_err_m
     match_rot_err_deg = _matching_params.match_rot_err_deg
 
     # Save localization params (merges with matching params already in params.txt)
-    from meridian.utils import save_params
-
     save_params(output_dir, rpgo_params, data_params)
 
     # Build pipeline + load submaps for rerun if enabled
@@ -936,29 +1002,14 @@ def cross_view_localization(
     aerial_submaps = None
     ground_submaps = None
     if rpgo_params.rerun_match_with_known_rot:
-        from meridian.params import (
-            PrimitiveMatchParams,
-            CrossViewMatchingParams,
-            CrossViewPlaceRecognitionParams,
-            AerialPatchParams,
-            RegisterParams,
-        )
-        from meridian.cross_view.place_recognition import CrossViewPlaceRecognition
-        from meridian.match.primitive_matcher import PrimitiveMatcher
-        from meridian.register.registerer import Registerer2D
-
         pipeline_params = CrossViewMatchingParams.load(params)
         aerial_patch_params = AerialPatchParams.load(params)
         primitive_match_params = PrimitiveMatchParams.load(params)
         primitive_match_params.dim = 2
 
-        try:
-            pr_params = CrossViewPlaceRecognitionParams.load(params)
-        except Exception:
-            pr_params = None
-        if pr_params is None and pipeline_params.matching_mode == "vpr":
-            pr_params = CrossViewPlaceRecognitionParams()
-        place_recognition = CrossViewPlaceRecognition(pr_params) if pr_params else None
+        place_recognition = CrossViewPlaceRecognition(
+            CrossViewPlaceRecognitionParams.load(params)
+        )
 
         algorithm = CrossViewMatching(
             pipeline_params=pipeline_params,
@@ -978,6 +1029,18 @@ def cross_view_localization(
         aerial_submaps = pipeline.load_submaps_from_dir(aerial_seg_dir)
         ground_submaps = pipeline.load_submaps_from_dir(ground_seg_dir)
 
+    # Full-rate odometry (what the ground map trajectory was sampled from), used
+    # to save a dense 3D trajectory
+    camera_pose_data_params = SegmentMappingDataParams.load(params).camera_pose_data
+    if camera_pose_data_params:
+        dense_pose_data = PoseData.from_dict(camera_pose_data_params)
+    else:
+        dense_pose_data = None
+        logger.info(
+            "No segment_mapping_data.camera_pose_data in params; "
+            "skipping dense 3D trajectory output."
+        )
+
     viz_params = CrossViewVisualizationParams.load(params)
     runner = CrossViewLocalization(rpgo_params=rpgo_params, viz_params=viz_params)
     loc_output_dir = os.path.join(output_dir, "localization")
@@ -993,6 +1056,7 @@ def cross_view_localization(
         save_viz=save_viz,
         match_trans_err_m=match_trans_err_m,
         match_rot_err_deg=match_rot_err_deg,
+        dense_pose_data=dense_pose_data,
     )
     return result
 
