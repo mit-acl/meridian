@@ -5,7 +5,12 @@ from typing import List, Optional, Tuple
 import clipperpy
 import gtsam
 import numpy as np
+import scipy.sparse as sp
+import scipy.sparse.linalg as spla
+from robotdatapy.data import PoseData
+from scipy.spatial import cKDTree
 from scipy.spatial.transform import Rotation as Rot
+from scipy.spatial.transform import Slerp
 
 from meridian.params.cross_view_params import CrossViewRPGOParams
 
@@ -64,8 +69,6 @@ def pose_data_from_trajectory(trajectory: List[np.ndarray], times: np.ndarray):
     Returns a PoseData with interpolation enabled and infinite time tolerance
     so it can be queried at any time.
     """
-    from robotdatapy.data import PoseData
-
     positions = np.array([T[:3, 3] for T in trajectory])
     quats = Rot.from_matrix([T[:3, :3] for T in trajectory]).as_quat()  # xyzw
     return PoseData(
@@ -78,6 +81,86 @@ def pose_data_from_trajectory(trajectory: List[np.ndarray], times: np.ndarray):
 
 
 # ---------------------------------------------------------------------------
+# 3D lift and densification helpers
+# ---------------------------------------------------------------------------
+
+# Anchor sigma (rad / m) fixing the first node's roll, pitch and height
+_LIFT_ANCHOR_SIGMA = 1e-3
+
+
+def cross_path_pairs(
+    xy: np.ndarray, dist_m: float, min_path_dist_m: float
+) -> np.ndarray:
+    """Index pairs (i, j), i < j, of trajectory nodes within dist_m of each other
+    in 2D that are at least min_path_dist_m apart along the path (revisits, not
+    neighbours along the same pass). Each node j keeps only its nearest such
+    earlier node i, so there are at most len(xy) pairs. Returns shape (k, 2)."""
+    if len(xy) < 2:
+        return np.zeros((0, 2), dtype=int)
+    pairs = cKDTree(xy).query_pairs(dist_m, output_type="ndarray")
+    if len(pairs) == 0:
+        return np.zeros((0, 2), dtype=int)
+    path_s = np.concatenate(
+        [[0.0], np.cumsum(np.linalg.norm(np.diff(xy, axis=0), axis=1))]
+    )
+    pairs = np.sort(pairs, axis=1)
+    pairs = pairs[path_s[pairs[:, 1]] - path_s[pairs[:, 0]] >= min_path_dist_m]
+    if len(pairs) == 0:
+        return np.zeros((0, 2), dtype=int)
+    dist = np.linalg.norm(xy[pairs[:, 0]] - xy[pairs[:, 1]], axis=1)
+    pairs = pairs[np.argsort(dist, kind="stable")]
+    _, first = np.unique(pairs[:, 1], return_index=True)
+    return pairs[np.sort(first)]
+
+
+def densify_trajectory(
+    node_times: np.ndarray,
+    node_T_utm_body: List[np.ndarray],
+    node_T_odom_cam: List[np.ndarray],
+    dense_times: np.ndarray,
+    dense_T_odom_cam: np.ndarray,
+    T_camera_flu: Optional[np.ndarray] = None,
+) -> np.ndarray:
+    """Dense T_utm_body for high-rate odometry, from an optimized node trajectory.
+
+    At each node the correction C = T_utm_body @ inv(T_odom_body) is known. It
+    is interpolated between nodes (lerp translation, slerp rotation; held
+    constant outside the node time range) and applied to the dense odometry:
+    T_utm_body(t) = C(t) @ T_odom_cam(t) @ T_camera_flu. Exact at node times;
+    between nodes it keeps the odometry's high-rate motion.
+
+    Args:
+        node_times: (n,) times of the optimized nodes.
+        node_T_utm_body: n optimized 4x4 T_utm_body poses.
+        node_T_odom_cam: n 4x4 T_odom_cam odometry poses at the nodes.
+        dense_times: (m,) times of the dense odometry.
+        dense_T_odom_cam: (m, 4, 4) dense T_odom_cam odometry poses.
+        T_camera_flu: Optional 4x4 transform from camera to FLU body frame.
+
+    Returns:
+        (m, 4, 4) dense T_utm_body poses.
+    """
+    T_cb = np.eye(4) if T_camera_flu is None else T_camera_flu
+    node_times = np.asarray(node_times)
+    node_T_odom_body = np.asarray(node_T_odom_cam) @ T_cb
+    C = np.asarray(node_T_utm_body) @ np.linalg.inv(node_T_odom_body)
+
+    order = np.argsort(node_times)
+    node_times, C = node_times[order], C[order]
+    C_dense = np.tile(np.eye(4), (len(dense_times), 1, 1))
+    for k in range(3):
+        C_dense[:, k, 3] = np.interp(dense_times, node_times, C[:, k, 3])
+    if len(node_times) > 1:
+        slerp = Slerp(node_times, Rot.from_matrix(C[:, :3, :3]))
+        C_dense[:, :3, :3] = slerp(
+            np.clip(dense_times, node_times[0], node_times[-1])
+        ).as_matrix()
+    else:
+        C_dense[:, :3, :3] = C[0, :3, :3]
+    return C_dense @ np.asarray(dense_T_odom_cam) @ T_cb
+
+
+# ---------------------------------------------------------------------------
 # Result dataclass
 # ---------------------------------------------------------------------------
 
@@ -87,6 +170,8 @@ class CrossViewRPGOResult:
     success: bool
     T_utm_odom: Optional[np.ndarray] = None
     optimized_trajectory: Optional[List[np.ndarray]] = None
+    # optimized_trajectory lifted to 3D (heights, roll/pitch); see lift_to_3d
+    optimized_trajectory_3d: Optional[List[np.ndarray]] = None
     times: Optional[np.ndarray] = None
     inlier_indices: np.ndarray = field(default_factory=lambda: np.array([]))
     M: Optional[np.ndarray] = None
@@ -254,10 +339,15 @@ class CrossViewRPGO:
                 T_utm_odom, trajectory, T_camera_flu
             )
 
+        optimized_trajectory_3d = self.lift_to_3d(
+            optimized_trajectory, trajectory, T_camera_flu
+        )
+
         return CrossViewRPGOResult(
             success=True,
             T_utm_odom=T_utm_odom,
             optimized_trajectory=optimized_trajectory,
+            optimized_trajectory_3d=optimized_trajectory_3d,
             times=np.asarray(times),
             inlier_indices=inlier_indices,
             M=M,
@@ -634,3 +724,220 @@ class CrossViewRPGO:
             optimized.append(T_utm_body)
 
         return optimized
+
+    def lift_to_3d(
+        self,
+        optimized_trajectory: List[np.ndarray],
+        trajectory: List[np.ndarray],
+        T_camera_flu: Optional[np.ndarray],
+    ) -> List[np.ndarray]:
+        """Lift the 2D solution to full 3D T_utm_body poses.
+
+        x, y and yaw come from the 2D solution; roll and pitch start from the
+        odometry. Heights are solved first as a 1D least-squares problem
+        (odometry height increments, equal heights at cross-path revisits, and
+        the first node's odometry height as anchor). If lift_3d_refine_rotation
+        is set, a Pose3 graph then refines all poses (correcting roll/pitch
+        drift in the odometry) with full 3D odometry between factors, x/y/yaw
+        priors from the 2D solution, and the cross-path height constraints.
+
+        Args:
+            optimized_trajectory: 2D solution as 4x4 T_utm_body (x, y, yaw used).
+            trajectory: 4x4 T_odom_camera odometry poses at the same nodes.
+            T_camera_flu: Optional 4x4 transform from camera to FLU body frame.
+
+        Returns:
+            List of 4x4 T_utm_body poses with heights and roll/pitch.
+        """
+        n = len(trajectory)
+        T_cb = np.eye(4) if T_camera_flu is None else T_camera_flu
+        T_odom_body = np.array([T @ T_cb for T in trajectory])
+        T_2d = np.array(optimized_trajectory)
+        xy = T_2d[:, :2, 3]
+        yaw_2d = np.arctan2(T_2d[:, 1, 0], T_2d[:, 0, 0])
+        yaw_odom = np.arctan2(T_odom_body[:, 1, 0], T_odom_body[:, 0, 0])
+
+        pairs = cross_path_pairs(
+            xy,
+            self.params.cross_paths_3d_constraint_dist_m,
+            self.params.cross_paths_3d_constraint_path_dist_m,
+        )
+        logger.info(f"3D lift: {n} nodes, {len(pairs)} cross-path height constraints")
+
+        z = self._solve_heights(T_odom_body[:, 2, 3], pairs)
+
+        # Initial 3D poses: rotate odometry attitude about world z to the 2D yaw
+        # (keeps the odometry's roll/pitch), 2D x/y, solved heights.
+        lifted = np.tile(np.eye(4), (n, 1, 1))
+        lifted[:, :3, :3] = (
+            Rot.from_euler("z", (yaw_2d - yaw_odom)[:, None]).as_matrix()
+            @ T_odom_body[:, :3, :3]
+        )
+        lifted[:, :2, 3] = xy
+        lifted[:, 2, 3] = z
+
+        if self.params.lift_3d_refine_rotation and n > 1:
+            lifted = self._refine_3d(lifted, T_odom_body, xy, pairs)
+        return list(lifted)
+
+    def _solve_heights(self, z_odom: np.ndarray, pairs: np.ndarray) -> np.ndarray:
+        """Weighted linear least squares for node heights."""
+        n = len(z_odom)
+        if n == 1:
+            return z_odom.copy()
+        w_odom = 1.0 / self.params.odom_trans_sigma_m
+        w_pair = 1.0 / self.params.cross_paths_3d_constraint_sigma_m
+        w_anchor = 1e3
+
+        idx = np.arange(n - 1)
+        rows = np.concatenate([[0], 1 + np.repeat(idx, 2)])
+        cols = np.concatenate([[0], np.stack([idx, idx + 1], 1).ravel()])
+        vals = np.concatenate([[w_anchor], np.tile([-w_odom, w_odom], n - 1)])
+        b = np.concatenate([[w_anchor * z_odom[0]], w_odom * np.diff(z_odom)])
+        if len(pairs):
+            r0 = n
+            prow = r0 + np.repeat(np.arange(len(pairs)), 2)
+            rows = np.concatenate([rows, prow])
+            cols = np.concatenate([cols, pairs.ravel()])
+            vals = np.concatenate([vals, np.tile([w_pair, -w_pair], len(pairs))])
+            b = np.concatenate([b, np.zeros(len(pairs))])
+        A = sp.csr_matrix((vals, (rows, cols)), shape=(len(b), n))
+        return spla.spsolve((A.T @ A).tocsc(), A.T @ b)
+
+    def _refine_3d(
+        self,
+        lifted: np.ndarray,
+        T_odom_body: np.ndarray,
+        xy: np.ndarray,
+        pairs: np.ndarray,
+        max_iterations: int = 50,
+    ) -> np.ndarray:
+        """Pose3 graph refining the lifted poses (see lift_to_3d).
+
+        Factors: 3D odometry between consecutive poses; x, y, yaw priors from the
+        2D solution; equal world-frame height for cross-path pairs; and an anchor
+        on the first pose's roll, pitch and height (the gauge the other factors
+        leave free).
+
+        Solved with Levenberg-Marquardt on SE(3) in numpy/scipy rather than
+        GTSAM: the height and yaw factors need Python CustomFactors, which GTSAM
+        evaluates under the GIL from its worker threads (~100x slower here), and
+        built-in-only reformulations were poorly conditioned.
+        """
+        n = len(lifted)
+        R = lifted[:, :3, :3].copy()
+        t = lifted[:, :3, 3].copy()
+        yaw_prior = np.arctan2(R[:, 1, 0], R[:, 0, 0])
+        R0_anchor, z0_anchor = R[0].copy(), t[0, 2]
+        T_rel = np.linalg.inv(T_odom_body[:-1]) @ T_odom_body[1:]
+        Rm, tm = T_rel[:, :3, :3], T_rel[:, :3, 3]
+        w_rot = 1.0 / self.params.odom_rot_sigma_rad
+        w_tran = 1.0 / self.params.odom_trans_sigma_m
+        w_xy = 1.0 / self.params.lift_3d_prior_xy_sigma_m
+        w_yaw = 1.0 / self.params.lift_3d_prior_yaw_sigma_rad
+        w_h = 1.0 / self.params.cross_paths_3d_constraint_sigma_m
+        w_anchor = 1.0 / _LIFT_ANCHOR_SIGMA
+        i0, i1 = np.arange(n - 1), np.arange(1, n)
+        eye3 = np.broadcast_to(np.eye(3), (n - 1, 3, 3))
+
+        def residuals(R, t):
+            E = np.swapaxes(Rm, 1, 2) @ np.swapaxes(R[i0], 1, 2) @ R[i1]
+            dt = t[i1] - t[i0]
+            yaw = np.arctan2(R[:, 1, 0], R[:, 0, 0])
+            r_anchor = Rot.from_matrix(R0_anchor.T @ R[0]).as_rotvec()[:2]
+            return np.concatenate(
+                [
+                    w_rot * Rot.from_matrix(E).as_rotvec().ravel(),
+                    w_tran * (np.einsum("nji,nj->ni", R[i0], dt) - tm).ravel(),
+                    w_xy * (t[:, :2] - xy).ravel(),
+                    w_yaw * ((yaw - yaw_prior + np.pi) % (2 * np.pi) - np.pi),
+                    w_h * (t[pairs[:, 0], 2] - t[pairs[:, 1], 2]),
+                    w_anchor * np.r_[r_anchor, t[0, 2] - z0_anchor],
+                ]
+            )
+
+        def jacobian(R, t):
+            # Right perturbations: R <- R Exp(dtheta), t <- t + R dt; node k's
+            # tangent occupies columns 6k:6k+3 (dtheta) and 6k+3:6k+6 (dt).
+            rows, cols, vals = [], [], []
+
+            def block(r0, node, c_off, M):
+                # M: (m, a, b) blocks placed at rows r0 + a*m, cols 6*node + c_off
+                m, a, b = M.shape
+                rr = r0[:, None, None] + np.arange(a)[None, :, None]
+                cc = 6 * node[:, None, None] + c_off + np.arange(b)[None, None, :]
+                rows.append(np.broadcast_to(rr, M.shape).ravel())
+                cols.append(np.broadcast_to(cc, M.shape).ravel())
+                vals.append(M.ravel())
+
+            r = 0
+            # odometry rotation residual Log(Rm^T Ri^T Rj)
+            rr = r + 3 * i0
+            block(rr, i0, 0, -w_rot * np.swapaxes(R[i1], 1, 2) @ R[i0])
+            block(rr, i1, 0, w_rot * eye3)
+            r += 3 * (n - 1)
+            # odometry translation residual Ri^T (tj - ti) - tm
+            rr = r + 3 * i0
+            dt_body = np.einsum("nji,nj->ni", R[i0], t[i1] - t[i0])
+            skew = np.zeros((n - 1, 3, 3))
+            skew[:, 0, 1], skew[:, 0, 2] = -dt_body[:, 2], dt_body[:, 1]
+            skew[:, 1, 0], skew[:, 1, 2] = dt_body[:, 2], -dt_body[:, 0]
+            skew[:, 2, 0], skew[:, 2, 1] = -dt_body[:, 1], dt_body[:, 0]
+            block(rr, i0, 0, w_tran * skew)
+            block(rr, i0, 3, -w_tran * eye3)
+            block(rr, i1, 3, w_tran * np.swapaxes(R[i0], 1, 2) @ R[i1])
+            r += 3 * (n - 1)
+            # x, y priors
+            nodes = np.arange(n)
+            block(r + 2 * nodes, nodes, 3, w_xy * R[:, :2, :])
+            r += 2 * n
+            # yaw prior: d atan2(R10, R00) / d dtheta
+            d = R[:, 0, 0] ** 2 + R[:, 1, 0] ** 2
+            J_yaw = np.zeros((n, 1, 3))
+            J_yaw[:, 0, 1] = (R[:, 1, 0] * R[:, 0, 2] - R[:, 0, 0] * R[:, 1, 2]) / d
+            J_yaw[:, 0, 2] = (R[:, 0, 0] * R[:, 1, 1] - R[:, 1, 0] * R[:, 0, 1]) / d
+            block(r + nodes, nodes, 0, w_yaw * J_yaw)
+            r += n
+            # cross-path equal heights
+            if len(pairs):
+                pr = r + np.arange(len(pairs))
+                block(pr, pairs[:, 0], 3, w_h * R[pairs[:, 0], 2:3, :])
+                block(pr, pairs[:, 1], 3, -w_h * R[pairs[:, 1], 2:3, :])
+                r += len(pairs)
+            # anchor: first node roll/pitch (local rotation x, y) and height
+            block(np.array([r]), np.array([0]), 0, w_anchor * np.eye(3)[None, :2, :])
+            block(np.array([r + 2]), np.array([0]), 3, w_anchor * R[0:1, 2:3, :])
+            r += 3
+            return sp.csr_matrix(
+                (np.concatenate(vals), (np.concatenate(rows), np.concatenate(cols))),
+                shape=(r, 6 * n),
+            )
+
+        res = residuals(R, t)
+        cost = res @ res
+        lam = 1e-4
+        for _ in range(max_iterations):
+            J = jacobian(R, t)
+            H = (J.T @ J).tocsc()
+            g = J.T @ res
+            while True:
+                damp = sp.diags(lam * (H.diagonal() + 1e-9))
+                delta = spla.spsolve(H + damp, -g).reshape(n, 6)
+                R_new = R @ Rot.from_rotvec(delta[:, :3]).as_matrix()
+                t_new = t + np.einsum("nij,nj->ni", R, delta[:, 3:])
+                res_new = residuals(R_new, t_new)
+                cost_new = res_new @ res_new
+                if cost_new < cost or lam > 1e8:
+                    break
+                lam *= 10
+            if cost_new >= cost:
+                break
+            converged = cost - cost_new < 1e-9 * cost
+            R, t, res, cost = R_new, t_new, res_new, cost_new
+            lam = max(lam / 10, 1e-12)
+            if converged:
+                break
+
+        out = np.tile(np.eye(4), (n, 1, 1))
+        out[:, :3, :3], out[:, :3, 3] = R, t
+        return out
