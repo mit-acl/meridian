@@ -71,6 +71,7 @@ from meridian.params import (
     SegmentToPrimitiveConversionParams,
     SegmenterParams,
 )
+from meridian.params.params_checks import require_frame_descriptor
 from meridian.pipeline.cross_view_localization import (
     CrossViewLocalization,
     context_from_data,
@@ -200,18 +201,18 @@ class CrossViewIncremental:
             )
 
             t_seg_start = time.time()
-            observations, frame_descriptor = self.segmenter.segment(
+            frame = self.segmenter.segment(
                 img,
                 img_t,
                 pose,
                 depth,
                 compute_frame_descriptor=should_compute_descriptor,
             )
-            if frame_descriptor is not None:
+            if frame.frame_descriptor is not None:
                 self._last_descriptor_position = position.copy()
 
             t_map_start = time.time()
-            self.mapper.update(img_t, pose, observations, frame_descriptor)
+            self.mapper.update(frame)
 
             t_submap_start = time.time()
             self.mapper.process_submaps_2d(img_t, pose)
@@ -501,9 +502,7 @@ class CrossViewIncremental:
             trajectory=self.mapper.poses_cam_history,
             times=self.mapper.times_history,
             descriptors=descriptors,
-            descriptor_type=(
-                self.segmenter.frame_descriptor_type if descriptors else None
-            ),
+            descriptor_type=self.mapper.frame_descriptor_type if descriptors else None,
         )
         segment_map.save(str(out / "segment_map.pkl"))
 
@@ -907,10 +906,9 @@ def cross_view_incremental(
     except Exception:
         viz_params = CrossViewVisualizationParams()
 
+    require_frame_descriptor(segmenter_params)
     pr_params = CrossViewPlaceRecognitionParams.load(params_path, run=run)
-    place_recognition = CrossViewPlaceRecognition(
-        pr_params, segmenter_params.frame_descriptor
-    )
+    place_recognition = CrossViewPlaceRecognition(pr_params)
 
     os.makedirs(output_dir, exist_ok=True)
 
@@ -933,7 +931,10 @@ def cross_view_incremental(
     aerial_submaps = matching_pipeline.load_submaps_from_dir(aerial_seg_dir)
     if not aerial_submaps:
         raise ValueError(f"No aerial submaps found in {aerial_seg_dir}")
-    place_recognition.check_submaps("Aerial submaps", aerial_submaps)
+    CrossViewPlaceRecognition.check_descriptors_match(
+        ground=segmenter_params.frame_descriptor,
+        aerial=CrossViewPlaceRecognition.get_submaps_tag(aerial_submaps),
+    )
 
     print("Loading bag time range...")
     bag_t_range = SegmentMappingData.get_bag_time_range(mapping_data_params)
@@ -976,7 +977,7 @@ def cross_view_incremental(
         mapping_params,
         camera_params,
         ground_submap_mapping=ground_submap_mapping,
-        place_recognition=place_recognition,
+        place_recognition_params=pr_params,
     )
 
     loc = IncrementalLocalization(
@@ -1023,7 +1024,7 @@ def cross_view_incremental(
         incremental_params,
         loc_data_params,
         viz_params,
-        pr_params,
+        place_recognition.params,
     ]
     save_params(output_dir, *all_params)
     save_commit_hash(output_dir)
