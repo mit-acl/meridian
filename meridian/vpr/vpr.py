@@ -6,16 +6,15 @@ in, L2-normalized descriptor out.
     MeridianVprPipeline  trained NetVLAD head from `vpr`; two towers, so ground
                          and aerial crops go through different weights
 """
+
 from __future__ import annotations
 
-import os
 from pathlib import Path
 
 import numpy as np
 import torch
 import torch.hub  # stop torch.hub's GitHub check from hanging when offline
 import torch.nn.functional as F
-import yaml
 
 from meridian.params.segmenter_params import AerialSegmenterParams, SegmenterParams
 from vpr.data.transforms import default_transform
@@ -41,8 +40,13 @@ class AnyLocPipeline(torch.nn.Module):
 
     MODEL = "dinov2_vitg14"
 
-    def __init__(self, centers: torch.Tensor, desc_layer: int = 31,
-                 fp16: bool = True, device: torch.device | str = "cuda"):
+    def __init__(
+        self,
+        centers: torch.Tensor,
+        desc_layer: int = 31,
+        fp16: bool = True,
+        device: torch.device | str = "cuda",
+    ):
         super().__init__()
         self.device = torch.device(device)
         self.desc_layer = desc_layer
@@ -54,12 +58,15 @@ class AnyLocPipeline(torch.nn.Module):
         for p in self.backbone.parameters():
             p.requires_grad_(False)
         if desc_layer >= len(self.backbone.blocks):
-            raise ValueError(f"desc_layer {desc_layer} >= {len(self.backbone.blocks)} blocks")
+            raise ValueError(
+                f"desc_layer {desc_layer} >= {len(self.backbone.blocks)} blocks"
+            )
 
         # Capture the "value" facet exactly like AnyLoc: hook blocks[L].attn.qkv.
         self._qkv = None
         self.backbone.blocks[desc_layer].attn.qkv.register_forward_hook(
-            lambda _m, _i, out: setattr(self, "_qkv", out))
+            lambda _m, _i, out: setattr(self, "_qkv", out)
+        )
 
         self.vlad = VprVLAD(centers, metric="cosine").to(self.device).eval()
 
@@ -94,13 +101,13 @@ class AnyLocPipeline(torch.nn.Module):
         """
         img = img.to(self.device, self.dtype)
         x = self.backbone.prepare_tokens_with_masks(img)
-        for blk in self.backbone.blocks[:self.desc_layer + 1]:
+        for blk in self.backbone.blocks[: self.desc_layer + 1]:
             x = blk(x)
-        res = self._qkv                        # (B, N+1, 3*D) captured at block L
+        res = self._qkv  # (B, N+1, 3*D) captured at block L
         self._qkv = None
-        res = res[:, 1:, ...]                  # drop CLS (vitg14 has no registers)
+        res = res[:, 1:, ...]  # drop CLS (vitg14 has no registers)
         d_len = res.shape[2] // 3
-        res = res[:, :, 2 * d_len:]            # "value" facet
+        res = res[:, :, 2 * d_len :]  # "value" facet
         return F.normalize(res.float(), dim=-1)
 
     @torch.no_grad()
@@ -145,8 +152,9 @@ class MeridianVprPipeline(torch.nn.Module):
     nothing here is configured.
     """
 
-    def __init__(self, ckpt_path: str, fp16: bool = True,
-                 device: torch.device | str = "cuda"):
+    def __init__(
+        self, ckpt_path: str, fp16: bool = True, device: torch.device | str = "cuda"
+    ):
         super().__init__()
         from vpr.data.transforms import default_transform
         from vpr.models.backbone import DinoBackbone
@@ -156,36 +164,54 @@ class MeridianVprPipeline(torch.nn.Module):
         self.fp16 = fp16
         self.dtype = torch.float16 if fp16 else torch.float32
 
-        ckpt = torch.load(resolve_vpr_checkpoint(ckpt_path), map_location="cpu",
-                          weights_only=False)
+        ckpt = torch.load(
+            resolve_vpr_checkpoint(ckpt_path), map_location="cpu", weights_only=False
+        )
         if "config" not in ckpt:
             raise ValueError(
                 f"{ckpt_path} has no embedded config -- it is not a vpr "
-                f"cross-view checkpoint")
+                f"cross-view checkpoint"
+            )
         bcfg, hcfg = ckpt["config"]["backbone"], ckpt["config"]["head"]
 
-        key = (bcfg["model_name"], bcfg["source"], bcfg["layer"], bcfg["facet"],
-               str(self.device), self.dtype)
+        key = (
+            bcfg["model_name"],
+            bcfg["source"],
+            bcfg["layer"],
+            bcfg["facet"],
+            str(self.device),
+            self.dtype,
+        )
         backbone = _BACKBONE_CACHE.get(key)
         if backbone is None:
-            backbone = DinoBackbone(
-                bcfg["model_name"], layer=bcfg["layer"], facet=bcfg["facet"],
-                source=bcfg["source"],
-            ).to(self.device, self.dtype).eval()
+            backbone = (
+                DinoBackbone(
+                    bcfg["model_name"],
+                    layer=bcfg["layer"],
+                    facet=bcfg["facet"],
+                    source=bcfg["source"],
+                )
+                .to(self.device, self.dtype)
+                .eval()
+            )
             _BACKBONE_CACHE[key] = backbone
         self.backbone = backbone
 
-        self.head = CVMNetHead(
-            feature_dim=backbone.feature_dim,
-            num_clusters=hcfg["num_clusters"],
-            fc_hidden_dims=hcfg["fc_hidden_dims"],
-            descriptor_dim=hcfg["descriptor_dim"],
-            netvlad_gating=hcfg["netvlad_gating"],
-            netvlad_normalize_input=hcfg["netvlad_normalize_input"],
-            share_branch_weights=hcfg["share_branch_weights"],
-            netvlad_assign_groups=hcfg.get("netvlad_assign_groups", 1),
-            netvlad_group_weights=hcfg.get("netvlad_group_weights"),
-        ).to(self.device).eval()
+        self.head = (
+            CVMNetHead(
+                feature_dim=backbone.feature_dim,
+                num_clusters=hcfg["num_clusters"],
+                fc_hidden_dims=hcfg["fc_hidden_dims"],
+                descriptor_dim=hcfg["descriptor_dim"],
+                netvlad_gating=hcfg["netvlad_gating"],
+                netvlad_normalize_input=hcfg["netvlad_normalize_input"],
+                share_branch_weights=hcfg["share_branch_weights"],
+                netvlad_assign_groups=hcfg.get("netvlad_assign_groups", 1),
+                netvlad_group_weights=hcfg.get("netvlad_group_weights"),
+            )
+            .to(self.device)
+            .eval()
+        )
         self.head.load_state_dict(ckpt["model"])
 
         # Tokens are cast to fp32 for the head, whose weights load as fp32.
@@ -194,8 +220,7 @@ class MeridianVprPipeline(torch.nn.Module):
         if not isinstance(size, dict):
             size = {"sat": size, "grd": size}
         self.transforms = {
-            view: default_transform(
-                tuple(s) if isinstance(s, list) else s, patch)
+            view: default_transform(tuple(s) if isinstance(s, list) else s, patch)
             for view, s in (("satellite", size["sat"]), ("ground", size["grd"]))
         }
 
@@ -213,54 +238,21 @@ class MeridianVprPipeline(torch.nn.Module):
             img_rgb = PILImage.fromarray(np.ascontiguousarray(img_rgb))
         img_pt = self.transforms[view](img_rgb)[None].to(self.device)
         tokens = self.backbone(img_pt).float()
-        encode = (self.head.encode_ground if view == "ground"
-                  else self.head.encode_satellite)
+        encode = (
+            self.head.encode_ground if view == "ground" else self.head.encode_satellite
+        )
         desc = encode(tokens).squeeze(0).cpu().numpy()
         return desc.astype(np.float16) if self.fp16 else desc
 
 
-def check_frame_descriptors_match(params_source, comparison=None, run=None):
-    """Ground and aerial descriptors must come from the same model.
-
-    Args:
-        params_source: params YAML path or directory
-        comparison: CrossViewPlaceRecognitionParams.comparison, if known
-        run: run key within the YAML
-
-    Returns:
-        The agreed frame_descriptor, to stamp onto whatever it produces, or
-        None if neither block is present.
-    """
-    found = {
-        key: cls.load(params_source, run=run).frame_descriptor
-        for key, cls in (
-            ("segmenter", SegmenterParams),
-            ("aerial_segmenter", AerialSegmenterParams),
-        )
-        if _block_present(params_source, key)
-    }
-    if len(set(found.values())) > 1:
-        pairs = ", ".join(f"{k}.frame_descriptor={v!r}" for k, v in found.items())
+def check_frame_descriptors_match(params_source, run=None):
+    """Ground and aerial segmenters must use the same frame_descriptor; returns it."""
+    ground = SegmenterParams.load(params_source, run=run).frame_descriptor
+    aerial = AerialSegmenterParams.load(params_source, run=run).frame_descriptor
+    if ground != aerial:
         raise ValueError(
-            f"{pairs}; cross-view similarity between two different models is "
-            "meaningless."
+            f"segmenter.frame_descriptor={ground!r}, aerial_segmenter."
+            f"frame_descriptor={aerial!r}; cross-view similarity between two "
+            "different models is meaningless."
         )
-    if not found:
-        return None
-
-    descriptor = next(iter(found.values()))
-    if comparison == "image" and descriptor is None:
-        raise ValueError(
-            "cross_view_place_recognition.comparison='image' compares frame "
-            "descriptors, but frame_descriptor is unset; every similarity "
-            "would be nan."
-        )
-    return descriptor
-
-
-def _block_present(params_source, key):
-    """Whether `key` is configured in `params_source` at all."""
-    if os.path.isdir(params_source):
-        return os.path.exists(os.path.join(params_source, f"{key}.yaml"))
-    with open(params_source, "r") as f:
-        return key in (yaml.full_load(f) or {})
+    return ground

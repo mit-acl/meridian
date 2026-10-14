@@ -271,26 +271,13 @@ def segment_mapping(
 
         converter = SegmentToPrimitiveConverter(conversion_params)
 
-        # Place recognition is optional
-        try:
-            from meridian.params import CrossViewPlaceRecognitionParams
-            from meridian.vpr.vpr import (
-                check_frame_descriptors_match,
-            )
-            from meridian.cross_view.place_recognition import (
-                CrossViewPlaceRecognition,
-            )
+        from meridian.params import CrossViewPlaceRecognitionParams
+        from meridian.cross_view.place_recognition import CrossViewPlaceRecognition
 
-            pr_params = CrossViewPlaceRecognitionParams.load(params_path, run=run)
-        except Exception:
-            pr_params = None
-        if pr_params is not None:
-            place_recognition = CrossViewPlaceRecognition(
-                pr_params,
-                check_frame_descriptors_match(
-                    params_path, pr_params.comparison, run=run
-                ),
-            )
+        pr_params = CrossViewPlaceRecognitionParams.load(params_path, run=run)
+        place_recognition = CrossViewPlaceRecognition(
+            pr_params, segmenter_params.frame_descriptor
+        )
 
         ground_submap_mapping = GroundSubmapPrimitiveMapping(
             ground_submap_params,

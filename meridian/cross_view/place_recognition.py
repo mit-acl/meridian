@@ -22,6 +22,11 @@ class CrossViewPlaceRecognition:
         params: CrossViewPlaceRecognitionParams,
         descriptor_type: str = None,
     ):
+        if params.comparison == "image" and descriptor_type is None:
+            raise ValueError(
+                "cross_view_place_recognition.comparison='image' compares frame "
+                "descriptors, but frame_descriptor is unset."
+            )
         self.params = params
         self.comparison = params.comparison
         self.descriptor_type = descriptor_type
@@ -50,9 +55,9 @@ class CrossViewPlaceRecognition:
         self._map_descriptors = np.vstack(
             [d for d in ground_map.descriptors if d is not None]
         )
-        self._map_positions = np.array(
-            [p[:3, 3] for p in ground_map.trajectory]
-        )[valid_mask]
+        self._map_positions = np.array([p[:3, 3] for p in ground_map.trajectory])[
+            valid_mask
+        ]
 
     def aerial_descriptor(
         self, aerial_submap, aerial_segmenter=None, img_bgr=None, crop=None
@@ -110,8 +115,7 @@ class CrossViewPlaceRecognition:
         else:
             raise ValueError(f"Unknown comparison: {self.comparison}")
 
-    def _stacked_frame_descriptors(self, submap_segments, center=None,
-                                   max_dist_m=None):
+    def _stacked_frame_descriptors(self, submap_segments, center=None, max_dist_m=None):
         """Stack cached frame descriptors for a ground submap. Works for every
         model -- frames hold whatever backend the segmenter ran.
 
@@ -159,8 +163,7 @@ class CrossViewPlaceRecognition:
         for fd, fp in zip(frame_descs, frame_pos):
             if (
                 last_pos is None
-                or np.linalg.norm(fp - last_pos)
-                >= self.params.ground_descriptor_dist_m
+                or np.linalg.norm(fp - last_pos) >= self.params.ground_descriptor_dist_m
             ):
                 stacked.append(fd)
                 last_pos = fp
@@ -256,8 +259,6 @@ class CrossViewPlaceRecognition:
         """
         ground_tag = self._tag_of(ground_submaps)
         aerial_tag = self._tag_of(aerial_submaps)
-        self._check_source("Ground submaps", ground_tag)
-        self._check_source("Aerial submaps", aerial_tag)
         if None not in (ground_tag, aerial_tag) and ground_tag != aerial_tag:
             raise ValueError(
                 f"Ground submap descriptors came from {ground_tag!r} and aerial "
@@ -277,13 +278,22 @@ class CrossViewPlaceRecognition:
 
         return sim_matrix, ground_keys, aerial_keys
 
+    @property
+    def submap_tag(self):
+        """What a submap descriptor is: the model for "image", else the comparison."""
+        return self.descriptor_type if self.comparison == "image" else self.comparison
+
     def tag(self, submap):
-        """Record which model made `submap.descriptor`, for the disk round trip."""
-        if submap.descriptor is None or self.descriptor_type is None:
+        """Record what made `submap.descriptor`, for the disk round trip."""
+        if submap.descriptor is None or self.submap_tag is None:
             return
         if submap.metadata is None:
             submap.metadata = {}
-        submap.metadata["descriptor_type"] = self.descriptor_type
+        submap.metadata["descriptor_type"] = self.submap_tag
+
+    def check_submaps(self, what, submaps):
+        """Raise if prebuilt `submaps` were made differently than this run's."""
+        self._check_source(what, self._tag_of(submaps), self.submap_tag)
 
     @staticmethod
     def _tag_of(submaps):
@@ -295,13 +305,14 @@ class CrossViewPlaceRecognition:
                     return tag
         return None
 
-    def _check_source(self, what, found):
-        """Raise if `found` contradicts the configured model. None = untagged."""
-        if found is None or self.descriptor_type is None:
+    def _check_source(self, what, found, expected=None):
+        """Raise if `found` contradicts `expected` (default: the model). None = untagged."""
+        expected = self.descriptor_type if expected is None else expected
+        if found is None or expected is None:
             return
-        if found != self.descriptor_type:
+        if found != expected:
             raise ValueError(
                 f"{what} descriptors came from {found!r} but this run uses "
-                f"{self.descriptor_type!r}. Rebuild them, or set "
-                "frame_descriptor to match."
+                f"{expected!r}. Rebuild them, or set frame_descriptor/comparison "
+                "to match."
             )

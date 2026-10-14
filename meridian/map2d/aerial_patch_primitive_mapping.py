@@ -8,6 +8,7 @@ from typing import Dict, List, Optional, Tuple
 import numpy as np
 from tqdm import tqdm
 
+from meridian.cross_view.place_recognition import CrossViewPlaceRecognition
 from meridian.segmenter.aerial_segmenter import AerialSegmenter
 from meridian.map2d.segment_to_primitive import SegmentToPrimitiveConverter
 from meridian.map3d.submap import FrameType, Submap
@@ -171,8 +172,15 @@ class AerialPatchPrimitiveMapping:
         patch_params: AerialPatchParams,
         converter: SegmentToPrimitiveConverter,
         aerial_segmenter: AerialSegmenter,
-        place_recognition=None,
+        place_recognition: CrossViewPlaceRecognition,
     ):
+        # Every aerial submap gets a place-recognition descriptor; submaps
+        # without one are silently never retrieved in vpr matching.
+        if place_recognition is None:
+            raise ValueError(
+                "AerialPatchPrimitiveMapping requires place_recognition so every "
+                "aerial submap gets a descriptor."
+            )
         self.patch_params = patch_params
         self.converter = converter
         self.aerial_segmenter = aerial_segmenter
@@ -322,14 +330,22 @@ class AerialPatchPrimitiveMapping:
         # Place recognition (GPU) stays serial in the main process; then assemble
         # submaps and (optionally) intermediates, reattaching main-side patch_img.
         for crop, submap, primitives in patch_results:
-            if self.place_recognition is not None:
-                submap.descriptor = self.place_recognition.aerial_descriptor(
-                    submap,
-                    aerial_segmenter=self.aerial_segmenter,
-                    img_bgr=img,
-                    crop=crop,
+            submap.descriptor = self.place_recognition.aerial_descriptor(
+                submap,
+                aerial_segmenter=self.aerial_segmenter,
+                img_bgr=img,
+                crop=crop,
+            )
+            if submap.descriptor is None:
+                raise RuntimeError(
+                    f"Aerial patch {crop} got no place-recognition descriptor "
+                    f"(comparison={self.place_recognition.comparison!r}, "
+                    "frame_descriptor="
+                    f"{self.aerial_segmenter.frame_descriptor_type!r}). "
+                    "aerial_segmenter.get_crop_descriptor returned None; check the "
+                    "aerial_segmenter frame_descriptor and semantics settings."
                 )
-                self.place_recognition.tag(submap)
+            self.place_recognition.tag(submap)
 
             submaps[crop] = submap
             if return_intermediates:
