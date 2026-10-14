@@ -135,6 +135,7 @@ def build_candidates_from_match_result(
                         "ground_submap_time": ground_submap.time,
                         "T_utm_odom_gt_se2": T_utm_odom_gt_se2,
                         "count": getattr(result, "count", 1),
+                        "fitness": getattr(result, "fitness", np.nan),
                     }
                 )
 
