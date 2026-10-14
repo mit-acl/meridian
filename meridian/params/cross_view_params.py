@@ -67,7 +67,7 @@ class CrossViewPlaceRecognitionParams(ParamsBase):
     # What to compare. One of COMPARISONS.
     comparison: str = "image"
     ground_descriptor_dist_m: float = 5.0
-    k_nearest_neighbors: int = 25
+    k_nearest_neighbors: int = 10
 
     method: Optional[str] = None  # deprecated spelling of `comparison`
 
