@@ -59,7 +59,7 @@ class CrossViewPlaceRecognitionParams(ParamsBase):
     params_key: ClassVar[str] = "cross_view_place_recognition"
 
     ground_descriptor_dist_m: float = 5.0
-    k_nearest_neighbors: int = 25
+    k_nearest_neighbors: int = 10
 
 
 @dataclass
