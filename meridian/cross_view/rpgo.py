@@ -174,8 +174,6 @@ class CrossViewRPGOResult:
     optimized_trajectory_3d: Optional[List[np.ndarray]] = None
     times: Optional[np.ndarray] = None
     inlier_indices: np.ndarray = field(default_factory=lambda: np.array([]))
-    M: Optional[np.ndarray] = None
-    C: Optional[np.ndarray] = None
     # Outlier-rejection objective u^T M u / u^T u where u is the binary
     # inlier indicator. None when CLIPPER didn't run (gt_inliers path) or
     # there were no inliers.
@@ -300,9 +298,9 @@ class CrossViewRPGO:
         """
         if self.params.gt_inliers:
             inlier_indices = self._gt_inlier_selection(candidates)
-            M, C, objective = None, None, None
+            objective = None
         else:
-            inlier_indices, M, C, objective = self.run_clipper_cpp(
+            inlier_indices, objective = self.run_clipper_cpp(
                 candidates, trajectory, times
             )
 
@@ -314,8 +312,6 @@ class CrossViewRPGO:
             )
             return CrossViewRPGOResult(
                 success=False,
-                M=M,
-                C=C,
                 objective_value=objective,
                 candidates=candidates,
             )
@@ -350,8 +346,6 @@ class CrossViewRPGO:
             optimized_trajectory_3d=optimized_trajectory_3d,
             times=np.asarray(times),
             inlier_indices=inlier_indices,
-            M=M,
-            C=C,
             objective_value=objective,
             candidates=candidates,
         )
@@ -361,14 +355,14 @@ class CrossViewRPGO:
         candidates: List[dict],
         trajectory: List[np.ndarray],
         times: np.ndarray,
-    ) -> Tuple[np.ndarray, Optional[np.ndarray], Optional[np.ndarray], Optional[float]]:
+    ) -> Tuple[np.ndarray, Optional[float]]:
         """Run only the outlier-rejection step (CLIPPER or GT) without PGO.
 
-        Returns (inlier_indices, M, C, objective). M, C, objective are None when
-        gt_inliers is set.
+        Returns (inlier_indices, objective). objective is None when gt_inliers
+        is set.
         """
         if self.params.gt_inliers:
-            return self._gt_inlier_selection(candidates), None, None, None
+            return self._gt_inlier_selection(candidates), None
         return self.run_clipper_cpp(candidates, trajectory, times)
 
     def _gt_inlier_selection(self, candidates: List[dict]) -> np.ndarray:
@@ -500,11 +494,9 @@ class CrossViewRPGO:
         amount of recall for a memory-bounded run.
 
         Returns:
-            Tuple of (inlier_indices, M, C, objective). `inlier_indices` indexes
-            into the original `candidates` list. In the chunked path, M and C
-            come from the final pool-only pass, so their dimensions equal the
-            pool size. `objective` is the binary-indicator objective
-            u^T M u / u^T u for the (final) pass.
+            Tuple of (inlier_indices, objective). `inlier_indices` indexes into
+            the original `candidates` list. `objective` is the binary-indicator
+            objective u^T M u / u^T u for the (final) pass.
         """
         n = len(candidates)
         max_n = self.params.outlier_rejection_max_num_lcs
@@ -535,7 +527,7 @@ class CrossViewRPGO:
 
         # Final pass over the pooled inliers.
         pooled_candidates = [candidates[i] for i in pooled_orig_idx]
-        final_sub_inliers, M, C, objective = self._run_clipper_cpp_single(
+        final_sub_inliers, objective = self._run_clipper_cpp_single(
             pooled_candidates, trajectory, times
         )
         final_orig_idx = np.array(
@@ -545,7 +537,7 @@ class CrossViewRPGO:
             f"  final pass: {len(pooled_candidates)} pooled candidates "
             f"-> {len(final_orig_idx)} inliers"
         )
-        return final_orig_idx, M, C, objective
+        return final_orig_idx, objective
 
     @staticmethod
     def _binary_objective(M, inlier_indices) -> Optional[float]:
@@ -570,9 +562,9 @@ class CrossViewRPGO:
         candidates: List[dict],
         trajectory: List[np.ndarray],
         times: np.ndarray,
-    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, Optional[float]]:
+    ) -> Tuple[np.ndarray, Optional[float]]:
         """Single-pass CLIPPER over the given candidates. See `run_clipper_cpp`
-        for the chunked wrapper. Returns (inlier_indices, M, C, objective)."""
+        for the chunked wrapper. Returns (inlier_indices, objective)."""
         lc_scores = self._compute_lc_scores(candidates)
         D, aerial_poses, ground_poses, ground_distances = _build_clipper_data(
             candidates, trajectory, times, lc_scores
@@ -598,10 +590,13 @@ class CrossViewRPGO:
         clipper.score_pairwise_and_single_consistency(D, D, A)
         clipper.solve()
         inlier_indices = np.array(clipper.get_solution().nodes)
-        M = clipper.get_affinity_matrix()
-        C = clipper.get_constraint_matrix()
-        objective = self._binary_objective(M, inlier_indices)
-        return inlier_indices, M, C, objective
+        # Only the objective needs M, and only briefly: the dense N x N copy can be
+        # tens of GB for large candidate sets, so it is not kept (and C is never
+        # fetched).
+        objective = self._binary_objective(
+            clipper.get_affinity_matrix(), inlier_indices
+        )
+        return inlier_indices, objective
 
     @staticmethod
     def _frame_align(candidates: List[dict], inlier_indices: np.ndarray) -> np.ndarray:
