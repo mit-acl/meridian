@@ -18,7 +18,6 @@ import pathlib
 import sys
 from concurrent.futures import ProcessPoolExecutor, as_completed
 
-from meridian.cross_view.place_recognition import CrossViewPlaceRecognition
 from meridian.params import (
     AerialSegmenterParams,
     SegmentToPrimitiveConversionParams,
@@ -27,6 +26,7 @@ from meridian.params.cross_view_params import (
     CrossViewPlaceRecognitionParams,
     CrossViewVisualizationParams,
 )
+from meridian.params.params_checks import require_frame_descriptor
 from meridian.params.data_params import CrossViewLocalizationDataParams
 from meridian.params.segment_to_primitive_params import AerialPatchParams
 from meridian.segmenter.aerial_segmenter import AerialSegmenter
@@ -62,8 +62,6 @@ def aerial_patch_mapping(
         aerial_patch_params = AerialPatchParams.load(params)
         conversion_params = SegmentToPrimitiveConversionParams.load(params)
         viz_params = CrossViewVisualizationParams.load(params)
-        # A missing section loads defaults; real config errors should raise
-        # rather than silently produce submaps without descriptors.
         pr_params = CrossViewPlaceRecognitionParams.load(params)
     else:
         data_params = CrossViewLocalizationDataParams(aerial_img_path=aerial_img_path)
@@ -90,9 +88,7 @@ def aerial_patch_mapping(
     if downsample_factor is not None:
         aerial_segmenter_params.downsample_factor = downsample_factor
 
-    place_recognition = CrossViewPlaceRecognition(
-        pr_params, aerial_segmenter_params.frame_descriptor
-    )
+    require_frame_descriptor(aerial_segmenter_params)
 
     # Load aerial image
     print("Loading aerial image...")
@@ -106,7 +102,6 @@ def aerial_patch_mapping(
         patch_params=aerial_patch_params,
         converter=converter,
         aerial_segmenter=aerial_segmenter,
-        place_recognition=place_recognition,
     )
 
     # Run segmentation

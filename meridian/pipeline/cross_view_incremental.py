@@ -38,15 +38,18 @@ import matplotlib.pyplot as plt
 import numpy as np
 import tqdm
 
+from robotdatapy.data import PoseData
 from robotdatapy.data.robot_data import NoDataNearTimeException
 
 from meridian.cross_view.incremental_localization import IncrementalLocalization
 from meridian.cross_view.matching import CrossViewMatching
 from meridian.cross_view.place_recognition import CrossViewPlaceRecognition
+from meridian.cross_view.rpgo import CrossViewRPGOResult
 from meridian.map2d.ground_submap_primitive_mapping import (
     GroundSubmapPrimitiveMapping,
 )
 from meridian.map2d.segment_to_primitive import SegmentToPrimitiveConverter
+from meridian.map3d.map import SegmentMap
 from meridian.map3d.segment_mapper import SegmentMapper
 from meridian.segmenter.segmenter3d import Segmenter
 from meridian.map3d.submap import Submap
@@ -68,6 +71,7 @@ from meridian.params import (
     SegmentToPrimitiveConversionParams,
     SegmenterParams,
 )
+from meridian.params.params_checks import require_frame_descriptor
 from meridian.pipeline.cross_view_localization import (
     CrossViewLocalization,
     context_from_data,
@@ -111,6 +115,9 @@ class CrossViewIncremental:
     viz_params: CrossViewVisualizationParams
 
     output_dir: str = ""
+    # camera_pose_data config (segment_mapping_data) for the full-rate odometry;
+    # used to save a dense 3D trajectory at the end of the run
+    camera_pose_data_params: dict = field(default_factory=dict)
 
     # Pipeline state
     _submap_viz: bool = field(default=False, init=False)
@@ -194,18 +201,18 @@ class CrossViewIncremental:
             )
 
             t_seg_start = time.time()
-            observations, frame_descriptor = self.segmenter.segment(
+            frame = self.segmenter.segment(
                 img,
                 img_t,
                 pose,
                 depth,
                 compute_frame_descriptor=should_compute_descriptor,
             )
-            if frame_descriptor is not None:
+            if frame.frame_descriptor is not None:
                 self._last_descriptor_position = position.copy()
 
             t_map_start = time.time()
-            self.mapper.update(img_t, pose, observations, frame_descriptor)
+            self.mapper.update(frame)
 
             t_submap_start = time.time()
             self.mapper.process_submaps_2d(img_t, pose)
@@ -392,8 +399,6 @@ class CrossViewIncremental:
                 f.write("\n".join(stub) + "\n")
             return
 
-        from meridian.cross_view.rpgo import CrossViewRPGOResult
-
         viz_result = CrossViewRPGOResult(
             success=True,
             T_utm_odom=T_utm_odom_local,
@@ -489,8 +494,6 @@ class CrossViewIncremental:
         out = pathlib.Path(self.output_dir)
 
         # segment_map.pkl
-        from meridian.map3d.map import SegmentMap
-
         descriptors = self.mapper.frame_descriptors_history
         if not any(d is not None for d in descriptors):
             descriptors = None
@@ -499,9 +502,7 @@ class CrossViewIncremental:
             trajectory=self.mapper.poses_cam_history,
             times=self.mapper.times_history,
             descriptors=descriptors,
-            descriptor_type=(
-                self.segmenter.frame_descriptor_type if descriptors else None
-            ),
+            descriptor_type=self.mapper.frame_descriptor_type if descriptors else None,
         )
         segment_map.save(str(out / "segment_map.pkl"))
 
@@ -733,6 +734,16 @@ class CrossViewIncremental:
             logger.warning("Final localization solve failed or returned no success.")
             return
         CrossViewLocalization._save_results(result, out)
+        if self.camera_pose_data_params:
+            # The mapper only ever holds one chunk of odometry, so reload the
+            # (small) pose topic in full for densification
+            CrossViewLocalization._save_dense_trajectory(
+                result,
+                self.mapper.poses_cam_history,
+                PoseData.from_dict(self.camera_pose_data_params),
+                self.data.T_camera_flu,
+                out,
+            )
         CrossViewLocalization._visualize_and_report(
             result,
             self.data,
@@ -895,10 +906,9 @@ def cross_view_incremental(
     except Exception:
         viz_params = CrossViewVisualizationParams()
 
+    require_frame_descriptor(segmenter_params)
     pr_params = CrossViewPlaceRecognitionParams.load(params_path, run=run)
-    place_recognition = CrossViewPlaceRecognition(
-        pr_params, segmenter_params.frame_descriptor
-    )
+    place_recognition = CrossViewPlaceRecognition(pr_params)
 
     os.makedirs(output_dir, exist_ok=True)
 
@@ -921,7 +931,10 @@ def cross_view_incremental(
     aerial_submaps = matching_pipeline.load_submaps_from_dir(aerial_seg_dir)
     if not aerial_submaps:
         raise ValueError(f"No aerial submaps found in {aerial_seg_dir}")
-    place_recognition.check_submaps("Aerial submaps", aerial_submaps)
+    CrossViewPlaceRecognition.check_descriptors_match(
+        ground=segmenter_params.frame_descriptor,
+        aerial=CrossViewPlaceRecognition.get_submaps_tag(aerial_submaps),
+    )
 
     print("Loading bag time range...")
     bag_t_range = SegmentMappingData.get_bag_time_range(mapping_data_params)
@@ -964,7 +977,7 @@ def cross_view_incremental(
         mapping_params,
         camera_params,
         ground_submap_mapping=ground_submap_mapping,
-        place_recognition=place_recognition,
+        place_recognition_params=pr_params,
     )
 
     loc = IncrementalLocalization(
@@ -984,6 +997,7 @@ def cross_view_incremental(
         data=loc_data,
         viz_params=viz_params,
         output_dir=output_dir,
+        camera_pose_data_params=mapping_data_params.camera_pose_data,
     )
     pipeline._params_path = params_path
     pipeline._submap_viz = submap_viz
@@ -1010,7 +1024,7 @@ def cross_view_incremental(
         incremental_params,
         loc_data_params,
         viz_params,
-        pr_params,
+        place_recognition.params,
     ]
     save_params(output_dir, *all_params)
     save_commit_hash(output_dir)
@@ -1109,8 +1123,6 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     if args.debug:
-        import logging
-
         logging.basicConfig(
             level=logging.INFO, format="%(levelname)s:%(name)s:%(message)s"
         )

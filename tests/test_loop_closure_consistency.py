@@ -229,9 +229,7 @@ def test_run_clipper_cpp_finds_inliers():
         n_consistent=5, n_outliers=3, seed=2
     )
 
-    inlier_indices, M, C, objective = rpgo.run_clipper_cpp(
-        candidates, trajectory, times
-    )
+    inlier_indices, objective = rpgo.run_clipper_cpp(candidates, trajectory, times)
 
     # All returned indices should be within the consistent cluster (indices 0..4)
     assert len(inlier_indices) > 0, "No inliers found"
