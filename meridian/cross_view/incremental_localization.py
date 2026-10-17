@@ -238,7 +238,7 @@ class IncrementalLocalization:
         rpgo = CrossViewRPGO(params=self.rpgo_params)
         t_or_start = time.time()
         try:
-            inlier_indices, _M, _C, lc_obj = rpgo.solve_clipper_only(
+            inlier_indices, lc_obj = rpgo.solve_clipper_only(
                 self._candidates,
                 poses_cam_history,
                 times_arr,
@@ -556,7 +556,7 @@ class IncrementalLocalization:
         t_or_start = time.time()
         rerun_lc_obj: Optional[float] = None
         try:
-            rerun_inliers, _M, _C, rerun_lc_obj = rpgo.solve_clipper_only(
+            rerun_inliers, rerun_lc_obj = rpgo.solve_clipper_only(
                 rerun_candidates,
                 poses_cam_history,
                 times_arr,
