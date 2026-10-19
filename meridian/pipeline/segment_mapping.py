@@ -80,18 +80,18 @@ class SegmentMapping:
             )
 
             t_seg_start = time.time()
-            observations, frame_descriptor = self.segmenter.segment(
+            frame = self.segmenter.segment(
                 img,
                 img_t,
                 pose,
                 depth,
                 compute_frame_descriptor=should_compute_descriptor,
             )
-            if frame_descriptor is not None:
+            if frame.frame_descriptor is not None:
                 self._last_descriptor_position = position.copy()
 
             t_map_start = time.time()
-            self.mapper.update(img_t, pose, observations, frame_descriptor)
+            self.mapper.update(frame)
 
             t_submap_start = time.time()
             if self.mapping_params.inc_submaps_2d:
@@ -198,9 +198,7 @@ class SegmentMapping:
             trajectory=self.mapper.poses_cam_history,
             times=self.mapper.times_history,
             descriptors=descriptors,
-            descriptor_type=(
-                self.segmenter.frame_descriptor_type if descriptors else None
-            ),
+            descriptor_type=self.mapper.frame_descriptor_type if descriptors else None,
         )
 
 
@@ -251,7 +249,7 @@ def segment_mapping(
 
     # Set up incremental 2D ground submap pipeline if enabled
     ground_submap_mapping = None
-    place_recognition = None
+    pr_params = None
     if mapping_params.inc_submaps_2d:
         from meridian.params import (
             GroundSubmapParams,
@@ -272,18 +270,17 @@ def segment_mapping(
         converter = SegmentToPrimitiveConverter(conversion_params)
 
         from meridian.params import CrossViewPlaceRecognitionParams
+        from meridian.params.params_checks import require_frame_descriptor
         from meridian.cross_view.place_recognition import CrossViewPlaceRecognition
 
+        require_frame_descriptor(segmenter_params)
         pr_params = CrossViewPlaceRecognitionParams.load(params_path, run=run)
-        place_recognition = CrossViewPlaceRecognition(
-            pr_params, segmenter_params.frame_descriptor
-        )
 
         ground_submap_mapping = GroundSubmapPrimitiveMapping(
             ground_submap_params,
             converter,
             ground_segmenter_params,
-            place_recognition,
+            CrossViewPlaceRecognition(pr_params),
         )
         print(
             f"Incremental 2D submaps enabled: "
@@ -295,7 +292,7 @@ def segment_mapping(
         mapping_params,
         camera_params,
         ground_submap_mapping=ground_submap_mapping,
-        place_recognition=place_recognition,
+        place_recognition_params=pr_params,
     )
     pipeline = SegmentMapping(
         mapping_params=mapping_params,

@@ -16,7 +16,6 @@ import torch
 import torch.hub  # stop torch.hub's GitHub check from hanging when offline
 import torch.nn.functional as F
 
-from meridian.params.segmenter_params import AerialSegmenterParams, SegmenterParams
 from vpr.data.transforms import default_transform
 from vpr.models.vlad import VLAD as VprVLAD
 
@@ -243,16 +242,3 @@ class MeridianVprPipeline(torch.nn.Module):
         )
         desc = encode(tokens).squeeze(0).cpu().numpy()
         return desc.astype(np.float16) if self.fp16 else desc
-
-
-def check_frame_descriptors_match(params_source, run=None):
-    """Ground and aerial segmenters must use the same frame_descriptor; returns it."""
-    ground = SegmenterParams.load(params_source, run=run).frame_descriptor
-    aerial = AerialSegmenterParams.load(params_source, run=run).frame_descriptor
-    if ground != aerial:
-        raise ValueError(
-            f"segmenter.frame_descriptor={ground!r}, aerial_segmenter."
-            f"frame_descriptor={aerial!r}; cross-view similarity between two "
-            "different models is meaningless."
-        )
-    return ground

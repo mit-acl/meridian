@@ -29,7 +29,7 @@ from robotdatapy.camera import CameraParams, pixel_depth_2_xyz
 
 from meridian.params import SegmenterParams
 from meridian.viz.viz_segments import viz_masks_on_img
-from meridian.map3d.observation import Observation
+from meridian.map3d.observation import FrameObservations, Observation
 from meridian.segmenter.segmenter_base import SegmenterBase
 
 
@@ -150,8 +150,9 @@ class Segmenter(SegmenterBase):
             compute_frame_descriptor (bool): whether to compute the frame-level descriptor
 
         Returns:
-            self.observations (list): list of Observations
-            frame_descriptor (np.ndarray): semantic descriptor of the frame if frame_descriptor is not None, else None
+            FrameObservations: the frame's Observations, plus its frame descriptor
+            (None if not computed this frame) and this segmenter's
+            frame_descriptor type
         """
         if depth_data is not None:
             assert self.depth_cam_params is not None or self.params.use_point_cloud, (
@@ -336,7 +337,13 @@ class Segmenter(SegmenterBase):
 
             self.observations.append(new_observation)
 
-        return self.observations, frame_descriptor
+        return FrameObservations(
+            time=t,
+            pose=pose,
+            observations=self.observations,
+            frame_descriptor=frame_descriptor,
+            frame_descriptor_type=self.frame_descriptor_type,
+        )
 
     def visualize_segments(
         self, img_bgr: np.ndarray, observations: List[Observation], alpha: float = 0.5

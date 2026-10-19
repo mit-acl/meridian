@@ -1,4 +1,3 @@
-import warnings
 from dataclasses import dataclass
 from typing import ClassVar, Optional, Tuple
 
@@ -54,42 +53,13 @@ POOLED_DESCRIPTORS = ("dino-gap", "dino-gmp", "dino-gem")
 STANDALONE_DESCRIPTORS = ("anyloc", "meridian-vpr", "salad")
 FRAME_DESCRIPTORS = POOLED_DESCRIPTORS + STANDALONE_DESCRIPTORS
 
-COMPARISONS = ("image", "semantic-point-line")
-
-# Old `method:` values; every image one only ever selected "image".
-_LEGACY_METHODS = {name: "image" for name in FRAME_DESCRIPTORS}
-_LEGACY_METHODS["semantic-point-line"] = "semantic-point-line"
-
 
 @dataclass
 class CrossViewPlaceRecognitionParams(ParamsBase):
     params_key: ClassVar[str] = "cross_view_place_recognition"
 
-    # What to compare. One of COMPARISONS.
-    comparison: str = "image"
     ground_descriptor_dist_m: float = 5.0
     k_nearest_neighbors: int = 25
-
-    method: Optional[str] = None  # deprecated spelling of `comparison`
-
-    def __post_init__(self):
-        if self.method is not None:
-            mapped = _LEGACY_METHODS.get(self.method)
-            if mapped is None:
-                raise ValueError(f"Unknown legacy method: {self.method!r}")
-            warnings.warn(
-                f"`method: {self.method}` is deprecated; use "
-                f"`comparison: {mapped}`. The model comes from "
-                "frame_descriptor, not from here.",
-                DeprecationWarning,
-                stacklevel=2,
-            )
-            self.comparison = mapped
-            self.method = None
-        if self.comparison not in COMPARISONS:
-            raise ValueError(
-                f"comparison={self.comparison!r} must be one of {COMPARISONS}."
-            )
 
 
 @dataclass
@@ -130,6 +100,19 @@ class CrossViewRPGOParams(ParamsBase):
     # loop closure rejection from growing too large
     outlier_rejection_max_num_lcs: Optional[int] = 100_000
 
+    # 3D lift of the 2D solution (heights, roll/pitch). Nodes within
+    # cross_paths_3d_constraint_dist_m (2D) of each other, and at least
+    # cross_paths_3d_constraint_path_dist_m apart along the path, are constrained
+    # to the same height.
+    cross_paths_3d_constraint_dist_m: float = 1.0
+    cross_paths_3d_constraint_sigma_m: float = 0.5
+    cross_paths_3d_constraint_path_dist_m: float = 10.0
+    # After solving heights, refine full 3D poses (corrects odometry roll/pitch
+    # drift) with x, y, yaw held near the 2D solution by these priors.
+    lift_3d_refine_rotation: bool = True
+    lift_3d_prior_xy_sigma_m: float = 0.1
+    lift_3d_prior_yaw_sigma_deg: float = 1.0
+
     @property
     def rot_consistency_sigma_rad(self) -> float:
         return np.deg2rad(self.rot_consistency_sigma_deg)
@@ -145,6 +128,10 @@ class CrossViewRPGOParams(ParamsBase):
     @property
     def prior_rot_sigma_rad(self) -> float:
         return np.deg2rad(self.prior_rot_sigma_deg)
+
+    @property
+    def lift_3d_prior_yaw_sigma_rad(self) -> float:
+        return np.deg2rad(self.lift_3d_prior_yaw_sigma_deg)
 
 
 @dataclass
