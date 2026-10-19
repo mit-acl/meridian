@@ -405,8 +405,6 @@ class CrossViewIncremental:
             optimized_trajectory=optimized_trajectory_local,
             times=np.array(self.mapper.times_history),
             inlier_indices=rerun_inliers,
-            M=None,
-            C=None,
             objective_value=rerun_lc_obj,
             candidates=rerun_candidates,
         )
