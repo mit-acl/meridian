@@ -14,7 +14,7 @@ from typing import Callable, Dict, List, Optional, TYPE_CHECKING
 
 import numpy as np
 
-from meridian.cross_view.rpgo import se2_from_xytheta, se2_to_se3, se3_to_se2
+from meridian.cross_view.rpgo import se2_from_xytheta, se3_to_se2
 from meridian.map3d.submap import Submap
 
 if TYPE_CHECKING:
@@ -102,10 +102,12 @@ def build_candidates_from_match_result(
 
                 T_utm_body_se2 = se2_from_xytheta(utm_x, utm_y, yaw)
 
-                T_utm_odom_4x4 = se2_to_se3(T_utm_body_se2) @ np.linalg.inv(
-                    T_odom_ground
+                # Project the (camera-tilted) ground pose to world-flat SE(2) before
+                # inverting; projecting T_utm_body @ inv(T_odom_ground) instead would
+                # rotate the odometry position into the tilted frame and drop z.
+                T_utm_odom_se2 = T_utm_body_se2 @ np.linalg.inv(
+                    se3_to_se2(T_odom_ground)
                 )
-                T_utm_odom_se2 = se3_to_se2(T_utm_odom_4x4)
 
                 T_utm_odom_gt_se2 = None
                 if context.gt_pose_data is not None:
@@ -115,8 +117,9 @@ def build_candidates_from_match_result(
                             gt_body = gt_pose @ context.T_camera_flu
                         else:
                             gt_body = gt_pose
-                        T_utm_odom_gt = gt_body @ np.linalg.inv(T_odom_ground)
-                        T_utm_odom_gt_se2 = se3_to_se2(T_utm_odom_gt)
+                        T_utm_odom_gt_se2 = se3_to_se2(gt_body) @ np.linalg.inv(
+                            se3_to_se2(T_odom_ground)
+                        )
                     except Exception:
                         pass
 

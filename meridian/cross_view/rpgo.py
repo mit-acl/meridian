@@ -681,10 +681,13 @@ class CrossViewRPGO:
             pose2 = gtsam.Pose2(se2[0, 2], se2[1, 2], yaw_from_se2(se2))
             initial.insert(i, pose2)
 
-        # Odometry between factors
+        # Odometry between factors: relative pose of the two poses' world-flat SE(2)
+        # projections. The body frame (camera FLU) can be tilted --
+        # projecting the relative 3D pose instead would measure motion in that tilted
+        # frame and drop its z, shortening steps and turns by ~cos(tilt).
+        odom_se2 = [se3_to_se2(T) for T in T_odom_body_list]
         for i in range(n - 1):
-            T_rel = np.linalg.inv(T_odom_body_list[i]) @ T_odom_body_list[i + 1]
-            rel_se2 = se3_to_se2(T_rel)
+            rel_se2 = np.linalg.inv(odom_se2[i]) @ odom_se2[i + 1]
             odom_pose2 = gtsam.Pose2(
                 rel_se2[0, 2], rel_se2[1, 2], yaw_from_se2(rel_se2)
             )
