@@ -24,9 +24,10 @@ from meridian.params import (
     AerialPatchParams,
     GroundSubmapParams,
     GroundSegmenterParams,
+    SegmenterParams,
 )
+from meridian.params.params_checks import require_frame_descriptor
 from meridian.cross_view.place_recognition import CrossViewPlaceRecognition
-from meridian.vpr.vpr import check_frame_descriptors_match
 from meridian.pipeline.data import CrossViewLocalizationData
 from meridian.utils import expandvars_recursive, save_commit_hash, save_params
 from meridian.segmenter.aerial_segmenter import AerialSegmenter
@@ -839,13 +840,18 @@ def cross_view_matching(
     aerial_patch_params = AerialPatchParams.load(params)
     ground_submap_params = GroundSubmapParams.load(params)
 
-    # A missing section loads defaults; real config errors should raise rather
-    # than silently produce aerial submaps without descriptors.
-    pr_params = CrossViewPlaceRecognitionParams.load(params)
-    descriptor_type = check_frame_descriptors_match(params)
-    place_recognition = CrossViewPlaceRecognition(pr_params, descriptor_type)
+    place_recognition = CrossViewPlaceRecognition(
+        CrossViewPlaceRecognitionParams.load(params)
+    )
 
     aerial_segmenter = AerialSegmenter(AerialSegmenterParams.load(params))
+    require_frame_descriptor(aerial_segmenter.params)
+    # Ground descriptors come from the ground map, made by this segmenter config;
+    # prebuilt (--aerial) submaps are checked by tag in compute_similarity_matrix.
+    CrossViewPlaceRecognition.check_descriptors_match(
+        ground=SegmenterParams.load(params).frame_descriptor,
+        aerial=aerial_segmenter.params.frame_descriptor,
+    )
     converter = SegmentToPrimitiveConverter(conversion_params)
     ground_segmenter_params = GroundSegmenterParams.load(params)
 
@@ -853,7 +859,6 @@ def cross_view_matching(
         patch_params=aerial_patch_params,
         converter=converter,
         aerial_segmenter=aerial_segmenter,
-        place_recognition=place_recognition,
     )
     ground_mapping = GroundSubmapPrimitiveMapping(
         submap_params=ground_submap_params,
@@ -920,7 +925,7 @@ def cross_view_matching(
         primitive_match_params,
         algorithm.registerer.params,
         aerial_segmenter.params,
-        pr_params,
+        place_recognition.params,
     ]
     save_params(output_dir, *all_params)
     save_commit_hash(output_dir)

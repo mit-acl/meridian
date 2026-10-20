@@ -1,5 +1,5 @@
 from dataclasses import dataclass, field
-from typing import Dict
+from typing import Dict, List, Optional
 import numpy as np
 import open3d as o3d
 
@@ -70,3 +70,18 @@ class Observation:
     def color_from_id(self, order="rgb", num_type=int) -> tuple:
         """Returns a color tuple based on the segment ID."""
         return color_from_seed(self.id, order, num_type)
+
+
+@dataclass
+class FrameObservations:
+    """
+    Everything the segmenter produces for one frame: its observations plus the
+    frame-level descriptor and the model that made it. A frame can have zero
+    observations and still carry a pose (and descriptor) for the trajectory.
+    """
+
+    time: float
+    pose: np.ndarray
+    observations: List[Observation] = field(default_factory=list)
+    frame_descriptor: Optional[np.ndarray] = None  # None if not computed this frame
+    frame_descriptor_type: Optional[str] = None  # segmenter's frame_descriptor
