@@ -122,6 +122,10 @@ class SegmentMappingDataParams(ParamsBase):
     )
     camera_pose_data: dict = None
     depth_scale: float = 1e-3  # Multiplier to convert depth image values to meters
+    # Optional [a, b] depth-bias correction (e.g., ZED), applied in metres after
+    # depth_scale: z = z_m / (a + b * z_m). Calibrate with
+    # depth_processing_ros's ground calibration (its fixed_a / fixed_b).
+    depth_correction: tuple = None
     max_time: float = None  # max seconds of bag data to load at once (None = all)
 
     def __post_init__(self):
@@ -159,3 +163,12 @@ class SegmentMappingDataParams(ParamsBase):
             self.camera_pose_data["T_postmultiply"] = np.array(
                 self.camera_pose_data["T_postmultiply"]
             ).reshape((4, 4))
+
+        if self.depth_correction is not None:
+            assert len(self.depth_correction) == 2, (
+                "depth_correction must be a pair [a, b]"
+            )
+            assert not self.point_cloud_data, (
+                "depth_correction applies to depth images, not point_cloud_data"
+            )
+            self.depth_correction = tuple(float(v) for v in self.depth_correction)

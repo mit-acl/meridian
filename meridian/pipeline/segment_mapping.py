@@ -218,6 +218,7 @@ def segment_mapping(
         segmenter_params.use_point_cloud = True
     else:
         segmenter_params.depth_scale = 1 / data_params.depth_scale
+        segmenter_params.depth_correction = data_params.depth_correction
 
     os.makedirs(output_dir, exist_ok=True)
 
