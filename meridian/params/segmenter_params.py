@@ -86,6 +86,9 @@ class SegmenterParams(SegmenterParamsBase):
     # scaled to match; build the SegmentMapper with Segmenter.camera_params)
     img_downsample_factor: int = 1
     depth_scale: float = 1e3
+    # Optional [a, b] depth-bias correction, applied in metres after depth_scale:
+    # z = z_raw / (a + b * z_raw) (from 1/z_true = a/z_raw + b). None = no correction.
+    depth_correction: Tuple[float, float] = None
     max_depth: float = 10.0
     mask_downsample_factor: int = 8
     pcd_stride: int = 4

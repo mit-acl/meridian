@@ -31,7 +31,10 @@ from meridian.cross_view.place_recognition import CrossViewPlaceRecognition
 from meridian.pipeline.data import CrossViewLocalizationData
 from meridian.utils import expandvars_recursive, save_commit_hash, save_params
 from meridian.segmenter.aerial_segmenter import AerialSegmenter
-from meridian.map2d.segment_to_primitive import SegmentToPrimitiveConverter
+from meridian.map2d.segment_to_primitive import (
+    SegmentToPrimitiveConverter,
+    forkserver_context,
+)
 from meridian.map2d.aerial_patch_primitive_mapping import (
     AerialPatchPrimitiveMapping,
     AerialSegmentationResult,
@@ -629,7 +632,10 @@ class CrossViewMatchingPipeline:
                 1, round(self._viz_params.aerial_viz_line_width_m * px_per_m)
             )
             viz_futures = {}
-            with ProcessPoolExecutor(max_workers=max_workers) as executor:
+            # forkserver: a forked pool would duplicate this (possibly very large) process
+            with ProcessPoolExecutor(
+                max_workers=max_workers, mp_context=forkserver_context()
+            ) as executor:
                 for ground_key in match_result.results:
                     details = match_result.match_details.get(ground_key, {})
                     dense_points_by_id = dense_points_all[ground_key]

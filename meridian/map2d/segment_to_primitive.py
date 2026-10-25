@@ -1,5 +1,6 @@
 import atexit
 import logging
+import multiprocessing
 import signal
 from concurrent.futures import ProcessPoolExecutor
 from time import perf_counter as _perf
@@ -22,7 +23,11 @@ logger = logging.getLogger(__name__)
 # used previously paid fork+pickle-of-workers overhead on every submap/window,
 # which almost entirely cancelled the parallel speedup. Forking once and reusing
 # amortizes that. Workers only run _classify_single_segment (pure CPU numpy /
-# shapely), so they never touch CUDA.
+# shapely), so they never touch CUDA. Workers are started from a forkserver
+# (forkserver_context), not forked from the caller: a forked pool that lives for
+# the whole run pins the caller's memory at fork time (aerial map, loaded images,
+# models) while the caller's later writes duplicate it, roughly doubling a
+# pipeline's memory.
 _PERSISTENT_POOL = None
 _PERSISTENT_POOL_WORKERS = None
 
@@ -46,13 +51,27 @@ def _shutdown_persistent_pool():
 atexit.register(_shutdown_persistent_pool)
 
 
+def forkserver_context():
+    """
+    multiprocessing context for worker pools in large processes. Workers are forked from a
+    small forkserver instead of from the caller, so they don't pin or duplicate the caller's
+    memory; the forkserver preloads this module (and so meridian's heavy imports) once, so
+    workers share those pages instead of each re-importing them.
+    """
+    ctx = multiprocessing.get_context("forkserver")
+    ctx.set_forkserver_preload([__name__])
+    return ctx
+
+
 def _get_persistent_pool(max_workers):
     global _PERSISTENT_POOL, _PERSISTENT_POOL_WORKERS
     if _PERSISTENT_POOL is None or _PERSISTENT_POOL_WORKERS != max_workers:
         if _PERSISTENT_POOL is not None:
             _PERSISTENT_POOL.shutdown(wait=False)
         _PERSISTENT_POOL = ProcessPoolExecutor(
-            max_workers=max_workers, initializer=_ignore_sigint
+            max_workers=max_workers,
+            initializer=_ignore_sigint,
+            mp_context=forkserver_context(),
         )
         _PERSISTENT_POOL_WORKERS = max_workers
     return _PERSISTENT_POOL

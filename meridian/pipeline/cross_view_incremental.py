@@ -885,6 +885,7 @@ def cross_view_incremental(
         segmenter_params.use_point_cloud = True
     else:
         segmenter_params.depth_scale = 1 / mapping_data_params.depth_scale
+        segmenter_params.depth_correction = mapping_data_params.depth_correction
 
     ground_submap_params = GroundSubmapParams.load(params_path, run=run)
     conversion_params = SegmentToPrimitiveConversionParams.load(params_path, run=run)
