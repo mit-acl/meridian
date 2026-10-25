@@ -93,6 +93,17 @@ class SegmentMapper:
         if len(observations) == 0:  # nothing to update
             return
 
+        mask = observations[0].mask
+        if mask is not None and mask.shape[:2] != (
+            self.camera_params.height,
+            self.camera_params.width,
+        ):
+            raise ValueError(
+                f"Observation masks are {mask.shape[1]}x{mask.shape[0]} but the mapper's camera "
+                f"is {self.camera_params.width}x{self.camera_params.height}; build the "
+                f"SegmentMapper with Segmenter.camera_params (img_downsample_factor)."
+            )
+
         # store last pose
         self.last_pose = pose.copy()
 
