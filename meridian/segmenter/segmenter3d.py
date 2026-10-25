@@ -33,10 +33,34 @@ from meridian.map3d.observation import FrameObservations, Observation
 from meridian.segmenter.segmenter_base import SegmenterBase
 
 
+def downsample_camera_params(cam: CameraParams, factor: int) -> CameraParams:
+    """
+    Intrinsics of an image downsampled by an integer factor (size w // factor x h // factor),
+    keeping pixel centers aligned: u' = (u + 0.5) / factor - 0.5.
+    """
+    if cam is None or factor == 1:
+        return cam
+    K = np.array(cam.K, dtype=float)
+    K[:2, :] /= factor
+    K[0, 2] += 0.5 / factor - 0.5
+    K[1, 2] += 0.5 / factor - 0.5
+    return CameraParams(
+        K=K,
+        D=cam.D,
+        width=int(cam.width) // factor,
+        height=int(cam.height) // factor,
+        T=cam.T,
+    )
+
+
 class Segmenter(SegmenterBase):
     def __init__(self, params: SegmenterParams, depth_cam_params: CameraParams = None):
-        # parameters
-        self.depth_cam_params = depth_cam_params
+        # parameters (depth_cam_params is kept at the segmenter's working resolution; the
+        # original is kept to build masks given in full-resolution pixels)
+        self._full_res_cam_params = depth_cam_params
+        self.depth_cam_params = downsample_camera_params(
+            depth_cam_params, params.img_downsample_factor
+        )
 
         # member variables
         self.observations = []
@@ -54,6 +78,9 @@ class Segmenter(SegmenterBase):
             or self.params.rotate_img == "CCW"
             or self.params.rotate_img == "180"
         ), "Invalid rotate_img option."
+        assert (
+            self.params.img_downsample_factor == 1 or not self.params.use_point_cloud
+        ), "img_downsample_factor > 1 is not supported with use_point_cloud."
 
         # Set up YOLOv7 detector for ignore/keep masks
         assert (
@@ -76,8 +103,9 @@ class Segmenter(SegmenterBase):
 
         # Set up ignore mask from triangle ignore masks
         if self.params.triangle_ignore_masks is not None:
+            # triangles are given in full-resolution pixels
             self.constant_ignore_mask = np.zeros(
-                (self.depth_cam_params.height, self.depth_cam_params.width),
+                (self._full_res_cam_params.height, self._full_res_cam_params.width),
                 dtype=np.uint8,
             )
             for triangle in self.params.triangle_ignore_masks:
@@ -88,7 +116,9 @@ class Segmenter(SegmenterBase):
                         "Coordinates must be integers."
                     )
                 cv.fillPoly(self.constant_ignore_mask, [np.array(triangle)], 1)
-            self.constant_ignore_mask = self.apply_rotation(self.constant_ignore_mask)
+            self.constant_ignore_mask = self.apply_rotation(
+                self.downsample_img(self.constant_ignore_mask, cv.INTER_NEAREST)
+            )
         else:
             self.constant_ignore_mask = None
 
@@ -114,6 +144,19 @@ class Segmenter(SegmenterBase):
             self.erosion_element = None
         self._erode_buf = None
         self._erode_prev = (slice(0, 0), slice(0, 0))
+
+    @property
+    def camera_params(self) -> CameraParams:
+        """Intrinsics of the images the segmenter works on (and of its observation masks)."""
+        return self.depth_cam_params
+
+    def downsample_img(self, img, interpolation):
+        f = self.params.img_downsample_factor
+        if f == 1:
+            return img
+        return cv.resize(
+            img, (img.shape[1] // f, img.shape[0] // f), interpolation=interpolation
+        )
 
     def _init_semantics_model(self):
         """Override to add CLIP support on top of base DINO/DINOv3 support."""
@@ -160,6 +203,13 @@ class Segmenter(SegmenterBase):
             )
 
         self.observations = []
+
+        # downsample to the working resolution (area-averaged color; nearest-neighbor depth so
+        # depths are never blended across object edges)
+        if self.params.img_downsample_factor > 1:
+            img_bgr = self.downsample_img(img_bgr, cv.INTER_AREA)
+            if depth_data is not None:
+                depth_data = self.downsample_img(depth_data, cv.INTER_NEAREST)
 
         # rotate image
         img_orig = img_bgr
@@ -451,6 +501,20 @@ class Segmenter(SegmenterBase):
         self._erode_prev = (slice(y0, y1), slice(x0, x1))
         return buf
 
+    def _depth_to_m(self, z):
+        """
+        Applies params.depth_correction (a, b), if set, to depths z already in metres:
+        z / (a + b * z). Invalid depths (0, NaN, inf, or a non-positive denominator)
+        come out as 0.
+        """
+        if self.params.depth_correction is None:
+            return z
+        a, b = self.params.depth_correction
+        den = a + b * z
+        with np.errstate(divide="ignore", invalid="ignore"):
+            out = z / den
+        return np.where(np.isfinite(out) & (z > 0) & (den > 1e-3), out, 0.0)
+
     def _unproject_depth(self, depth):
         """
         Unprojects every pcd_stride-th pixel of a depth image, using the same arithmetic as
@@ -461,7 +525,7 @@ class Segmenter(SegmenterBase):
             valid ((h, w) np.array): pixels with depth in (0, max_depth)
         """
         s = self.params.pcd_stride
-        z = (
+        z = self._depth_to_m(
             (depth[::s, ::s].astype(np.float64) / self.params.depth_scale)
             .astype(np.float32)
             .astype(np.float64)
@@ -617,7 +681,7 @@ class Segmenter(SegmenterBase):
             if occluded_pixels.size == 0:
                 return occluded_points
 
-            occluded_pixels_depths = (
+            occluded_pixels_depths = self._depth_to_m(
                 depth_img[occluded_pixels[:, 0], occluded_pixels[:, 1]]
                 / self.params.depth_scale
             )
