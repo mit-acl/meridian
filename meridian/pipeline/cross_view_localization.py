@@ -165,9 +165,10 @@ class CrossViewLocalization:
             main_output_dir: Top-level output dir, used to find ground dense
                 points when rerunning from a subdirectory.
             dense_pose_data: Optional full-rate T_odom_camera odometry (the
-                source of the ground map trajectory). If given, the final 3D
-                solution is densified onto it and saved as
-                dense_trajectory_3d.csv next to the final results.
+                source of the ground map trajectory). If given, the 3D
+                solution of each pass is densified onto it and saved as
+                dense_trajectory_3d.csv next to that pass's results
+                (output_dir, and output_dir/rerun for the rerun).
 
         Returns CrossViewRPGOResult, or None if localization fails.
         """
@@ -198,6 +199,10 @@ class CrossViewLocalization:
             return None
 
         self._save_results(result, output_dir)
+        if dense_pose_data is not None:
+            self._save_dense_trajectory(
+                result, trajectory, dense_pose_data, data.T_camera_flu, output_dir
+            )
         initial_match_results = _load_match_results_per_submap(
             pathlib.Path(match_output_dir)
         )
@@ -243,10 +248,6 @@ class CrossViewLocalization:
                     )
                 return rerun_result
 
-        if dense_pose_data is not None:
-            self._save_dense_trajectory(
-                result, trajectory, dense_pose_data, data.T_camera_flu, output_dir
-            )
         return result
 
     # ------------------------------------------------------------------
