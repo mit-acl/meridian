@@ -82,7 +82,7 @@ from meridian.pipeline.data import (
     SegmentMappingData,
 )
 from meridian.register.registerer import Registerer2D
-from meridian.utils import save_commit_hash, save_params
+from meridian.utils import check_body_z_up, save_commit_hash, save_params
 from meridian.viz.cross_view_viz import viz_ground_segments
 from meridian.viz.incremental import (
     make_utm_to_pixel,
@@ -182,6 +182,8 @@ class CrossViewIncremental:
                 img_t = data.img_data.nearest_time(t)
                 img = data.img_data.img(img_t)
                 pose = data.camera_pose_data.pose(img_t)
+                if self.data.T_camera_flu is not None:
+                    check_body_z_up(pose, self.data.T_camera_flu, img_t)
                 if data.use_point_cloud:
                     pcl = data.align_point_cloud.aligned_point_cloud(img_t)
                     pcl_proj = data.align_point_cloud.projected_point_cloud(pcl)
@@ -898,6 +900,12 @@ def cross_view_incremental(
     incremental_params = CrossViewIncrementalParams.load(params_path, run=run)
     loc_data_params = CrossViewLocalizationDataParams.load(params_path, run=run)
     aerial_dir = loc_data_params.resolve_aerial_dir(aerial_dir, required=True)
+    if loc_data_params.T_camera_flu is None:
+        raise ValueError(
+            "Ground submaps need a body frame: set "
+            "cross_view_localization_data.T_camera_flu or "
+            "segment_mapping_data.camera_pose_data.T_postmultiply."
+        )
 
     try:
         viz_params = CrossViewVisualizationParams.load(params_path, run=run)

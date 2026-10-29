@@ -1,5 +1,6 @@
 import numpy as np
 import os
+import yaml
 import argparse
 import tqdm
 import time
@@ -12,14 +13,17 @@ from meridian.viz.viz_segments import render3d_on_img, viz_segments_on_cam_img
 from robotdatapy.data.robot_data import NoDataNearTimeException
 
 from meridian.params import (
+    CrossViewLocalizationDataParams,
     SegmentMappingParams,
     SegmentMappingDataParams,
     SegmenterParams,
 )
+from meridian.params.params_checks import resolve_T_camera_flu
 from meridian.pipeline.data import SegmentMappingData
 from meridian.segmenter.segmenter3d import Segmenter
 from meridian.map3d.segment_mapper import SegmentMapper
 from meridian.map3d.map import SegmentMap
+from meridian.utils import check_body_z_up
 
 
 @dataclass
@@ -31,6 +35,8 @@ class SegmentMapping:
     vid_3d: bool = False
     show_occluded: bool = False
     output_dir: str = None
+    # camera -> body (FLU); if set, each pose is checked for a z-up body
+    T_camera_flu: np.ndarray = None
     _video_writer: object = field(default=None, init=False, repr=False)
     _timing: dict = field(
         default_factory=lambda: {"data": [], "segment": [], "map": [], "submap_2d": []},
@@ -60,6 +66,8 @@ class SegmentMapping:
                 img_t = data.img_data.nearest_time(t)
                 img = data.img_data.img(img_t)
                 pose = data.camera_pose_data.pose(img_t)
+                if self.T_camera_flu is not None:
+                    check_body_z_up(pose, self.T_camera_flu, img_t)
                 if data.use_point_cloud:
                     pcl = data.align_point_cloud.aligned_point_cloud(img_t)
                     pcl_proj = data.align_point_cloud.projected_point_cloud(pcl)
@@ -203,6 +211,22 @@ class SegmentMapping:
         )
 
 
+def _load_T_camera_flu(params_path, run, data_params):
+    """T_camera_flu from the cross_view_localization_data section if the params
+    have one (resolved on load), else defaulted from data_params.camera_pose_data
+    alone, so mapping-only params need no localization section.
+    """
+    key = CrossViewLocalizationDataParams.params_key
+    if os.path.isdir(params_path):
+        has_loc = os.path.isfile(f"{params_path}/{key}.yaml")
+    else:
+        with open(params_path, "r") as f:
+            has_loc = key in (yaml.full_load(f) or {})
+    if has_loc:
+        return CrossViewLocalizationDataParams.load(params_path, run=run).T_camera_flu
+    return resolve_T_camera_flu(None, data_params.camera_pose_data)
+
+
 def segment_mapping(
     params_path: str,
     output_dir: str,
@@ -253,7 +277,15 @@ def segment_mapping(
     # Set up incremental 2D ground submap pipeline if enabled
     ground_submap_mapping = None
     pr_params = None
+    T_camera_flu = None
     if mapping_params.inc_submaps_2d:
+        T_camera_flu = _load_T_camera_flu(params_path, run, data_params)
+        if T_camera_flu is None:
+            raise ValueError(
+                "Ground submaps need a body frame: set "
+                "cross_view_localization_data.T_camera_flu or "
+                "segment_mapping_data.camera_pose_data.T_postmultiply."
+            )
         from meridian.params import (
             GroundSubmapParams,
             SegmentToPrimitiveConversionParams,
@@ -305,6 +337,7 @@ def segment_mapping(
         vid_3d=vid_3d,
         show_occluded=show_occluded,
         output_dir=output_dir,
+        T_camera_flu=T_camera_flu,
     )
 
     # Set up video writer if any video pane is enabled
