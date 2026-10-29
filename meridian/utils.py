@@ -235,3 +235,20 @@ def vstack_opt(arrs: List[Union[np.ndarray, None]]) -> Union[np.ndarray, None]:
         return arrs[0]
 
     return np.vstack(nonzero_arrs)
+
+
+def check_body_z_up(T_odom_camera, T_camera_flu, t):
+    """Raise if the body frame (T_odom_camera @ T_camera_flu) has its z axis
+    at or below the odometry frame's horizon. meridian takes 2D yaw from the body x
+    axis and needs an x-forward, z-up body; a tilted-over body usually means a
+    wrong T_camera_flu or camera_pose_data.T_postmultiply.
+    """
+    z_up = (T_odom_camera @ T_camera_flu)[2, 2]
+    if z_up <= 0:
+        tilt = np.degrees(np.arccos(np.clip(z_up, -1.0, 1.0)))
+        raise ValueError(
+            f"Body z axis is {tilt:.1f} deg from odometry up at t={t:.2f} "
+            "(at or below the horizon). Check "
+            "cross_view_localization_data.T_camera_flu and "
+            "segment_mapping_data.camera_pose_data.T_postmultiply."
+        )
