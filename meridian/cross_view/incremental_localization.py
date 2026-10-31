@@ -767,3 +767,72 @@ class IncrementalLocalization:
         if not result.success:
             return None
         return result
+
+    def rerun_with_known_rotation(
+        self,
+        seed_result: CrossViewRPGOResult,
+        poses_cam_history: List[np.ndarray],
+        times_history: np.ndarray,
+    ) -> Tuple[Optional[CrossViewRPGOResult], Optional[CrossViewMatchResult]]:
+        """End-of-run counterpart of the offline localization rerun: re-match
+        every ground submap against its max_intersection aerial patches with
+        rotation known from `seed_result`'s trajectory, then CLIPPER + PGO on
+        those candidates alone (the incremental candidates are discarded).
+        Returns ``(result, match_result)``; result is None on failure or
+        unsuccessful solve. Does not change the incremental state.
+        """
+        times_arr = np.asarray(times_history)
+        reference_pose_data = self._build_camera_pose_data(
+            seed_result.optimized_trajectory, times_arr
+        )
+
+        primitive_matcher = self.matcher.matcher
+        prev_solver = primitive_matcher.params.solver
+        if self.matcher.pipeline_params.clipper_pass2 and prev_solver == "langevin":
+            primitive_matcher.set_solver("clipper")
+        try:
+            match_result = self.matcher.cross_view_match_max_intersection(
+                self.aerial_submaps,
+                dict(self._ground_submaps),
+                reference_trajectory=reference_pose_data,
+                T_camera_flu=self.context.T_camera_flu,
+                translation_only=True,
+                show_progress=True,
+                local_to_pixel_fn=self.context.local_to_pixel_fn,
+                gt_trajectory=self.context.gt_pose_data,
+                aerial_submaps_2d=self._aerial_submaps_2d,
+            )
+        finally:
+            primitive_matcher.set_solver(prev_solver)
+
+        min_assoc = (
+            self.rpgo_params.min_num_associations_rerun
+            if self.rpgo_params.min_num_associations_rerun is not None
+            else self.rpgo_params.min_num_associations
+        )
+        candidates = build_candidates_from_match_result(
+            match_result,
+            self._ground_submaps,
+            self.aerial_submaps,
+            self.context,
+            min_assoc,
+        )
+        if not candidates:
+            logger.warning("Known-rotation rerun: no candidates passed filtering.")
+            return None, match_result
+
+        rpgo = CrossViewRPGO(params=self.rpgo_params)
+        try:
+            result = rpgo.solve(
+                candidates, poses_cam_history, times_arr, self.context.T_camera_flu
+            )
+        except Exception as e:
+            logger.warning(f"Known-rotation rerun solve failed: {e}")
+            return None, match_result
+        if not result.success:
+            return None, match_result
+        logger.info(
+            f"Known-rotation rerun: {len(result.inlier_indices)} inliers "
+            f"(seed had {len(seed_result.inlier_indices)})"
+        )
+        return result, match_result

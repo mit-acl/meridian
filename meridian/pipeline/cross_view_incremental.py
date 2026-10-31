@@ -479,14 +479,18 @@ class CrossViewIncremental:
     # End-of-run output
     # ------------------------------------------------------------------
 
-    def write_outputs(self):
+    def write_outputs(self, rerun: bool = True):
+        """Write all end-of-run outputs. With `rerun` (and
+        `rerun_match_with_known_rot`), also run the known-rotation rerun into
+        localization/rerun; it is post-processing, not part of the incremental
+        timing."""
         out = pathlib.Path(self.output_dir)
         out.mkdir(parents=True, exist_ok=True)
 
         self._write_mapping_outputs()
         self._write_match_heatmaps()
         self._write_incremental_outputs()
-        self._write_localization_outputs()
+        self._write_localization_outputs(rerun)
 
     # TODO: could this be shared with the segment_mapping pipeline?
     def _write_mapping_outputs(self):
@@ -720,27 +724,61 @@ class CrossViewIncremental:
             f.write("\n".join(lines) + "\n")
         print("\n".join(lines))
 
-    def _write_localization_outputs(self):
+    def _write_localization_outputs(self, rerun: bool = True):
         out = pathlib.Path(self.output_dir) / "localization"
         out.mkdir(parents=True, exist_ok=True)
         if not self.loc.candidates:
             logger.warning("No candidates accumulated — skipping localization outputs.")
             return
-        result = self.loc.solve_full(
-            self.mapper.poses_cam_history,
-            np.array(self.mapper.times_history),
-        )
+        times = np.array(self.mapper.times_history)
+        result = self.loc.solve_full(self.mapper.poses_cam_history, times)
         if result is None or not result.success:
             logger.warning("Final localization solve failed or returned no success.")
             return
+        # The mapper only ever holds one chunk of odometry, so reload the
+        # (small) pose topic in full for densification
+        dense_pose_data = (
+            PoseData.from_dict(self.camera_pose_data_params)
+            if self.camera_pose_data_params
+            else None
+        )
+        self._save_localization_result(
+            result,
+            out,
+            dense_pose_data,
+            dict(self.loc.results_per_submap) if self.loc.results_per_submap else None,
+        )
+
+        if not (rerun and self.loc.rpgo_params.rerun_match_with_known_rot):
+            return
+        print("Rerunning matching with known rotation...")
+        rerun_result, rerun_match_result = self.loc.rerun_with_known_rotation(
+            result, self.mapper.poses_cam_history, times
+        )
+        if rerun_result is None:
+            logger.warning("Known-rotation rerun failed — no localization/rerun.")
+            return
+        self._save_localization_result(
+            rerun_result,
+            out / "rerun",
+            dense_pose_data,
+            rerun_match_result.results,
+        )
+
+    def _save_localization_result(
+        self,
+        result: CrossViewRPGOResult,
+        out: pathlib.Path,
+        dense_pose_data: Optional[PoseData],
+        match_results_per_submap: Optional[dict],
+    ):
+        out.mkdir(parents=True, exist_ok=True)
         CrossViewLocalization._save_results(result, out)
-        if self.camera_pose_data_params:
-            # The mapper only ever holds one chunk of odometry, so reload the
-            # (small) pose topic in full for densification
+        if dense_pose_data is not None:
             CrossViewLocalization._save_dense_trajectory(
                 result,
                 self.mapper.poses_cam_history,
-                PoseData.from_dict(self.camera_pose_data_params),
+                dense_pose_data,
                 self.data.T_camera_flu,
                 out,
             )
@@ -749,9 +787,7 @@ class CrossViewIncremental:
             self.data,
             out,
             self.viz_params,
-            match_results_per_submap=dict(self.loc.results_per_submap)
-            if self.loc.results_per_submap
-            else None,
+            match_results_per_submap=match_results_per_submap,
             match_trans_err_m=self.loc.matcher.pipeline_params.match_trans_err_m,
             match_rot_err_deg=self.loc.matcher.pipeline_params.match_rot_err_deg,
         )
@@ -1085,7 +1121,7 @@ def cross_view_incremental(
         print(f"Pipeline took {wall_time:.2f}s")
         try:
             print("Writing outputs...")
-            pipeline.write_outputs()
+            pipeline.write_outputs(rerun=not interrupted)
         except Exception as e:
             logger.warning(f"write_outputs failed during shutdown: {e}")
         if pipeline._movie is not None:

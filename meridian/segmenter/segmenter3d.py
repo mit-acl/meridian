@@ -501,20 +501,6 @@ class Segmenter(SegmenterBase):
         self._erode_prev = (slice(y0, y1), slice(x0, x1))
         return buf
 
-    def _depth_to_m(self, z):
-        """
-        Applies params.depth_correction (a, b), if set, to depths z already in metres:
-        z / (a + b * z). Invalid depths (0, NaN, inf, or a non-positive denominator)
-        come out as 0.
-        """
-        if self.params.depth_correction is None:
-            return z
-        a, b = self.params.depth_correction
-        den = a + b * z
-        with np.errstate(divide="ignore", invalid="ignore"):
-            out = z / den
-        return np.where(np.isfinite(out) & (z > 0) & (den > 1e-3), out, 0.0)
-
     def _unproject_depth(self, depth):
         """
         Unprojects every pcd_stride-th pixel of a depth image, using the same arithmetic as
@@ -525,7 +511,7 @@ class Segmenter(SegmenterBase):
             valid ((h, w) np.array): pixels with depth in (0, max_depth)
         """
         s = self.params.pcd_stride
-        z = self._depth_to_m(
+        z = (
             (depth[::s, ::s].astype(np.float64) / self.params.depth_scale)
             .astype(np.float32)
             .astype(np.float64)
@@ -681,7 +667,7 @@ class Segmenter(SegmenterBase):
             if occluded_pixels.size == 0:
                 return occluded_points
 
-            occluded_pixels_depths = self._depth_to_m(
+            occluded_pixels_depths = (
                 depth_img[occluded_pixels[:, 0], occluded_pixels[:, 1]]
                 / self.params.depth_scale
             )
