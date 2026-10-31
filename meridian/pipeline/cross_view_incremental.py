@@ -38,15 +38,18 @@ import matplotlib.pyplot as plt
 import numpy as np
 import tqdm
 
+from robotdatapy.data import PoseData
 from robotdatapy.data.robot_data import NoDataNearTimeException
 
 from meridian.cross_view.incremental_localization import IncrementalLocalization
 from meridian.cross_view.matching import CrossViewMatching
 from meridian.cross_view.place_recognition import CrossViewPlaceRecognition
+from meridian.cross_view.rpgo import CrossViewRPGOResult
 from meridian.map2d.ground_submap_primitive_mapping import (
     GroundSubmapPrimitiveMapping,
 )
 from meridian.map2d.segment_to_primitive import SegmentToPrimitiveConverter
+from meridian.map3d.map import SegmentMap
 from meridian.map3d.segment_mapper import SegmentMapper
 from meridian.segmenter.segmenter3d import Segmenter
 from meridian.map3d.submap import Submap
@@ -111,6 +114,9 @@ class CrossViewIncremental:
     viz_params: CrossViewVisualizationParams
 
     output_dir: str = ""
+    # camera_pose_data config (segment_mapping_data) for the full-rate odometry;
+    # used to save a dense 3D trajectory at the end of the run
+    camera_pose_data_params: dict = field(default_factory=dict)
 
     # Pipeline state
     _submap_viz: bool = field(default=False, init=False)
@@ -392,8 +398,6 @@ class CrossViewIncremental:
                 f.write("\n".join(stub) + "\n")
             return
 
-        from meridian.cross_view.rpgo import CrossViewRPGOResult
-
         viz_result = CrossViewRPGOResult(
             success=True,
             T_utm_odom=T_utm_odom_local,
@@ -489,8 +493,6 @@ class CrossViewIncremental:
         out = pathlib.Path(self.output_dir)
 
         # segment_map.pkl
-        from meridian.map3d.map import SegmentMap
-
         descriptors = self.mapper.frame_descriptors_history
         if not any(d is not None for d in descriptors):
             descriptors = None
@@ -733,6 +735,16 @@ class CrossViewIncremental:
             logger.warning("Final localization solve failed or returned no success.")
             return
         CrossViewLocalization._save_results(result, out)
+        if self.camera_pose_data_params:
+            # The mapper only ever holds one chunk of odometry, so reload the
+            # (small) pose topic in full for densification
+            CrossViewLocalization._save_dense_trajectory(
+                result,
+                self.mapper.poses_cam_history,
+                PoseData.from_dict(self.camera_pose_data_params),
+                self.data.T_camera_flu,
+                out,
+            )
         CrossViewLocalization._visualize_and_report(
             result,
             self.data,
@@ -984,6 +996,7 @@ def cross_view_incremental(
         data=loc_data,
         viz_params=viz_params,
         output_dir=output_dir,
+        camera_pose_data_params=mapping_data_params.camera_pose_data,
     )
     pipeline._params_path = params_path
     pipeline._submap_viz = submap_viz
@@ -1109,8 +1122,6 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     if args.debug:
-        import logging
-
         logging.basicConfig(
             level=logging.INFO, format="%(levelname)s:%(name)s:%(message)s"
         )
