@@ -29,14 +29,38 @@ from robotdatapy.camera import CameraParams, pixel_depth_2_xyz
 
 from meridian.params import SegmenterParams
 from meridian.viz.viz_segments import viz_masks_on_img
-from meridian.map3d.observation import Observation
+from meridian.map3d.observation import FrameObservations, Observation
 from meridian.segmenter.segmenter_base import SegmenterBase
+
+
+def downsample_camera_params(cam: CameraParams, factor: int) -> CameraParams:
+    """
+    Intrinsics of an image downsampled by an integer factor (size w // factor x h // factor),
+    keeping pixel centers aligned: u' = (u + 0.5) / factor - 0.5.
+    """
+    if cam is None or factor == 1:
+        return cam
+    K = np.array(cam.K, dtype=float)
+    K[:2, :] /= factor
+    K[0, 2] += 0.5 / factor - 0.5
+    K[1, 2] += 0.5 / factor - 0.5
+    return CameraParams(
+        K=K,
+        D=cam.D,
+        width=int(cam.width) // factor,
+        height=int(cam.height) // factor,
+        T=cam.T,
+    )
 
 
 class Segmenter(SegmenterBase):
     def __init__(self, params: SegmenterParams, depth_cam_params: CameraParams = None):
-        # parameters
-        self.depth_cam_params = depth_cam_params
+        # parameters (depth_cam_params is kept at the segmenter's working resolution; the
+        # original is kept to build masks given in full-resolution pixels)
+        self._full_res_cam_params = depth_cam_params
+        self.depth_cam_params = downsample_camera_params(
+            depth_cam_params, params.img_downsample_factor
+        )
 
         # member variables
         self.observations = []
@@ -54,6 +78,9 @@ class Segmenter(SegmenterBase):
             or self.params.rotate_img == "CCW"
             or self.params.rotate_img == "180"
         ), "Invalid rotate_img option."
+        assert (
+            self.params.img_downsample_factor == 1 or not self.params.use_point_cloud
+        ), "img_downsample_factor > 1 is not supported with use_point_cloud."
 
         # Set up YOLOv7 detector for ignore/keep masks
         assert (
@@ -76,8 +103,9 @@ class Segmenter(SegmenterBase):
 
         # Set up ignore mask from triangle ignore masks
         if self.params.triangle_ignore_masks is not None:
+            # triangles are given in full-resolution pixels
             self.constant_ignore_mask = np.zeros(
-                (self.depth_cam_params.height, self.depth_cam_params.width),
+                (self._full_res_cam_params.height, self._full_res_cam_params.width),
                 dtype=np.uint8,
             )
             for triangle in self.params.triangle_ignore_masks:
@@ -88,7 +116,9 @@ class Segmenter(SegmenterBase):
                         "Coordinates must be integers."
                     )
                 cv.fillPoly(self.constant_ignore_mask, [np.array(triangle)], 1)
-            self.constant_ignore_mask = self.apply_rotation(self.constant_ignore_mask)
+            self.constant_ignore_mask = self.apply_rotation(
+                self.downsample_img(self.constant_ignore_mask, cv.INTER_NEAREST)
+            )
         else:
             self.constant_ignore_mask = None
 
@@ -114,6 +144,19 @@ class Segmenter(SegmenterBase):
             self.erosion_element = None
         self._erode_buf = None
         self._erode_prev = (slice(0, 0), slice(0, 0))
+
+    @property
+    def camera_params(self) -> CameraParams:
+        """Intrinsics of the images the segmenter works on (and of its observation masks)."""
+        return self.depth_cam_params
+
+    def downsample_img(self, img, interpolation):
+        f = self.params.img_downsample_factor
+        if f == 1:
+            return img
+        return cv.resize(
+            img, (img.shape[1] // f, img.shape[0] // f), interpolation=interpolation
+        )
 
     def _init_semantics_model(self):
         """Override to add CLIP support on top of base DINO/DINOv3 support."""
@@ -150,8 +193,9 @@ class Segmenter(SegmenterBase):
             compute_frame_descriptor (bool): whether to compute the frame-level descriptor
 
         Returns:
-            self.observations (list): list of Observations
-            frame_descriptor (np.ndarray): semantic descriptor of the frame if frame_descriptor is not None, else None
+            FrameObservations: the frame's Observations, plus its frame descriptor
+            (None if not computed this frame) and this segmenter's
+            frame_descriptor type
         """
         if depth_data is not None:
             assert self.depth_cam_params is not None or self.params.use_point_cloud, (
@@ -159,6 +203,13 @@ class Segmenter(SegmenterBase):
             )
 
         self.observations = []
+
+        # downsample to the working resolution (area-averaged color; nearest-neighbor depth so
+        # depths are never blended across object edges)
+        if self.params.img_downsample_factor > 1:
+            img_bgr = self.downsample_img(img_bgr, cv.INTER_AREA)
+            if depth_data is not None:
+                depth_data = self.downsample_img(depth_data, cv.INTER_NEAREST)
 
         # rotate image
         img_orig = img_bgr
@@ -336,7 +387,13 @@ class Segmenter(SegmenterBase):
 
             self.observations.append(new_observation)
 
-        return self.observations, frame_descriptor
+        return FrameObservations(
+            time=t,
+            pose=pose,
+            observations=self.observations,
+            frame_descriptor=frame_descriptor,
+            frame_descriptor_type=self.frame_descriptor_type,
+        )
 
     def visualize_segments(
         self, img_bgr: np.ndarray, observations: List[Observation], alpha: float = 0.5

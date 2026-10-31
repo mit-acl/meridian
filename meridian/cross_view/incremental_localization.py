@@ -23,7 +23,8 @@ State machine (two gates before committing to global localization):
   CLIPPER + PGO on the full accumulated set.
 
 The instantaneous pose is causal: None before successful global localization,
-T_utm_lastopt @ inv(T_odom_lastopt) @ pose_cam after.
+_lastopt_T_utm_odom() @ pose_cam after (gravity-aligned correction from the
+last PGO solve).
 """
 
 import logging
@@ -42,6 +43,8 @@ from meridian.cross_view.rpgo import (
     CrossViewRPGO,
     CrossViewRPGOResult,
     pose_data_from_trajectory,
+    se2_to_se3,
+    se3_to_se2,
 )
 from meridian.map3d.submap import Submap
 from meridian.params import CrossViewIncrementalParams, CrossViewRPGOParams
@@ -116,7 +119,7 @@ class IncrementalLocalization:
         default=None, init=False
     )
     # Camera-frame anchors for propagating future poses consistently with the
-    # most recent PGO. Future T_utm_camera(t) = T_utm_lastopt @ inv(T_odom_lastopt) @ T_odom_cam(t).
+    # most recent PGO. Future T_utm_camera(t) = _lastopt_T_utm_odom() @ T_odom_cam(t).
     _T_utm_lastopt: Optional[np.ndarray] = field(default=None, init=False)
     _T_odom_lastopt: Optional[np.ndarray] = field(default=None, init=False)
     # Viz-only T_utm_odom (PRE state); refreshed via rigid frame_align on
@@ -238,7 +241,7 @@ class IncrementalLocalization:
         rpgo = CrossViewRPGO(params=self.rpgo_params)
         t_or_start = time.time()
         try:
-            inlier_indices, _M, _C, lc_obj = rpgo.solve_clipper_only(
+            inlier_indices, lc_obj = rpgo.solve_clipper_only(
                 self._candidates,
                 poses_cam_history,
                 times_arr,
@@ -417,7 +420,7 @@ class IncrementalLocalization:
     ):
         """Build a camera-frame PoseData covering the full trajectory by
         propagating the last-accepted PGO anchors forward via odom:
-            T_utm_camera(t) = _T_utm_lastopt @ inv(_T_odom_lastopt) @ pose_cam(t).
+            T_utm_camera(t) = _lastopt_T_utm_odom() @ pose_cam(t).
         Used as the matcher's `reference_trajectory` so aerial-patch selection
         tracks the live camera pose instead of clamping to the last accepted
         PGO frame. Returns None if anchors are not yet set.
@@ -426,12 +429,32 @@ class IncrementalLocalization:
             return None
         if poses_cam_history is None or len(poses_cam_history) == 0:
             return None
-        T_odom_lastopt_inv = np.linalg.inv(self._T_odom_lastopt)
-        cam_traj = [
-            self._T_utm_lastopt @ T_odom_lastopt_inv @ pose_cam
-            for pose_cam in poses_cam_history
-        ]
+        T_utm_odom = self._lastopt_T_utm_odom()
+        cam_traj = [T_utm_odom @ pose_cam for pose_cam in poses_cam_history]
         return pose_data_from_trajectory(cam_traj, np.asarray(times_arr))
+
+    def _lastopt_T_utm_odom(self) -> np.ndarray:
+        """Gravity-aligned T_utm_odom from the lastopt anchors, for propagating
+        odometry past the most recent PGO solve.
+
+        The anchor T_utm_body is world-flat (PGO output) while T_odom_body can
+        be tilted, so T_utm_lastopt @ inv(T_odom_lastopt) 
+        would carry an un-tilt rotation into all later
+        odometry motion. Instead both are projected to SE(2) before composing
+        (yaw-only correction), with z set so the anchor keeps its PGO height.
+        """
+        T_cb = (
+            np.eye(4)
+            if self.context.T_camera_flu is None
+            else self.context.T_camera_flu
+        )
+        T_utm_body = self._T_utm_lastopt @ T_cb
+        T_odom_body = self._T_odom_lastopt @ T_cb
+        T_utm_odom = se2_to_se3(
+            se3_to_se2(T_utm_body) @ np.linalg.inv(se3_to_se2(T_odom_body))
+        )
+        T_utm_odom[2, 3] = T_utm_body[2, 3] - T_odom_body[2, 3]
+        return T_utm_odom
 
     def _set_lastopt_anchors(
         self,
@@ -441,7 +464,7 @@ class IncrementalLocalization:
         """Capture the camera-frame T_utm and T_odom poses at the most recent
         PGO step. Used by `instantaneous_pose` to propagate future poses
         consistently with PGO via:
-            T_utm_cam(t) = T_utm_lastopt @ inv(T_odom_lastopt) @ T_odom_cam(t).
+            T_utm_cam(t) = _lastopt_T_utm_odom() @ T_odom_cam(t).
         `optimized_trajectory` is in body frame (T_utm_body); convert back to
         camera frame so the chain composes directly with `pose_cam`.
         """
@@ -556,7 +579,7 @@ class IncrementalLocalization:
         t_or_start = time.time()
         rerun_lc_obj: Optional[float] = None
         try:
-            rerun_inliers, _M, _C, rerun_lc_obj = rpgo.solve_clipper_only(
+            rerun_inliers, rerun_lc_obj = rpgo.solve_clipper_only(
                 rerun_candidates,
                 poses_cam_history,
                 times_arr,
@@ -664,7 +687,7 @@ class IncrementalLocalization:
         globally localized.
 
         Propagates the last PGO estimate forward via odom-frame relative motion:
-        T_utm_camera = T_utm_lastopt @ inv(T_odom_lastopt) @ pose_cam. This keeps
+        T_utm_camera = _lastopt_T_utm_odom() @ pose_cam. This keeps
         the live pose consistent with the most recent PGO output instead of the
         rigid frame-align (which discards the per-pose deformation PGO produced).
         """
@@ -673,9 +696,7 @@ class IncrementalLocalization:
             and self._T_utm_lastopt is not None
             and self._T_odom_lastopt is not None
         ):
-            T_utm_camera = (
-                self._T_utm_lastopt @ np.linalg.inv(self._T_odom_lastopt) @ pose_cam
-            )
+            T_utm_camera = self._lastopt_T_utm_odom() @ pose_cam
             return self._apply_camera_flu(T_utm_camera)
         return None
 
@@ -698,8 +719,7 @@ class IncrementalLocalization:
             opt = self._last_optimized_trajectory
             if idx < len(opt):
                 return opt[idx]
-            T_odom_inv = np.linalg.inv(self._T_odom_lastopt)
-            T_utm_cam = self._T_utm_lastopt @ T_odom_inv @ pose_cam
+            T_utm_cam = self._lastopt_T_utm_odom() @ pose_cam
             return self._apply_camera_flu(T_utm_cam)
         if self._T_utm_odom_viz is not None:
             return self._apply_camera_flu(self._T_utm_odom_viz @ pose_cam)
@@ -747,3 +767,72 @@ class IncrementalLocalization:
         if not result.success:
             return None
         return result
+
+    def rerun_with_known_rotation(
+        self,
+        seed_result: CrossViewRPGOResult,
+        poses_cam_history: List[np.ndarray],
+        times_history: np.ndarray,
+    ) -> Tuple[Optional[CrossViewRPGOResult], Optional[CrossViewMatchResult]]:
+        """End-of-run counterpart of the offline localization rerun: re-match
+        every ground submap against its max_intersection aerial patches with
+        rotation known from `seed_result`'s trajectory, then CLIPPER + PGO on
+        those candidates alone (the incremental candidates are discarded).
+        Returns ``(result, match_result)``; result is None on failure or
+        unsuccessful solve. Does not change the incremental state.
+        """
+        times_arr = np.asarray(times_history)
+        reference_pose_data = self._build_camera_pose_data(
+            seed_result.optimized_trajectory, times_arr
+        )
+
+        primitive_matcher = self.matcher.matcher
+        prev_solver = primitive_matcher.params.solver
+        if self.matcher.pipeline_params.clipper_pass2 and prev_solver == "langevin":
+            primitive_matcher.set_solver("clipper")
+        try:
+            match_result = self.matcher.cross_view_match_max_intersection(
+                self.aerial_submaps,
+                dict(self._ground_submaps),
+                reference_trajectory=reference_pose_data,
+                T_camera_flu=self.context.T_camera_flu,
+                translation_only=True,
+                show_progress=True,
+                local_to_pixel_fn=self.context.local_to_pixel_fn,
+                gt_trajectory=self.context.gt_pose_data,
+                aerial_submaps_2d=self._aerial_submaps_2d,
+            )
+        finally:
+            primitive_matcher.set_solver(prev_solver)
+
+        min_assoc = (
+            self.rpgo_params.min_num_associations_rerun
+            if self.rpgo_params.min_num_associations_rerun is not None
+            else self.rpgo_params.min_num_associations
+        )
+        candidates = build_candidates_from_match_result(
+            match_result,
+            self._ground_submaps,
+            self.aerial_submaps,
+            self.context,
+            min_assoc,
+        )
+        if not candidates:
+            logger.warning("Known-rotation rerun: no candidates passed filtering.")
+            return None, match_result
+
+        rpgo = CrossViewRPGO(params=self.rpgo_params)
+        try:
+            result = rpgo.solve(
+                candidates, poses_cam_history, times_arr, self.context.T_camera_flu
+            )
+        except Exception as e:
+            logger.warning(f"Known-rotation rerun solve failed: {e}")
+            return None, match_result
+        if not result.success:
+            return None, match_result
+        logger.info(
+            f"Known-rotation rerun: {len(result.inlier_indices)} inliers "
+            f"(seed had {len(seed_result.inlier_indices)})"
+        )
+        return result, match_result

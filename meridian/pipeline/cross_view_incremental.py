@@ -71,6 +71,7 @@ from meridian.params import (
     SegmentToPrimitiveConversionParams,
     SegmenterParams,
 )
+from meridian.params.params_checks import require_frame_descriptor
 from meridian.pipeline.cross_view_localization import (
     CrossViewLocalization,
     context_from_data,
@@ -81,7 +82,7 @@ from meridian.pipeline.data import (
     SegmentMappingData,
 )
 from meridian.register.registerer import Registerer2D
-from meridian.utils import save_commit_hash, save_params
+from meridian.utils import check_body_z_up, save_commit_hash, save_params
 from meridian.viz.cross_view_viz import viz_ground_segments
 from meridian.viz.incremental import (
     make_utm_to_pixel,
@@ -181,6 +182,8 @@ class CrossViewIncremental:
                 img_t = data.img_data.nearest_time(t)
                 img = data.img_data.img(img_t)
                 pose = data.camera_pose_data.pose(img_t)
+                if self.data.T_camera_flu is not None:
+                    check_body_z_up(pose, self.data.T_camera_flu, img_t)
                 if data.use_point_cloud:
                     pcl = data.align_point_cloud.aligned_point_cloud(img_t)
                     pcl_proj = data.align_point_cloud.projected_point_cloud(pcl)
@@ -200,18 +203,18 @@ class CrossViewIncremental:
             )
 
             t_seg_start = time.time()
-            observations, frame_descriptor = self.segmenter.segment(
+            frame = self.segmenter.segment(
                 img,
                 img_t,
                 pose,
                 depth,
                 compute_frame_descriptor=should_compute_descriptor,
             )
-            if frame_descriptor is not None:
+            if frame.frame_descriptor is not None:
                 self._last_descriptor_position = position.copy()
 
             t_map_start = time.time()
-            self.mapper.update(img_t, pose, observations, frame_descriptor)
+            self.mapper.update(frame)
 
             t_submap_start = time.time()
             self.mapper.process_submaps_2d(img_t, pose)
@@ -404,8 +407,6 @@ class CrossViewIncremental:
             optimized_trajectory=optimized_trajectory_local,
             times=np.array(self.mapper.times_history),
             inlier_indices=rerun_inliers,
-            M=None,
-            C=None,
             objective_value=rerun_lc_obj,
             candidates=rerun_candidates,
         )
@@ -478,14 +479,18 @@ class CrossViewIncremental:
     # End-of-run output
     # ------------------------------------------------------------------
 
-    def write_outputs(self):
+    def write_outputs(self, rerun: bool = True):
+        """Write all end-of-run outputs. With `rerun` (and
+        `rerun_match_with_known_rot`), also run the known-rotation rerun into
+        localization/rerun; it is post-processing, not part of the incremental
+        timing."""
         out = pathlib.Path(self.output_dir)
         out.mkdir(parents=True, exist_ok=True)
 
         self._write_mapping_outputs()
         self._write_match_heatmaps()
         self._write_incremental_outputs()
-        self._write_localization_outputs()
+        self._write_localization_outputs(rerun)
 
     # TODO: could this be shared with the segment_mapping pipeline?
     def _write_mapping_outputs(self):
@@ -501,9 +506,7 @@ class CrossViewIncremental:
             trajectory=self.mapper.poses_cam_history,
             times=self.mapper.times_history,
             descriptors=descriptors,
-            descriptor_type=(
-                self.segmenter.frame_descriptor_type if descriptors else None
-            ),
+            descriptor_type=self.mapper.frame_descriptor_type if descriptors else None,
         )
         segment_map.save(str(out / "segment_map.pkl"))
 
@@ -721,27 +724,61 @@ class CrossViewIncremental:
             f.write("\n".join(lines) + "\n")
         print("\n".join(lines))
 
-    def _write_localization_outputs(self):
+    def _write_localization_outputs(self, rerun: bool = True):
         out = pathlib.Path(self.output_dir) / "localization"
         out.mkdir(parents=True, exist_ok=True)
         if not self.loc.candidates:
             logger.warning("No candidates accumulated — skipping localization outputs.")
             return
-        result = self.loc.solve_full(
-            self.mapper.poses_cam_history,
-            np.array(self.mapper.times_history),
-        )
+        times = np.array(self.mapper.times_history)
+        result = self.loc.solve_full(self.mapper.poses_cam_history, times)
         if result is None or not result.success:
             logger.warning("Final localization solve failed or returned no success.")
             return
+        # The mapper only ever holds one chunk of odometry, so reload the
+        # (small) pose topic in full for densification
+        dense_pose_data = (
+            PoseData.from_dict(self.camera_pose_data_params)
+            if self.camera_pose_data_params
+            else None
+        )
+        self._save_localization_result(
+            result,
+            out,
+            dense_pose_data,
+            dict(self.loc.results_per_submap) if self.loc.results_per_submap else None,
+        )
+
+        if not (rerun and self.loc.rpgo_params.rerun_match_with_known_rot):
+            return
+        print("Rerunning matching with known rotation...")
+        rerun_result, rerun_match_result = self.loc.rerun_with_known_rotation(
+            result, self.mapper.poses_cam_history, times
+        )
+        if rerun_result is None:
+            logger.warning("Known-rotation rerun failed — no localization/rerun.")
+            return
+        self._save_localization_result(
+            rerun_result,
+            out / "rerun",
+            dense_pose_data,
+            rerun_match_result.results,
+        )
+
+    def _save_localization_result(
+        self,
+        result: CrossViewRPGOResult,
+        out: pathlib.Path,
+        dense_pose_data: Optional[PoseData],
+        match_results_per_submap: Optional[dict],
+    ):
+        out.mkdir(parents=True, exist_ok=True)
         CrossViewLocalization._save_results(result, out)
-        if self.camera_pose_data_params:
-            # The mapper only ever holds one chunk of odometry, so reload the
-            # (small) pose topic in full for densification
+        if dense_pose_data is not None:
             CrossViewLocalization._save_dense_trajectory(
                 result,
                 self.mapper.poses_cam_history,
-                PoseData.from_dict(self.camera_pose_data_params),
+                dense_pose_data,
                 self.data.T_camera_flu,
                 out,
             )
@@ -750,9 +787,7 @@ class CrossViewIncremental:
             self.data,
             out,
             self.viz_params,
-            match_results_per_submap=dict(self.loc.results_per_submap)
-            if self.loc.results_per_submap
-            else None,
+            match_results_per_submap=match_results_per_submap,
             match_trans_err_m=self.loc.matcher.pipeline_params.match_trans_err_m,
             match_rot_err_deg=self.loc.matcher.pipeline_params.match_rot_err_deg,
         )
@@ -901,16 +936,21 @@ def cross_view_incremental(
     incremental_params = CrossViewIncrementalParams.load(params_path, run=run)
     loc_data_params = CrossViewLocalizationDataParams.load(params_path, run=run)
     aerial_dir = loc_data_params.resolve_aerial_dir(aerial_dir, required=True)
+    if loc_data_params.T_camera_flu is None:
+        raise ValueError(
+            "Ground submaps need a body frame: set "
+            "cross_view_localization_data.T_camera_flu or "
+            "segment_mapping_data.camera_pose_data.T_postmultiply."
+        )
 
     try:
         viz_params = CrossViewVisualizationParams.load(params_path, run=run)
     except Exception:
         viz_params = CrossViewVisualizationParams()
 
+    require_frame_descriptor(segmenter_params)
     pr_params = CrossViewPlaceRecognitionParams.load(params_path, run=run)
-    place_recognition = CrossViewPlaceRecognition(
-        pr_params, segmenter_params.frame_descriptor
-    )
+    place_recognition = CrossViewPlaceRecognition(pr_params)
 
     os.makedirs(output_dir, exist_ok=True)
 
@@ -933,7 +973,10 @@ def cross_view_incremental(
     aerial_submaps = matching_pipeline.load_submaps_from_dir(aerial_seg_dir)
     if not aerial_submaps:
         raise ValueError(f"No aerial submaps found in {aerial_seg_dir}")
-    place_recognition.check_submaps("Aerial submaps", aerial_submaps)
+    CrossViewPlaceRecognition.check_descriptors_match(
+        ground=segmenter_params.frame_descriptor,
+        aerial=CrossViewPlaceRecognition.get_submaps_tag(aerial_submaps),
+    )
 
     print("Loading bag time range...")
     bag_t_range = SegmentMappingData.get_bag_time_range(mapping_data_params)
@@ -964,6 +1007,8 @@ def cross_view_incremental(
 
     print("Setting up segmenter and mapper...")
     segmenter = Segmenter(segmenter_params, depth_cam_params=camera_params)
+    # Mapper works at the segmenter's (possibly downsampled) resolution
+    camera_params = segmenter.camera_params
 
     converter = SegmentToPrimitiveConverter(conversion_params)
     ground_submap_mapping = GroundSubmapPrimitiveMapping(
@@ -976,7 +1021,7 @@ def cross_view_incremental(
         mapping_params,
         camera_params,
         ground_submap_mapping=ground_submap_mapping,
-        place_recognition=place_recognition,
+        place_recognition_params=pr_params,
     )
 
     loc = IncrementalLocalization(
@@ -1023,7 +1068,7 @@ def cross_view_incremental(
         incremental_params,
         loc_data_params,
         viz_params,
-        pr_params,
+        place_recognition.params,
     ]
     save_params(output_dir, *all_params)
     save_commit_hash(output_dir)
@@ -1076,7 +1121,7 @@ def cross_view_incremental(
         print(f"Pipeline took {wall_time:.2f}s")
         try:
             print("Writing outputs...")
-            pipeline.write_outputs()
+            pipeline.write_outputs(rerun=not interrupted)
         except Exception as e:
             logger.warning(f"write_outputs failed during shutdown: {e}")
         if pipeline._movie is not None:

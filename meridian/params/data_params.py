@@ -1,9 +1,9 @@
 import os
-import sys
 import numpy as np
 from dataclasses import dataclass
 from typing import ClassVar
 from meridian.params.params_base import ParamsBase
+from meridian.params.params_checks import resolve_aerial_dir, resolve_T_camera_flu
 from meridian.utils import expandvars_recursive
 
 
@@ -42,34 +42,25 @@ class CrossViewLocalizationDataParams(ParamsBase):
         if self.gt_pose_data is not None:
             self.gt_pose_data = expandvars_recursive(self.gt_pose_data)
 
-    def resolve_aerial_dir(self, aerial_dir, required=False):
-        """Reconcile the aerial submap dir from a --aerial flag vs. aerial_primitives_dir.
+    @classmethod
+    def load(cls, source: str, run: str = None):
+        """ParamsBase.load, then default / check T_camera_flu against
+        segment_mapping_data.camera_pose_data (params_checks.resolve_T_camera_flu)."""
+        params = super().load(source, run=run)
+        try:
+            mapping_data = SegmentMappingDataParams.load(source, run=run)
+        except FileNotFoundError:
+            mapping_data = None
+        params.T_camera_flu = resolve_T_camera_flu(
+            params.T_camera_flu, mapping_data.camera_pose_data if mapping_data else None
+        )
+        return params
 
-        Both point at the parent dir containing segments/. If both are set, --aerial
-        wins (with a loud warning); returns whichever is provided (or None). With
-        required=True, errors if neither is set.
-        """
-        if aerial_dir is not None and self.aerial_primitives_dir is not None:
-            yellow, reset = "\033[1;33m", "\033[0m"
-            bar = "=" * 80
-            print(
-                f"{yellow}{bar}\n"
-                "WARNING: aerial submap directory set by both --aerial and the "
-                "`aerial_primitives_dir` param.\n"
-                f"  Loading from --aerial:                  {aerial_dir}\n"
-                f"  Ignoring `aerial_primitives_dir` param: {self.aerial_primitives_dir}\n"
-                f"{bar}{reset}",
-                file=sys.stderr,
-                flush=True,
-            )
-        resolved = aerial_dir if aerial_dir is not None else self.aerial_primitives_dir
-        if required and resolved is None:
-            raise ValueError(
-                "No aerial submap directory. Pass --aerial <dir> or set "
-                "`aerial_primitives_dir` in the cross_view_localization_data params "
-                "(a directory containing segments/*.pkl)."
-            )
-        return resolved
+    def resolve_aerial_dir(self, aerial_dir, required=False):
+        """See params_checks.resolve_aerial_dir."""
+        return resolve_aerial_dir(
+            aerial_dir, self.aerial_primitives_dir, required=required
+        )
 
 
 @dataclass

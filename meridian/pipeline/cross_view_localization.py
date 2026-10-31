@@ -22,7 +22,6 @@ from meridian.cross_view.rpgo import (
     densify_trajectory,
     pose_data_from_trajectory,
     se2_from_xytheta,
-    se2_to_se3,
     se3_to_se2,
     yaw_from_se2,
 )
@@ -166,9 +165,10 @@ class CrossViewLocalization:
             main_output_dir: Top-level output dir, used to find ground dense
                 points when rerunning from a subdirectory.
             dense_pose_data: Optional full-rate T_odom_camera odometry (the
-                source of the ground map trajectory). If given, the final 3D
-                solution is densified onto it and saved as
-                dense_trajectory_3d.csv next to the final results.
+                source of the ground map trajectory). If given, the 3D
+                solution of each pass is densified onto it and saved as
+                dense_trajectory_3d.csv next to that pass's results
+                (output_dir, and output_dir/rerun for the rerun).
 
         Returns CrossViewRPGOResult, or None if localization fails.
         """
@@ -194,15 +194,15 @@ class CrossViewLocalization:
         rpgo = CrossViewRPGO(params=self.rpgo_params)
         result = rpgo.solve(candidates, trajectory, times, data.T_camera_flu)
 
-        # TODO - do we want to visualize affinity matrix? Slow and can crash if too big rn
-        # if result.M is not None:
-        #     self._visualize_affinity_matrix(result.M, result.C, candidates, output_dir)
-
         if not result.success:
             logger.warning("RPGO solve failed — returning None.")
             return None
 
         self._save_results(result, output_dir)
+        if dense_pose_data is not None:
+            self._save_dense_trajectory(
+                result, trajectory, dense_pose_data, data.T_camera_flu, output_dir
+            )
         initial_match_results = _load_match_results_per_submap(
             pathlib.Path(match_output_dir)
         )
@@ -248,10 +248,6 @@ class CrossViewLocalization:
                     )
                 return rerun_result
 
-        if dense_pose_data is not None:
-            self._save_dense_trajectory(
-                result, trajectory, dense_pose_data, data.T_camera_flu, output_dir
-            )
         return result
 
     # ------------------------------------------------------------------
@@ -341,12 +337,6 @@ class CrossViewLocalization:
 
         rerun_output_dir = output_dir / "rerun"
         rerun_output_dir.mkdir(parents=True, exist_ok=True)
-
-        # TODO - can crash on large matrices (OOM in Tk/matplotlib)
-        # if rerun_result.M is not None:
-        #     self._visualize_affinity_matrix(
-        #         rerun_result.M, rerun_result.C, candidates, rerun_output_dir
-        #     )
 
         if not rerun_result.success:
             logger.warning("Rerun RPGO failed — keeping initial result.")
@@ -476,11 +466,11 @@ class CrossViewLocalization:
 
                     T_utm_body_se2 = se2_from_xytheta(utm_x, utm_y, yaw)
 
-                    # Derive T_utm_odom from corrected T_utm_body
-                    T_utm_odom_4x4 = se2_to_se3(T_utm_body_se2) @ np.linalg.inv(
-                        T_odom_ground
+                    # Derive T_utm_odom from corrected T_utm_body (ground pose projected
+                    # to world-flat SE(2) first; see candidates.py)
+                    T_utm_odom_se2 = T_utm_body_se2 @ np.linalg.inv(
+                        se3_to_se2(T_odom_ground)
                     )
-                    T_utm_odom_se2 = se3_to_se2(T_utm_odom_4x4)
 
                     # Compute GT T_utm_odom for gt_inlier selection
                     T_utm_odom_gt_se2 = None
@@ -491,8 +481,9 @@ class CrossViewLocalization:
                                 gt_body = gt_pose @ data.T_camera_flu
                             else:
                                 gt_body = gt_pose
-                            T_utm_odom_gt = gt_body @ np.linalg.inv(T_odom_ground)
-                            T_utm_odom_gt_se2 = se3_to_se2(T_utm_odom_gt)
+                            T_utm_odom_gt_se2 = se3_to_se2(gt_body) @ np.linalg.inv(
+                                se3_to_se2(T_odom_ground)
+                            )
                         except Exception:
                             pass
 
@@ -537,76 +528,6 @@ class CrossViewLocalization:
             context_from_data(data),
             min_assoc,
         )
-
-    # ------------------------------------------------------------------
-    # Diagnostics: affinity matrix heatmap
-    # ------------------------------------------------------------------
-
-    @staticmethod
-    def _visualize_affinity_matrix(
-        M: np.ndarray,
-        C: np.ndarray,
-        candidates: List[dict],
-        output_dir: pathlib.Path,
-    ):
-        """Save a heatmap of the affinity matrix M for debugging."""
-        N = M.shape[0]
-        labels = [
-            f"g{c['ground_key']}_a{c['aerial_key']}\n({c['num_associations']})"
-            for c in candidates
-        ]
-
-        fig, axes = plt.subplots(1, 2, figsize=(8 + N * 0.3, 4 + N * 0.15))
-
-        # Affinity matrix
-        im0 = axes[0].imshow(M, cmap="viridis", vmin=0, vmax=1)
-        axes[0].set_title(f"Affinity Matrix M  ({N}x{N})")
-        fig.colorbar(im0, ax=axes[0], fraction=0.046, pad=0.04)
-
-        # Constraint matrix
-        im1 = axes[1].imshow(C, cmap="Reds", vmin=0, vmax=1)
-        axes[1].set_title(f"Constraint Matrix C  ({N}x{N})")
-        fig.colorbar(im1, ax=axes[1], fraction=0.046, pad=0.04)
-
-        for ax in axes:
-            ax.set_xlabel("Candidate")
-            ax.set_ylabel("Candidate")
-            if N <= 40:
-                ax.set_xticks(range(N))
-                ax.set_yticks(range(N))
-                ax.set_xticklabels(labels, rotation=90, fontsize=max(4, 8 - N // 10))
-                ax.set_yticklabels(labels, fontsize=max(4, 8 - N // 10))
-            else:
-                # Too many candidates for per-tick labels
-                ax.set_xticks(range(0, N, max(1, N // 20)))
-                ax.set_yticks(range(0, N, max(1, N // 20)))
-
-        fig.tight_layout()
-        fig.savefig(output_dir / "affinity_matrix.png", dpi=200, bbox_inches="tight")
-        plt.close(fig)
-
-        # Also print summary stats
-        off_diag = M[np.triu_indices(N, k=1)]
-        n_nonzero = np.count_nonzero(off_diag)
-        n_constrained = int(C[np.triu_indices(N, k=1)].sum())
-        logger.info(
-            f"Affinity matrix: {N} candidates, "
-            f"{n_nonzero} compatible pairs (M>0), "
-            f"{n_constrained} constrained pairs (C=1), "
-            f"max off-diag M={off_diag.max():.4f}"
-            if len(off_diag) > 0
-            else ""
-        )
-        print(
-            f"Affinity matrix: {N} candidates, "
-            f"{n_nonzero}/{N * (N - 1) // 2} compatible pairs, "
-            f"{n_constrained}/{N * (N - 1) // 2} constrained pairs"
-        )
-        if len(off_diag) > 0 and n_nonzero > 0:
-            print(
-                f"  M off-diagonal: max={off_diag.max():.4f}, "
-                f"mean(nonzero)={off_diag[off_diag > 0].mean():.4f}"
-            )
 
     # ------------------------------------------------------------------
     # Save, visualize, and report
@@ -1007,13 +928,9 @@ def cross_view_localization(
         primitive_match_params = PrimitiveMatchParams.load(params)
         primitive_match_params.dim = 2
 
-        try:
-            pr_params = CrossViewPlaceRecognitionParams.load(params)
-        except Exception:
-            pr_params = None
-        if pr_params is None and pipeline_params.matching_mode == "vpr":
-            pr_params = CrossViewPlaceRecognitionParams()
-        place_recognition = CrossViewPlaceRecognition(pr_params) if pr_params else None
+        place_recognition = CrossViewPlaceRecognition(
+            CrossViewPlaceRecognitionParams.load(params)
+        )
 
         algorithm = CrossViewMatching(
             pipeline_params=pipeline_params,

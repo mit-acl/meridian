@@ -82,6 +82,9 @@ class SegmenterParams(SegmenterParamsBase):
     rotate_img: str = None
     yolo_imgsz: Tuple[int, int] = None
     use_point_cloud: bool = False
+    # Downsample the RGB and depth images by this integer factor before segmenting (intrinsics are
+    # scaled to match; build the SegmentMapper with Segmenter.camera_params)
+    img_downsample_factor: int = 1
     depth_scale: float = 1e3
     max_depth: float = 10.0
     mask_downsample_factor: int = 8
@@ -106,6 +109,10 @@ class SegmenterParams(SegmenterParamsBase):
         self.yolo_weights_path = expandvars_recursive(self.yolo_weights_path)
         if self.yolo_imgsz is None:
             self.yolo_imgsz = self.imgsz
+        assert int(self.img_downsample_factor) == self.img_downsample_factor >= 1, (
+            "img_downsample_factor must be a positive integer."
+        )
+        self.img_downsample_factor = int(self.img_downsample_factor)
 
 
 @dataclass
