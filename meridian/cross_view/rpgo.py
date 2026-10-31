@@ -787,7 +787,7 @@ class CrossViewRPGO:
             return z_odom.copy()
         w_odom = 1.0 / self.params.odom_trans_sigma_m
         w_pair = 1.0 / self.params.cross_paths_3d_constraint_sigma_m
-        w_anchor = 1e3
+        w_anchor = 1.0 / _LIFT_ANCHOR_SIGMA
 
         idx = np.arange(n - 1)
         rows = np.concatenate([[0], 1 + np.repeat(idx, 2)])
