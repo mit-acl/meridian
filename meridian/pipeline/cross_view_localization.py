@@ -194,10 +194,6 @@ class CrossViewLocalization:
         rpgo = CrossViewRPGO(params=self.rpgo_params)
         result = rpgo.solve(candidates, trajectory, times, data.T_camera_flu)
 
-        # TODO - do we want to visualize affinity matrix? Slow and can crash if too big rn
-        # if result.M is not None:
-        #     self._visualize_affinity_matrix(result.M, result.C, candidates, output_dir)
-
         if not result.success:
             logger.warning("RPGO solve failed — returning None.")
             return None
@@ -341,12 +337,6 @@ class CrossViewLocalization:
 
         rerun_output_dir = output_dir / "rerun"
         rerun_output_dir.mkdir(parents=True, exist_ok=True)
-
-        # TODO - can crash on large matrices (OOM in Tk/matplotlib)
-        # if rerun_result.M is not None:
-        #     self._visualize_affinity_matrix(
-        #         rerun_result.M, rerun_result.C, candidates, rerun_output_dir
-        #     )
 
         if not rerun_result.success:
             logger.warning("Rerun RPGO failed — keeping initial result.")
@@ -537,76 +527,6 @@ class CrossViewLocalization:
             context_from_data(data),
             min_assoc,
         )
-
-    # ------------------------------------------------------------------
-    # Diagnostics: affinity matrix heatmap
-    # ------------------------------------------------------------------
-
-    @staticmethod
-    def _visualize_affinity_matrix(
-        M: np.ndarray,
-        C: np.ndarray,
-        candidates: List[dict],
-        output_dir: pathlib.Path,
-    ):
-        """Save a heatmap of the affinity matrix M for debugging."""
-        N = M.shape[0]
-        labels = [
-            f"g{c['ground_key']}_a{c['aerial_key']}\n({c['num_associations']})"
-            for c in candidates
-        ]
-
-        fig, axes = plt.subplots(1, 2, figsize=(8 + N * 0.3, 4 + N * 0.15))
-
-        # Affinity matrix
-        im0 = axes[0].imshow(M, cmap="viridis", vmin=0, vmax=1)
-        axes[0].set_title(f"Affinity Matrix M  ({N}x{N})")
-        fig.colorbar(im0, ax=axes[0], fraction=0.046, pad=0.04)
-
-        # Constraint matrix
-        im1 = axes[1].imshow(C, cmap="Reds", vmin=0, vmax=1)
-        axes[1].set_title(f"Constraint Matrix C  ({N}x{N})")
-        fig.colorbar(im1, ax=axes[1], fraction=0.046, pad=0.04)
-
-        for ax in axes:
-            ax.set_xlabel("Candidate")
-            ax.set_ylabel("Candidate")
-            if N <= 40:
-                ax.set_xticks(range(N))
-                ax.set_yticks(range(N))
-                ax.set_xticklabels(labels, rotation=90, fontsize=max(4, 8 - N // 10))
-                ax.set_yticklabels(labels, fontsize=max(4, 8 - N // 10))
-            else:
-                # Too many candidates for per-tick labels
-                ax.set_xticks(range(0, N, max(1, N // 20)))
-                ax.set_yticks(range(0, N, max(1, N // 20)))
-
-        fig.tight_layout()
-        fig.savefig(output_dir / "affinity_matrix.png", dpi=200, bbox_inches="tight")
-        plt.close(fig)
-
-        # Also print summary stats
-        off_diag = M[np.triu_indices(N, k=1)]
-        n_nonzero = np.count_nonzero(off_diag)
-        n_constrained = int(C[np.triu_indices(N, k=1)].sum())
-        logger.info(
-            f"Affinity matrix: {N} candidates, "
-            f"{n_nonzero} compatible pairs (M>0), "
-            f"{n_constrained} constrained pairs (C=1), "
-            f"max off-diag M={off_diag.max():.4f}"
-            if len(off_diag) > 0
-            else ""
-        )
-        print(
-            f"Affinity matrix: {N} candidates, "
-            f"{n_nonzero}/{N * (N - 1) // 2} compatible pairs, "
-            f"{n_constrained}/{N * (N - 1) // 2} constrained pairs"
-        )
-        if len(off_diag) > 0 and n_nonzero > 0:
-            print(
-                f"  M off-diagonal: max={off_diag.max():.4f}, "
-                f"mean(nonzero)={off_diag[off_diag > 0].mean():.4f}"
-            )
 
     # ------------------------------------------------------------------
     # Save, visualize, and report
@@ -1007,13 +927,9 @@ def cross_view_localization(
         primitive_match_params = PrimitiveMatchParams.load(params)
         primitive_match_params.dim = 2
 
-        try:
-            pr_params = CrossViewPlaceRecognitionParams.load(params)
-        except Exception:
-            pr_params = None
-        if pr_params is None and pipeline_params.matching_mode == "vpr":
-            pr_params = CrossViewPlaceRecognitionParams()
-        place_recognition = CrossViewPlaceRecognition(pr_params) if pr_params else None
+        place_recognition = CrossViewPlaceRecognition(
+            CrossViewPlaceRecognitionParams.load(params)
+        )
 
         algorithm = CrossViewMatching(
             pipeline_params=pipeline_params,

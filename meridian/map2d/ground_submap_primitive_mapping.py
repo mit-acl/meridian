@@ -22,6 +22,7 @@ from meridian.primitive.primitive_list import PrimitiveList
 from meridian.primitive.dense_segment import DenseSegment, get_roman_ratio_feature
 
 from meridian.map3d.map import SegmentMap
+from meridian.cross_view.place_recognition import CrossViewPlaceRecognition
 
 logger = logging.getLogger(__name__)
 
@@ -108,10 +109,7 @@ class GroundSubmapPrimitiveMapping:
                 sampled_indices.append(i)
                 last_position = position
 
-        _attach_frame_descriptors = (
-            self.place_recognition is not None
-            and self.place_recognition.comparison == "image"
-        )
+        _attach_frame_descriptors = self.place_recognition is not None
         if _attach_frame_descriptors:
             self.place_recognition.precompute_ground_map_data(ground_map)
 
@@ -182,8 +180,7 @@ class GroundSubmapPrimitiveMapping:
             submap_descriptor = None
             if _attach_frame_descriptors:
                 submap_descriptor = self.place_recognition.ground_descriptor(
-                    None,
-                    submap_segments=submap_segments,
+                    submap_segments,
                     center=center,
                     max_dist_m=rad_m,
                 )
@@ -196,8 +193,9 @@ class GroundSubmapPrimitiveMapping:
                 segment_frame=FrameType.CAMERA,
                 descriptor=submap_descriptor,
             )
-            if self.place_recognition is not None:
-                self.place_recognition.tag(submap)
+            CrossViewPlaceRecognition.tag(
+                submap, getattr(ground_map, "descriptor_type", None)
+            )
 
             # Transform segments from odom frame to submap-local frame
             T_submap_odom = np.linalg.inv(submap.pose)
@@ -308,27 +306,18 @@ class GroundSubmapPrimitiveMapping:
             ]
             seg.height = np.mean(history_heights)
 
-        # Compute place recognition descriptor
-        ground_descriptor = submap.descriptor
-        if (
-            self.place_recognition is not None
-            and self.place_recognition.comparison == "semantic-point-line"
-        ):
-            ground_descriptor = self.place_recognition.ground_descriptor(
-                None, submap_segments=sparse_general_segments
-            )
-
         submap_2d = Submap(
             id=submap.id,
             time=submap.time,
             segments=sparse_general_segments,
             pose=np.eye(4),
             segment_frame=FrameType.ODOMETRY,
-            descriptor=ground_descriptor,
+            descriptor=submap.descriptor,
             camera_pose=submap.pose,
         )
-        if self.place_recognition is not None:
-            self.place_recognition.tag(submap_2d)
+        CrossViewPlaceRecognition.tag(
+            submap_2d, CrossViewPlaceRecognition.get_tag(submap)
+        )
 
         intermediate = None
         if return_intermediates:
