@@ -22,7 +22,6 @@ from meridian.cross_view.rpgo import (
     densify_trajectory,
     pose_data_from_trajectory,
     se2_from_xytheta,
-    se2_to_se3,
     se3_to_se2,
     yaw_from_se2,
 )
@@ -466,11 +465,11 @@ class CrossViewLocalization:
 
                     T_utm_body_se2 = se2_from_xytheta(utm_x, utm_y, yaw)
 
-                    # Derive T_utm_odom from corrected T_utm_body
-                    T_utm_odom_4x4 = se2_to_se3(T_utm_body_se2) @ np.linalg.inv(
-                        T_odom_ground
+                    # Derive T_utm_odom from corrected T_utm_body (ground pose projected
+                    # to world-flat SE(2) first; see candidates.py)
+                    T_utm_odom_se2 = T_utm_body_se2 @ np.linalg.inv(
+                        se3_to_se2(T_odom_ground)
                     )
-                    T_utm_odom_se2 = se3_to_se2(T_utm_odom_4x4)
 
                     # Compute GT T_utm_odom for gt_inlier selection
                     T_utm_odom_gt_se2 = None
@@ -481,8 +480,9 @@ class CrossViewLocalization:
                                 gt_body = gt_pose @ data.T_camera_flu
                             else:
                                 gt_body = gt_pose
-                            T_utm_odom_gt = gt_body @ np.linalg.inv(T_odom_ground)
-                            T_utm_odom_gt_se2 = se3_to_se2(T_utm_odom_gt)
+                            T_utm_odom_gt_se2 = se3_to_se2(gt_body) @ np.linalg.inv(
+                                se3_to_se2(T_odom_ground)
+                            )
                         except Exception:
                             pass
 
