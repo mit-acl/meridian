@@ -109,6 +109,7 @@ class SegmentMapping:
                     self._video_writer.write(frame)
 
     def _draw(self, t, img, pose_cam):
+        img = self.segmenter.downsample_img(img, cv.INTER_AREA)
         panes = []
         if self.vid_img:
             panes.append(self._draw_map_on_img(t, pose_cam, img))
@@ -246,6 +247,8 @@ def segment_mapping(
     # Create segmenter and mapper
     print("Setting up segmenter and mapper...")
     segmenter = Segmenter(segmenter_params, depth_cam_params=camera_params)
+    # Mapper and viz work at the segmenter's (possibly downsampled) resolution
+    camera_params = segmenter.camera_params
 
     # Set up incremental 2D ground submap pipeline if enabled
     ground_submap_mapping = None

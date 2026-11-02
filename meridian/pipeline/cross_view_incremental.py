@@ -963,6 +963,8 @@ def cross_view_incremental(
 
     print("Setting up segmenter and mapper...")
     segmenter = Segmenter(segmenter_params, depth_cam_params=camera_params)
+    # Mapper works at the segmenter's (possibly downsampled) resolution
+    camera_params = segmenter.camera_params
 
     converter = SegmentToPrimitiveConverter(conversion_params)
     ground_submap_mapping = GroundSubmapPrimitiveMapping(
