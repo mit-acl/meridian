@@ -3,29 +3,37 @@ import time
 import numpy as np
 import pytest
 
-from meridian.map3d.similarity_metrics import AlignmentEvaluator, AlignmentFitness
+from meridian.params import RegisterParams
+from meridian.register.alignment_fitness import AlignmentEvaluator, AlignmentFitness
 from meridian.primitive.primitive import LinePrimitive, PointPrimitive
 from meridian.primitive.primitive_list import PrimitiveList
 
 PARAMS = dict(
     point_inlier_thresh_m=1.0,
     line_inlier_thresh_m=1.5,
-    line_angle_thresh_rad=np.deg2rad(5.0),
+    line_angle_thresh_deg=5.0,
     line_min_overlap=0.25,
     wilson_z=2.576,
     min_in_patch=10,
     min_inliers=0,
 )
 
+
+def register_params(**overrides):
+    kw = {**PARAMS, **overrides}
+    return RegisterParams(**{f"fitness_{k}": v for k, v in kw.items()})
+
+
 # Submap size that reproduces the runtime seen on real short-map-matching data.
 REAL_SIZE = 110
 
 
 def compute(aerial, ground, T=np.eye(4), **overrides):
-    params = dict(PARAMS)
-    params.update(overrides)
     return AlignmentFitness.compute(
-        aerial_segments=aerial, ground_segments=ground, T_aerial_ground=T, **params
+        aerial_segments=aerial,
+        ground_segments=ground,
+        T_aerial_ground=T,
+        params=register_params(**overrides),
     )
 
 
@@ -199,7 +207,10 @@ class TestLines:
         )
         ground = PrimitiveList([segment(0, [9.0, 10.0], [19.0, 10.0])])  # IoM = 0.1
         assert compute(aerial, ground, min_in_patch=1).n_inliers == 0
-        assert compute(aerial, ground, min_in_patch=1, line_min_overlap=0.05).n_inliers == 1
+        assert (
+            compute(aerial, ground, min_in_patch=1, line_min_overlap=0.05).n_inliers
+            == 1
+        )
 
     def test_overlap_is_intersection_over_minimum(self):
         """A short ground fragment lying fully alongside a long aerial road
@@ -279,9 +290,11 @@ class TestFitnessValue:
 
 
 def evaluator(aerial, ground, **overrides):
-    params = dict(PARAMS)
-    params.update(overrides)
-    return AlignmentEvaluator(aerial_segments=aerial, ground_segments=ground, **params)
+    return AlignmentEvaluator(
+        aerial_segments=aerial,
+        ground_segments=ground,
+        params=register_params(**overrides),
+    )
 
 
 def perturbed(T, trans_m, rot_deg):
@@ -419,10 +432,13 @@ def test_runtime_at_real_submap_size(real_size_submaps):
     aerial, ground, T = real_size_submaps
     assert len(aerial) > 200 and len(ground) > 150
     compute(aerial, ground, T)  # warm up
-    elapsed_ms = min(
-        (lambda t0: (compute(aerial, ground, T), time.perf_counter() - t0)[1])(
-            time.perf_counter()
+    elapsed_ms = (
+        min(
+            (lambda t0: (compute(aerial, ground, T), time.perf_counter() - t0)[1])(
+                time.perf_counter()
+            )
+            for _ in range(5)
         )
-        for _ in range(5)
-    ) * 1e3
+        * 1e3
+    )
     assert elapsed_ms < 25.0, f"alignment fitness took {elapsed_ms:.1f} ms"

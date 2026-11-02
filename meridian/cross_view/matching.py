@@ -19,7 +19,7 @@ from meridian.pipeline.result import (
 from meridian.register.registerer import (
     Registerer2D,
 )
-from meridian.map3d.similarity_metrics import (
+from meridian.register.alignment_fitness import (
     AlignmentEvaluator,
     AlignmentFitnessResult,
     AlignmentRefinementResult,
@@ -524,13 +524,7 @@ class CrossViewMatching:
             evaluator = AlignmentEvaluator(
                 aerial_segments=aerial_segs_j,
                 ground_segments=ground_segs_i,
-                point_inlier_thresh_m=rp.fitness_point_inlier_thresh_m,
-                line_inlier_thresh_m=rp.fitness_line_inlier_thresh_m,
-                line_angle_thresh_rad=np.deg2rad(rp.fitness_line_angle_thresh_deg),
-                line_min_overlap=rp.fitness_line_min_overlap,
-                wilson_z=rp.fitness_wilson_z,
-                min_in_patch=rp.fitness_min_in_patch,
-                min_inliers=rp.fitness_min_inliers,
+                params=rp,
             )
             for result in results:
                 self._store_fitness(

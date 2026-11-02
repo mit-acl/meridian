@@ -50,11 +50,11 @@ class RegisterParams(ParamsBase):
     # Fewer inliers than this scores 0 and skips refinement.
     fitness_min_inliers: int = 3
 
-    # ICP re-fit of each returned hypothesis to its own fitness inliers. 
+    # ICP re-fit of each returned hypothesis to its own fitness inliers.
     # Requires compute_fitness.
     refine_hypotheses: bool = True
     refine_max_iters: int = 3
-    # Reject a refinement moving the patch center further than this. 0 = uncapped.
+    # Reject a refinement moving the patch center further than this (.inf = uncapped).
     refine_max_correction_m: float = 3.0
 
     def __post_init__(self):
