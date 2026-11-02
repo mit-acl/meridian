@@ -266,3 +266,72 @@ def test_lines_a_transformed(three_line_segments):
             ]
         ),
     )
+
+
+def infinite_line(id, point, direction):
+    return LinePrimitive(
+        id=id,
+        point=np.asarray(point, dtype=float),
+        direction=np.asarray(direction, dtype=float),
+    )
+
+
+def ray(id, origin, direction):
+    origin = np.asarray(origin, dtype=float)
+    return LinePrimitive(
+        id=id,
+        point=origin,
+        direction=np.asarray(direction, dtype=float),
+        endpoints=(origin, None),
+    )
+
+
+class TestMinDistTo:
+    """``min_dist_to`` has to respect each line's own extent, whether that is a
+    segment, a ray or an infinite line, and be symmetric."""
+
+    def test_parallel_segments(self):
+        a = LinePrimitive.from_endpoints(0, np.array([0.0, 0.0]), np.array([10.0, 0.0]))
+        b = LinePrimitive.from_endpoints(1, np.array([2.0, 3.0]), np.array([8.0, 3.0]))
+        assert a.min_dist_to(b) == pytest.approx(3.0)
+        assert b.min_dist_to(a) == pytest.approx(3.0)
+
+    def test_disjoint_collinear_segments(self):
+        a = LinePrimitive.from_endpoints(0, np.array([0.0, 0.0]), np.array([10.0, 0.0]))
+        b = LinePrimitive.from_endpoints(1, np.array([14.0, 0.0]), np.array([20.0, 0.0]))
+        assert a.min_dist_to(b) == pytest.approx(4.0)
+        assert b.min_dist_to(a) == pytest.approx(4.0)
+
+    def test_crossing_segments(self):
+        a = LinePrimitive.from_endpoints(0, np.array([0.0, 0.0]), np.array([10.0, 0.0]))
+        b = LinePrimitive.from_endpoints(1, np.array([5.0, -5.0]), np.array([5.0, 5.0]))
+        assert a.min_dist_to(b) == pytest.approx(0.0)
+        assert b.min_dist_to(a) == pytest.approx(0.0)
+
+    def test_bounded_segment_beside_parallel_infinite_line(self):
+        """The infinite line's defining ``point`` is arbitrary, so it must not be
+        used as if the segment were unbounded too."""
+        line = infinite_line(0, [-100.0, 3.0], [1.0, 0.0])
+        seg = LinePrimitive.from_endpoints(
+            1, np.array([0.0, 0.0]), np.array([10.0, 0.0])
+        )
+        assert seg.min_dist_to(line) == pytest.approx(3.0)
+        assert line.min_dist_to(seg) == pytest.approx(3.0)
+
+    def test_ray_beside_parallel_infinite_line(self):
+        line = infinite_line(0, [-100.0, 3.0], [1.0, 0.0])
+        r = ray(1, [0.0, 0.0], [1.0, 0.0])
+        assert r.min_dist_to(line) == pytest.approx(3.0)
+        assert line.min_dist_to(r) == pytest.approx(3.0)
+
+    def test_parallel_infinite_lines(self):
+        a = infinite_line(0, [-100.0, 0.0], [1.0, 0.0])
+        b = infinite_line(1, [500.0, 3.0], [1.0, 0.0])
+        assert a.min_dist_to(b) == pytest.approx(3.0)
+        assert b.min_dist_to(a) == pytest.approx(3.0)
+
+    def test_parallel_rays_pointing_apart(self):
+        a = ray(0, [0.0, 0.0], [-1.0, 0.0])
+        b = ray(1, [4.0, 3.0], [1.0, 0.0])
+        assert a.min_dist_to(b) == pytest.approx(5.0)  # origin to origin
+        assert b.min_dist_to(a) == pytest.approx(5.0)

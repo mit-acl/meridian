@@ -59,7 +59,7 @@ class CrossViewPlaceRecognitionParams(ParamsBase):
     params_key: ClassVar[str] = "cross_view_place_recognition"
 
     ground_descriptor_dist_m: float = 5.0
-    k_nearest_neighbors: int = 25
+    k_nearest_neighbors: int = 10
 
 
 @dataclass
@@ -76,7 +76,13 @@ class CrossViewRPGOParams(ParamsBase):
     single_lc_per_ground_sm: bool = True
     single_lc_per_ground_aerial_pair: bool = True
     fuse_lc_score: bool = True
-    lc_score_method: str = "frequency-ratio"
+    # "frequency-ratio" (particle count) or "fitness-ratio" (alignment fitness),
+    # both normalized per aerial-ground pair, or "fitness-norm" (fitness scaled
+    # by lc_score_fitness_ref, so it stays comparable across submaps). The
+    # fitness methods require RegisterParams.compute_fitness.
+    lc_score_method: str = "fitness-ratio"
+    # fitness-norm only: fitness mapping to a clamped score of 1.0. 
+    lc_score_fitness_ref: float = 0.35
     min_num_associations: int = 3
     min_num_associations_rerun: Optional[int] = None
 
