@@ -21,7 +21,7 @@ import torch
 from yolov7_package import Yolov7Detector
 from PIL import Image
 import clip
-from typing import List
+from typing import List, Tuple
 from scipy.spatial import cKDTree
 
 
@@ -33,24 +33,40 @@ from meridian.map3d.observation import FrameObservations, Observation
 from meridian.segmenter.segmenter_base import SegmenterBase
 
 
-def downsample_camera_params(cam: CameraParams, factor: int) -> CameraParams:
+def downsampled_size(width: int, height: int, factor: float) -> Tuple[int, int]:
+    """(width, height) of an image downsampled by factor, rounded to whole pixels."""
+    return max(1, round(width / factor)), max(1, round(height / factor))
+
+
+def downsample_camera_params(cam: CameraParams, factor: float) -> CameraParams:
     """
-    Intrinsics of an image downsampled by an integer factor (size w // factor x h // factor),
-    keeping pixel centers aligned: u' = (u + 0.5) / factor - 0.5.
+    Intrinsics of an image downsampled by factor to downsampled_size, keeping pixel centers
+    aligned: u' = (u + 0.5) / sx - 0.5, where sx = w / w' (likewise sy for v) is the scale
+    actually applied after rounding the size.
     """
     if cam is None or factor == 1:
         return cam
+    w, h = int(cam.width), int(cam.height)
+    w_ds, h_ds = downsampled_size(w, h, factor)
+    sx, sy = w / w_ds, h / h_ds
     K = np.array(cam.K, dtype=float)
-    K[:2, :] /= factor
-    K[0, 2] += 0.5 / factor - 0.5
-    K[1, 2] += 0.5 / factor - 0.5
-    return CameraParams(
-        K=K,
-        D=cam.D,
-        width=int(cam.width) // factor,
-        height=int(cam.height) // factor,
-        T=cam.T,
-    )
+    K[0, :] /= sx
+    K[1, :] /= sy
+    K[0, 2] += 0.5 / sx - 0.5
+    K[1, 2] += 0.5 / sy - 0.5
+    return CameraParams(K=K, D=cam.D, width=w_ds, height=h_ds, T=cam.T)
+
+
+def downsample_pixels(
+    uv: np.ndarray, width: int, height: int, factor: float
+) -> np.ndarray:
+    """
+    Integer (u, v) pixels of a width x height image -> the pixel containing them in the image
+    downsampled by factor (the nearest pixel under downsample_camera_params' mapping).
+    """
+    w_ds, h_ds = downsampled_size(width, height, factor)
+    scale = np.array([width / w_ds, height / h_ds])
+    return np.floor((uv + 0.5) / scale).astype(int)
 
 
 class Segmenter(SegmenterBase):
@@ -78,9 +94,6 @@ class Segmenter(SegmenterBase):
             or self.params.rotate_img == "CCW"
             or self.params.rotate_img == "180"
         ), "Invalid rotate_img option."
-        assert (
-            self.params.img_downsample_factor == 1 or not self.params.use_point_cloud
-        ), "img_downsample_factor > 1 is not supported with use_point_cloud."
 
         # Set up YOLOv7 detector for ignore/keep masks
         assert (
@@ -117,7 +130,7 @@ class Segmenter(SegmenterBase):
                     )
                 cv.fillPoly(self.constant_ignore_mask, [np.array(triangle)], 1)
             self.constant_ignore_mask = self.apply_rotation(
-                self.downsample_img(self.constant_ignore_mask, cv.INTER_NEAREST)
+                self.downsample_img(self.constant_ignore_mask, cv.INTER_NEAREST_EXACT)
             )
         else:
             self.constant_ignore_mask = None
@@ -155,7 +168,9 @@ class Segmenter(SegmenterBase):
         if f == 1:
             return img
         return cv.resize(
-            img, (img.shape[1] // f, img.shape[0] // f), interpolation=interpolation
+            img,
+            downsampled_size(img.shape[1], img.shape[0], f),
+            interpolation=interpolation,
         )
 
     def _init_semantics_model(self):
@@ -170,17 +185,6 @@ class Segmenter(SegmenterBase):
             )
         else:
             super()._init_semantics_model()
-
-    def set_depth_camera_params(self, depth_cam_params: CameraParams):
-        self.depth_cam_params = depth_cam_params
-        self.open3d_cam_intrinsics = o3d.camera.PinholeCameraIntrinsic(
-            width=int(self.depth_cam_params.width),
-            height=int(self.depth_cam_params.height),
-            fx=self.depth_cam_params.fx,
-            fy=self.depth_cam_params.fy,
-            cx=self.depth_cam_params.cx,
-            cy=self.depth_cam_params.cy,
-        )
 
     def segment(
         self, img_bgr, t=None, pose=None, depth_data=None, compute_frame_descriptor=True
@@ -207,9 +211,16 @@ class Segmenter(SegmenterBase):
         # downsample to the working resolution (area-averaged color; nearest-neighbor depth so
         # depths are never blended across object edges)
         if self.params.img_downsample_factor > 1:
+            full_h, full_w = img_bgr.shape[:2]
             img_bgr = self.downsample_img(img_bgr, cv.INTER_AREA)
-            if depth_data is not None:
-                depth_data = self.downsample_img(depth_data, cv.INTER_NEAREST)
+            if depth_data is not None and self.params.use_point_cloud:
+                pcl, pcl_proj = depth_data
+                pcl_proj = downsample_pixels(
+                    pcl_proj, full_w, full_h, self.params.img_downsample_factor
+                )
+                depth_data = (pcl, pcl_proj)
+            elif depth_data is not None:
+                depth_data = self.downsample_img(depth_data, cv.INTER_NEAREST_EXACT)
 
         # rotate image
         img_orig = img_bgr
