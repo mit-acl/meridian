@@ -350,10 +350,15 @@ class CrossViewMatching:
         # Compute rotation from reference trajectory if available
         R_aerial_ground_2d = None
         if ground_pose_ref is not None:
-            T_aerial_camera_ref = np.linalg.inv(aerial_sm.pose) @ ground_pose_ref
-            T_aerial_odom = T_aerial_camera_ref @ np.linalg.inv(
-                T_ground_odom_ground_robot
+            # T_utm_odom from world-flat SE(2) projections of the reference and odometry
+            # body poses: composing the 3D poses directly puts the camera tilt into the
+            # 2x2 block (not a rotation when the camera is pitched)
+            T_cb = np.eye(4) if T_camera_flu is None else T_camera_flu
+            T_utm_odom = self._se2_to_se3(
+                self._se3_to_se2(ground_pose_ref @ T_cb)
+                @ np.linalg.inv(self._se3_to_se2(T_ground_odom_ground_robot @ T_cb))
             )
+            T_aerial_odom = np.linalg.inv(aerial_sm.pose) @ T_utm_odom
             R_aerial_ground_2d = T_aerial_odom[:2, :2]
 
         # Compute GT T_aerial_ground for T_i_j (visualization/error computation)
