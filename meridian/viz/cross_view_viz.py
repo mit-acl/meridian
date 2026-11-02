@@ -3,6 +3,7 @@ from typing import Tuple
 import cv2 as cv
 import matplotlib.pyplot as plt
 import numpy as np
+from matplotlib.patches import Rectangle
 
 from meridian.primitive.primitive import LinePrimitive, PointPrimitive
 from meridian.primitive.primitive_list import PrimitiveList
@@ -97,6 +98,132 @@ def viz_registration_alignment(
         f"Inlier alignment ({len(inlier_aerial)} pairs): "
         "aerial=skyblue, ground=brown (T̂)"
     )
+    return fig, ax
+
+
+def viz_alignment_fitness(
+    aerial_segments: PrimitiveList,
+    ground_segments: PrimitiveList,
+    fitness_result,
+    T_aerial_ground: np.ndarray,
+    aerial_crop_img: np.ndarray = None,
+    ground_dense_points: np.ndarray = None,
+):
+    """Visualize the full-submap alignment fitness of a single hypothesis.
+
+    Panels:
+      (0,0) aerial map (image crop if provided, else sparse aerial segments)
+      (0,1) dense ground segments
+      (0,2) sparse aerial segments
+      (1,0) sparse ground segments
+      (1,1) overlay (cropped to the aerial patch): aerial + ground-aligned-by-T̂,
+            with each inlier pair drawn in a shared color.
+
+    ``aerial_segments``/``ground_segments`` must be the same primitives the
+    fitness was computed over (the 2D matching-frame submaps), so the ids in
+    ``fitness_result.inlier_pairs`` resolve correctly.
+    """
+    fig, ax = plt.subplots(2, 3, figsize=(21, 14))
+    ax[1, 2].set_visible(False)
+
+    # --- (0,0) Aerial map ---
+    ax_map = ax[0, 0]
+    ax_map.set_title("Aerial Map")
+    if aerial_crop_img is not None:
+        ax_map.imshow(cv.cvtColor(aerial_crop_img, cv.COLOR_BGR2RGB))
+        ax_map.set_xticks([])
+        ax_map.set_yticks([])
+    else:
+        for seg in aerial_segments:
+            plot_seg(seg, ax_map, custom_color="k")
+        ax_map.set_aspect("equal")
+        ax_map.invert_yaxis()
+
+    # --- (0,1) Dense ground segments ---
+    ax_dense = ax[0, 1]
+    ax_dense.set_title("Dense Ground Segments")
+    if ground_dense_points is not None and len(ground_dense_points) > 0:
+        ax_dense.plot(
+            ground_dense_points[:, 0],
+            ground_dense_points[:, 1],
+            ".",
+            markersize=1,
+            alpha=0.5,
+            color="gray",
+        )
+    ax_dense.set_aspect("equal")
+    ax_dense.invert_yaxis()
+
+    # --- (0,2) Sparse aerial segments ---
+    ax_sa = ax[0, 2]
+    ax_sa.set_title("Sparse Aerial Segments")
+    for seg in aerial_segments:
+        plot_seg(seg, ax_sa, custom_color="k")
+    ax_sa.set_aspect("equal")
+    ax_sa.invert_yaxis()
+
+    # --- (1,0) Sparse ground segments ---
+    ax_sg = ax[1, 0]
+    ax_sg.set_title("Sparse Ground Segments")
+    for seg in ground_segments:
+        plot_seg(seg, ax_sg, custom_color="k")
+    ax_sg.set_aspect("equal")
+    ax_sg.invert_yaxis()
+
+    # --- (1,1) Overlay with inlier pairs in shared colors ---
+    ax_ov = ax[1, 1]
+    ground_aligned = ground_segments.copy()
+    ground_aligned.transform(T_aerial_ground)
+
+    inlier_pairs = fitness_result.inlier_pairs
+    ground_inlier_ids = {gid for gid, _ in inlier_pairs}
+    aerial_inlier_ids = {aid for _, aid in inlier_pairs}
+
+    # Non-inlier segments in light gray for context.
+    for seg in aerial_segments:
+        if seg.id not in aerial_inlier_ids:
+            plot_seg(seg, ax_ov, custom_color="lightsteelblue")
+    for seg in ground_aligned:
+        if seg.id not in ground_inlier_ids:
+            plot_seg(seg, ax_ov, custom_color="lightgray")
+
+    # Inlier pairs: ground and its matched aerial primitive share a color.
+    for i, (gid, aid) in enumerate(inlier_pairs):
+        pair_color = color_from_seed(i, order="rgb", num_type="float")
+        g_seg = ground_aligned.get_segment_from_id(gid)
+        a_seg = aerial_segments.get_segment_from_id(aid)
+        if g_seg is not None:
+            plot_seg(g_seg, ax_ov, custom_color=pair_color)
+        if a_seg is not None:
+            plot_seg(a_seg, ax_ov, custom_color=pair_color)
+
+    bounds = fitness_result.patch_bounds
+    if bounds is not None:
+        xmin, ymin, xmax, ymax = bounds
+        margin = 0.05 * max(xmax - xmin, ymax - ymin, 1.0)
+        ax_ov.add_patch(
+            Rectangle(
+                (xmin, ymin),
+                xmax - xmin,
+                ymax - ymin,
+                fill=False,
+                edgecolor="black",
+                linestyle="--",
+                linewidth=1,
+            )
+        )
+        ax_ov.set_xlim(xmin - margin, xmax + margin)
+        ax_ov.set_ylim(ymin - margin, ymax + margin)
+    ax_ov.set_aspect("equal")
+    ax_ov.invert_yaxis()
+    ax_ov.grid(True)
+    ax_ov.set_title(
+        f"Inlier alignment: fitness={fitness_result.fitness:.2f} "
+        f"({fitness_result.n_inliers}/{fitness_result.n_in_patch} in patch)\n"
+        "shared color = inlier pair, aerial=above/ground=T̂-aligned"
+    )
+
+    fig.tight_layout()
     return fig, ax
 
 

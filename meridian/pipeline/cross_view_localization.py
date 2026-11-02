@@ -501,6 +501,7 @@ class CrossViewLocalization:
                             "ground_submap_time": ground_submap.time,
                             "T_utm_odom_gt_se2": T_utm_odom_gt_se2,
                             "count": getattr(result, "count", 1),
+                            "fitness": getattr(result, "fitness", np.nan),
                         }
                     )
 
@@ -962,7 +963,10 @@ def cross_view_localization(
         )
 
     viz_params = CrossViewVisualizationParams.load(params)
-    runner = CrossViewLocalization(rpgo_params=rpgo_params, viz_params=viz_params)
+    runner = CrossViewLocalization(
+        rpgo_params=rpgo_params,
+        viz_params=viz_params,
+    )
     loc_output_dir = os.path.join(output_dir, "localization")
     result = runner.localize(
         match_output_dir,
