@@ -184,9 +184,10 @@ class CrossViewIncremental:
                 pose = data.camera_pose_data.pose(img_t)
                 if data.use_point_cloud:
                     pcl = data.align_point_cloud.aligned_point_cloud(img_t)
-                    pcl_proj = data.align_point_cloud.projected_point_cloud(pcl)
+                    cam = self.segmenter.camera_params
+                    pcl_proj = data.align_point_cloud.projected_point_cloud(pcl, cam)
                     depth = data.align_point_cloud.filter_point_cloud_and_projection(
-                        pcl, pcl_proj
+                        pcl, pcl_proj, cam
                     )
                 else:
                     depth = data.depth_data.img(img_t)

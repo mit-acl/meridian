@@ -11,6 +11,7 @@
 ###########################################################
 
 
+from robotdatapy.camera import CameraParams
 from robotdatapy.data import PointCloudData, ImgData, PoseData
 import numpy as np
 import cv2 as cv
@@ -112,31 +113,37 @@ class AlignPointCloud:
 
         return points_camera_frame_filtered
 
-    def projected_point_cloud(self, points_camera_frame):
+    def projected_point_cloud(
+        self, points_camera_frame, camera_params: CameraParams = None
+    ):
         """
         Projects a 3D point cloud in the camera frame (from aligned_point_cloud) to
         the 2D image frame
 
         Args:
             points_camera_frame (np.ndarray): (n, 3) array containing 3D point cloud in the frame of the camera (Z forward, Y down)
+            camera_params (CameraParams): intrinsics to project with (default: img_data's)
 
         Returns:
             np.ndarray: (n, 2) array containing 2D projected points in (u, v) coordinates, order unchanged
         """
         # project point cloud onto 2D image
+        cam = camera_params if camera_params is not None else self.img_data
         points_camera_frame_cv = points_camera_frame.reshape(-1, 1, 3)
         points_2d_cv, _ = cv.projectPoints(
             points_camera_frame_cv,
             np.zeros(3),
             np.zeros(3),
-            self.img_data.K,
-            self.img_data.D,
+            cam.K,
+            cam.D,
         )
         points_2d = points_2d_cv.reshape((-1, 2))
 
         return points_2d
 
-    def filter_point_cloud_and_projection(self, points_camera_frame, points_2d):
+    def filter_point_cloud_and_projection(
+        self, points_camera_frame, points_2d, camera_params: CameraParams = None
+    ):
         """
         Filters array of (u, v) coordinates in image frame and associated 3D point cloud by checking
         that it is inside the associated rgb image frame bounds and casting to int
@@ -144,6 +151,7 @@ class AlignPointCloud:
         Args:
             points_camera_frame (np.ndarray): (n, 3) array containing 3D point cloud in the frame of the camera (Z forward, Y down)
             points_2d (np.ndarray): (n, 2) array containing 2D projected points in (u, v) coordinates, in same order
+            camera_params (CameraParams): intrinsics points_2d was projected with (default: img_data's)
         """
         # Drop NaN/inf entries before casting to int. cv.projectPoints can
         # produce non-finite values for points at/behind the camera (z<=0) or
@@ -153,12 +161,17 @@ class AlignPointCloud:
         points_camera_frame = points_camera_frame[finite]
         points_2d = points_2d[finite]
 
+        h, w = (
+            (camera_params.height, camera_params.width)
+            if camera_params is not None
+            else self.img_shape
+        )
         points_2d = np.round(points_2d).astype(int)
         inside_frame = (
             (points_2d[:, 0] >= 0)
-            & (points_2d[:, 0] < self.img_shape[1])
+            & (points_2d[:, 0] < w)
             & (points_2d[:, 1] >= 0)
-            & (points_2d[:, 1] < self.img_shape[0])
+            & (points_2d[:, 1] < h)
         )
         points_camera_frame = points_camera_frame[inside_frame]
         points_2d = points_2d[inside_frame]

@@ -57,18 +57,6 @@ def downsample_camera_params(cam: CameraParams, factor: float) -> CameraParams:
     return CameraParams(K=K, D=cam.D, width=w_ds, height=h_ds, T=cam.T)
 
 
-def downsample_pixels(
-    uv: np.ndarray, width: int, height: int, factor: float
-) -> np.ndarray:
-    """
-    Integer (u, v) pixels of a width x height image -> the pixel containing them in the image
-    downsampled by factor (the nearest pixel under downsample_camera_params' mapping).
-    """
-    w_ds, h_ds = downsampled_size(width, height, factor)
-    scale = np.array([width / w_ds, height / h_ds])
-    return np.floor((uv + 0.5) / scale).astype(int)
-
-
 class Segmenter(SegmenterBase):
     def __init__(self, params: SegmenterParams, depth_cam_params: CameraParams = None):
         # parameters (depth_cam_params is kept at the segmenter's working resolution; the
@@ -209,17 +197,11 @@ class Segmenter(SegmenterBase):
         self.observations = []
 
         # downsample to the working resolution (area-averaged color; nearest-neighbor depth so
-        # depths are never blended across object edges)
+        # depths are never blended across object edges; point cloud projections must already be
+        # at this resolution, i.e. projected with camera_params)
         if self.params.img_downsample_factor > 1:
-            full_h, full_w = img_bgr.shape[:2]
             img_bgr = self.downsample_img(img_bgr, cv.INTER_AREA)
-            if depth_data is not None and self.params.use_point_cloud:
-                pcl, pcl_proj = depth_data
-                pcl_proj = downsample_pixels(
-                    pcl_proj, full_w, full_h, self.params.img_downsample_factor
-                )
-                depth_data = (pcl, pcl_proj)
-            elif depth_data is not None:
+            if depth_data is not None and not self.params.use_point_cloud:
                 depth_data = self.downsample_img(depth_data, cv.INTER_NEAREST_EXACT)
 
         # rotate image
