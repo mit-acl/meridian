@@ -62,9 +62,10 @@ class SegmentMapping:
                 pose = data.camera_pose_data.pose(img_t)
                 if data.use_point_cloud:
                     pcl = data.align_point_cloud.aligned_point_cloud(img_t)
-                    pcl_proj = data.align_point_cloud.projected_point_cloud(pcl)
+                    cam = self.segmenter.camera_params
+                    pcl_proj = data.align_point_cloud.projected_point_cloud(pcl, cam)
                     depth = data.align_point_cloud.filter_point_cloud_and_projection(
-                        pcl, pcl_proj
+                        pcl, pcl_proj, cam
                     )
                 else:
                     depth = data.depth_data.img(img_t)
@@ -109,6 +110,7 @@ class SegmentMapping:
                     self._video_writer.write(frame)
 
     def _draw(self, t, img, pose_cam):
+        img = self.segmenter.downsample_img(img, cv.INTER_AREA)
         panes = []
         if self.vid_img:
             panes.append(self._draw_map_on_img(t, pose_cam, img))
@@ -246,6 +248,8 @@ def segment_mapping(
     # Create segmenter and mapper
     print("Setting up segmenter and mapper...")
     segmenter = Segmenter(segmenter_params, depth_cam_params=camera_params)
+    # Mapper and viz work at the segmenter's (possibly downsampled) resolution
+    camera_params = segmenter.camera_params
 
     # Set up incremental 2D ground submap pipeline if enabled
     ground_submap_mapping = None

@@ -21,7 +21,7 @@ import torch
 from yolov7_package import Yolov7Detector
 from PIL import Image
 import clip
-from typing import List
+from typing import List, Tuple
 from scipy.spatial import cKDTree
 
 
@@ -33,10 +33,38 @@ from meridian.map3d.observation import FrameObservations, Observation
 from meridian.segmenter.segmenter_base import SegmenterBase
 
 
+def downsampled_size(width: int, height: int, factor: float) -> Tuple[int, int]:
+    """(width, height) of an image downsampled by factor, rounded to whole pixels."""
+    return max(1, round(width / factor)), max(1, round(height / factor))
+
+
+def downsample_camera_params(cam: CameraParams, factor: float) -> CameraParams:
+    """
+    Intrinsics of an image downsampled by factor to downsampled_size, keeping pixel centers
+    aligned: u' = (u + 0.5) / sx - 0.5, where sx = w / w' (likewise sy for v) is the scale
+    actually applied after rounding the size.
+    """
+    if cam is None or factor == 1:
+        return cam
+    w, h = int(cam.width), int(cam.height)
+    w_ds, h_ds = downsampled_size(w, h, factor)
+    sx, sy = w / w_ds, h / h_ds
+    K = np.array(cam.K, dtype=float)
+    K[0, :] /= sx
+    K[1, :] /= sy
+    K[0, 2] += 0.5 / sx - 0.5
+    K[1, 2] += 0.5 / sy - 0.5
+    return CameraParams(K=K, D=cam.D, width=w_ds, height=h_ds, T=cam.T)
+
+
 class Segmenter(SegmenterBase):
     def __init__(self, params: SegmenterParams, depth_cam_params: CameraParams = None):
-        # parameters
-        self.depth_cam_params = depth_cam_params
+        # parameters (depth_cam_params is kept at the segmenter's working resolution; the
+        # original is kept to build masks given in full-resolution pixels)
+        self._full_res_cam_params = depth_cam_params
+        self.depth_cam_params = downsample_camera_params(
+            depth_cam_params, params.img_downsample_factor
+        )
 
         # member variables
         self.observations = []
@@ -76,8 +104,9 @@ class Segmenter(SegmenterBase):
 
         # Set up ignore mask from triangle ignore masks
         if self.params.triangle_ignore_masks is not None:
+            # triangles are given in full-resolution pixels
             self.constant_ignore_mask = np.zeros(
-                (self.depth_cam_params.height, self.depth_cam_params.width),
+                (self._full_res_cam_params.height, self._full_res_cam_params.width),
                 dtype=np.uint8,
             )
             for triangle in self.params.triangle_ignore_masks:
@@ -88,7 +117,9 @@ class Segmenter(SegmenterBase):
                         "Coordinates must be integers."
                     )
                 cv.fillPoly(self.constant_ignore_mask, [np.array(triangle)], 1)
-            self.constant_ignore_mask = self.apply_rotation(self.constant_ignore_mask)
+            self.constant_ignore_mask = self.apply_rotation(
+                self.downsample_img(self.constant_ignore_mask, cv.INTER_NEAREST_EXACT)
+            )
         else:
             self.constant_ignore_mask = None
 
@@ -115,6 +146,21 @@ class Segmenter(SegmenterBase):
         self._erode_buf = None
         self._erode_prev = (slice(0, 0), slice(0, 0))
 
+    @property
+    def camera_params(self) -> CameraParams:
+        """Intrinsics of the images the segmenter works on (and of its observation masks)."""
+        return self.depth_cam_params
+
+    def downsample_img(self, img, interpolation):
+        f = self.params.img_downsample_factor
+        if f == 1:
+            return img
+        return cv.resize(
+            img,
+            downsampled_size(img.shape[1], img.shape[0], f),
+            interpolation=interpolation,
+        )
+
     def _init_semantics_model(self):
         """Override to add CLIP support on top of base DINO/DINOv3 support."""
         if (
@@ -127,17 +173,6 @@ class Segmenter(SegmenterBase):
             )
         else:
             super()._init_semantics_model()
-
-    def set_depth_camera_params(self, depth_cam_params: CameraParams):
-        self.depth_cam_params = depth_cam_params
-        self.open3d_cam_intrinsics = o3d.camera.PinholeCameraIntrinsic(
-            width=int(self.depth_cam_params.width),
-            height=int(self.depth_cam_params.height),
-            fx=self.depth_cam_params.fx,
-            fy=self.depth_cam_params.fy,
-            cx=self.depth_cam_params.cx,
-            cy=self.depth_cam_params.cy,
-        )
 
     def segment(
         self, img_bgr, t=None, pose=None, depth_data=None, compute_frame_descriptor=True
@@ -160,6 +195,14 @@ class Segmenter(SegmenterBase):
             )
 
         self.observations = []
+
+        # downsample to the working resolution (area-averaged color; nearest-neighbor depth so
+        # depths are never blended across object edges; point cloud projections must already be
+        # at this resolution, i.e. projected with camera_params)
+        if self.params.img_downsample_factor > 1:
+            img_bgr = self.downsample_img(img_bgr, cv.INTER_AREA)
+            if depth_data is not None and not self.params.use_point_cloud:
+                depth_data = self.downsample_img(depth_data, cv.INTER_NEAREST_EXACT)
 
         # rotate image
         img_orig = img_bgr
