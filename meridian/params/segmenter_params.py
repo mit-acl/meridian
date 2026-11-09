@@ -1,3 +1,4 @@
+import os
 from dataclasses import dataclass
 from typing import ClassVar, List, Optional, Tuple
 
@@ -35,8 +36,8 @@ class SegmenterParamsBase(ParamsBase):
     ] = None
     frame_descriptor: str = "meridian-vpr"  # meridian-vpr, anyloc, dino-gem, salad
 
-    # Weights override; unset -> the third_party/vpr/weights bundle.
-    vpr_ckpt: Optional[str] = "${VPR_CKPT}"
+    # Weights override; None -> $VPR_CKPT if set, else the third_party/vpr/weights bundle.
+    vpr_ckpt: Optional[str] = None
     vpr_fp16: bool = True  # fp16 for whichever frame descriptor is selected
     anyloc_layer: int = 31  # DINOv2 block for AnyLoc vocabulary
 
@@ -54,15 +55,13 @@ class SegmenterParamsBase(ParamsBase):
             and self.frame_descriptor.lower() == "none"
         ):
             self.frame_descriptor = None
-        self.weights_path = expandvars_recursive(self.weights_path)
+        self.weights_path = expandvars_recursive(self.weights_path, required=True)
         self.dinov3_path = expandvars_recursive(self.dinov3_path)
         if self.dinov3_weights is not None:
             self.dinov3_weights = expandvars_recursive(self.dinov3_weights)
-        # Unset $VPR_CKPT survives expansion as the literal "${VPR_CKPT}".
-        if self.vpr_ckpt is not None:
-            self.vpr_ckpt = expandvars_recursive(self.vpr_ckpt)
-            if self.vpr_ckpt.startswith("$"):
-                self.vpr_ckpt = None
+        self.vpr_ckpt = expandvars_recursive(
+            self.vpr_ckpt or os.environ.get("VPR_CKPT"), required=True
+        )
         self.salad_path = expandvars_recursive(self.salad_path)
 
 
@@ -107,7 +106,9 @@ class SegmenterParams(SegmenterParamsBase):
 
     def __post_init__(self):
         super().__post_init__()
-        self.yolo_weights_path = expandvars_recursive(self.yolo_weights_path)
+        self.yolo_weights_path = expandvars_recursive(
+            self.yolo_weights_path, required=True
+        )
         if self.yolo_imgsz is None:
             self.yolo_imgsz = self.imgsz
         assert self.img_downsample_factor >= 1, "img_downsample_factor must be >= 1."
