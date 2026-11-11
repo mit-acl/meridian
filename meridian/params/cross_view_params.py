@@ -144,6 +144,7 @@ class CrossViewRPGOParams(ParamsBase):
 class CrossViewIncrementalParams(ParamsBase):
     params_key: ClassVar[str] = "cross_view_incremental"
 
+    # Gates count ground submaps with >= 1 inlier loop closure, not inliers
     consistent_loop_closure_thresh: int = 1
     rot_constrained_consistent_lc_thresh: int = 6
     rot_constrained_consistent_lc_frac: float = 0.5
@@ -162,6 +163,8 @@ class CrossViewIncrementalParams(ParamsBase):
     # If True, once we have accepted a loop closure as an inlier in the
     # post-global-localization mode, then all other corresponding submap
     # potential loop closures are removed from the outlier rejection processing
+    # (all of the submap's inliers are kept, which can be more than one when
+    # cross_view_rpgo.single_lc_per_ground_sm is False)
     commit_accepted_inliers: bool = True
 
     # If > 0, then the most recent n loop closures will not be committed to.

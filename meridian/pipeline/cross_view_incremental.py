@@ -5,13 +5,13 @@ matching, CLIPPER outlier rejection, and PGO. Operates as a state machine
 with two gates before committing to global localization:
 
 - PRE: configured-mode matching with free rotation, CLIPPER over accumulated
-  candidates, no PGO. Once CLIPPER inliers >= consistent_loop_closure_thresh
-  (gate #1), an attempt is made.
+  candidates, no PGO. Once the number of ground submaps with a CLIPPER inlier
+  >= consistent_loop_closure_thresh (gate #1), an attempt is made.
 - ATTEMPT (synchronous, may be retried): PGO on PRE candidates -> rough
   trajectory -> rerun max_intersection + translation_only matching on
-  submaps 1..n -> CLIPPER on rerun candidates. Gate #2: if rerun inliers
-  >= rot_constrained_consistent_lc_thresh AND inliers-per-submap
-  (inliers / total ground submaps) >= rot_constrained_consistent_lc_frac,
+  submaps 1..n -> CLIPPER on rerun candidates. Gate #2: if the number of
+  submaps with a rerun inlier >= rot_constrained_consistent_lc_thresh AND the
+  fraction of all ground submaps with one >= rot_constrained_consistent_lc_frac,
   commit (replace candidates, run final PGO, transition to POST).
   Otherwise, leave PRE state untouched and retry on the next new submap.
 - POST: per new submap match only that submap with max_intersection +
@@ -140,6 +140,10 @@ class CrossViewIncremental:
     _gate2_passed_submap_count: Optional[int] = field(default=None, init=False)
     _compute_wall_time: float = field(default=0.0, init=False)
     _last_descriptor_position: Optional[np.ndarray] = field(default=None, init=False)
+    # Frame grid shared across chunks: frame k is at _frame_grid_t0 + k * dt, and
+    # _next_frame_k is the first frame not yet scheduled
+    _frame_grid_t0: Optional[float] = field(default=None, init=False)
+    _next_frame_k: int = field(default=0, init=False)
     _timing: dict = field(
         default_factory=lambda: {
             "data": [],
@@ -170,7 +174,18 @@ class CrossViewIncremental:
             t0 = max(data.img_data.t0, data.depth_data.t0, data.camera_pose_data.t0)
             tf = min(data.img_data.tf, data.depth_data.tf, data.camera_pose_data.tf)
 
-        times = np.arange(t0, tf, self.mapping_params.dt)
+        # One frame grid (anchored at the first chunk's start) across all chunks,
+        # so the processed frames do not depend on max_time. A frame that fell
+        # in the gap between the previous chunk's last message and this chunk's
+        # first (at most dt before t0) is processed here on its nearest image.
+        dt = self.mapping_params.dt
+        if self._frame_grid_t0 is None:
+            self._frame_grid_t0 = t0
+        k0 = int(np.ceil((t0 - dt - self._frame_grid_t0) / dt - 1e-6))
+        k1 = int(np.ceil((tf - self._frame_grid_t0) / dt - 1e-6))
+        k0 = max(k0, self._next_frame_k)
+        times = self._frame_grid_t0 + dt * np.arange(k0, k1)
+        self._next_frame_k = max(k1, self._next_frame_k)
         print(f"Processing {len(times)} frames from t={t0:.2f} to t={tf:.2f}")
 
         t_loop_start = time.time()
