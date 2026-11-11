@@ -1,6 +1,5 @@
-import numpy as np
 from dataclasses import dataclass
-from typing import ClassVar, List, Tuple, Union
+from typing import ClassVar, Tuple, Union
 from datetime import datetime
 
 from meridian.utils import expandvars_recursive
@@ -43,7 +42,6 @@ class SegmentMappingParams(ParamsBase):
 
     # Pipeline
     dt: float = 1 / 6  # time step for iterating through data (mapping frequency)
-    T_camera_flu: Union[List, None] = None  # transform from camera to FLU frame
     frame_descriptor_dist_m: float = 5.0
 
     # 2D ground submap creation params
@@ -67,10 +65,6 @@ class SegmentMappingParams(ParamsBase):
         ):
             self.semantic_association_method = None
 
-        if self.T_camera_flu is not None:
-            self.T_camera_flu = np.array(self.T_camera_flu).reshape((4, 4))
-        else:
-            self.T_camera_flu = np.eye(4)
         self.ros_output_dir = expandvars_recursive(self.ros_output_dir)
 
     def get_map_segment_params(self):

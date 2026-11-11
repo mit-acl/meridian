@@ -108,7 +108,7 @@ class CrossViewLocalizationData:
     def from_params(cls, params: Union[str, CrossViewLocalizationDataParams]):
         if type(params) is str:
             params_file = params
-            params = CrossViewLocalizationDataParams.from_yaml(params_file)
+            params = CrossViewLocalizationDataParams.load(params_file)
 
         if params.top_left_utm is not None:
             # PNG path: user-supplied UTM origin, no GeoTIFF metadata

@@ -3,7 +3,7 @@ import numpy as np
 from dataclasses import dataclass
 from typing import ClassVar
 from meridian.params.params_base import ParamsBase
-from meridian.params.params_checks import resolve_aerial_dir
+from meridian.params.params_checks import resolve_aerial_dir, resolve_T_camera_flu
 from meridian.utils import expandvars_recursive
 
 
@@ -41,6 +41,20 @@ class CrossViewLocalizationDataParams(ParamsBase):
             self.T_camera_flu = np.array(self.T_camera_flu).reshape((4, 4))
         if self.gt_pose_data is not None:
             self.gt_pose_data = expandvars_recursive(self.gt_pose_data)
+
+    @classmethod
+    def load(cls, source: str, run: str = None):
+        """ParamsBase.load, then default / check T_camera_flu against
+        segment_mapping_data.camera_pose_data (params_checks.resolve_T_camera_flu)."""
+        params = super().load(source, run=run)
+        try:
+            mapping_data = SegmentMappingDataParams.load(source, run=run)
+        except FileNotFoundError:
+            mapping_data = None
+        params.T_camera_flu = resolve_T_camera_flu(
+            params.T_camera_flu, mapping_data.camera_pose_data if mapping_data else None
+        )
+        return params
 
     def resolve_aerial_dir(self, aerial_dir, required=False):
         """See params_checks.resolve_aerial_dir."""
