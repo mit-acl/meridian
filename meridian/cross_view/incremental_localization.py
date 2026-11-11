@@ -10,13 +10,13 @@ responsible for those and drives this class via `update()`.
 State machine (two gates before committing to global localization):
 
 - PRE: configured-mode matching with free rotation, CLIPPER over accumulated
-  candidates, no PGO. Once CLIPPER inliers >= consistent_loop_closure_thresh
-  (gate #1), an attempt is made.
+  candidates, no PGO. Once the number of ground submaps with a CLIPPER inlier
+  >= consistent_loop_closure_thresh (gate #1), an attempt is made.
 - ATTEMPT (synchronous, may be retried): PGO on PRE candidates -> rough
   trajectory -> rerun max_intersection + translation_only matching on
-  submaps 1..n -> CLIPPER on rerun candidates. Gate #2: if rerun inliers
-  >= rot_constrained_consistent_lc_thresh AND inliers-per-submap
-  >= rot_constrained_consistent_lc_frac, commit (replace candidates, run final
+  submaps 1..n -> CLIPPER on rerun candidates. Gate #2: if the number of
+  submaps with a rerun inlier >= rot_constrained_consistent_lc_thresh AND the
+  fraction of submaps with one >= rot_constrained_consistent_lc_frac, commit (replace candidates, run final
   PGO, transition to POST). Otherwise stay in PRE and retry on the next submap.
 - POST: per new submap match only that submap with max_intersection +
   translation_only against the latest optimized trajectory, append candidates,
@@ -50,6 +50,13 @@ from meridian.map3d.submap import Submap
 from meridian.params import CrossViewIncrementalParams, CrossViewRPGOParams
 
 logger = logging.getLogger(__name__)
+
+
+def _num_lc_submaps(candidates: List[dict], inlier_indices: np.ndarray) -> int:
+    """Number of distinct ground submaps with at least one inlier loop closure.
+    Gates count submaps rather than inliers so they mean the same thing with or
+    without `single_lc_per_ground_sm`."""
+    return len({candidates[int(i)]["ground_key"] for i in inlier_indices})
 
 
 @dataclass
@@ -253,9 +260,11 @@ class IncrementalLocalization:
         timings["outlier_rej"].append(time.time() - t_or_start)
 
         n_inliers = len(inlier_indices)
+        n_lc_submaps = _num_lc_submaps(self._candidates, inlier_indices)
         logger.info(
             f"[submap {ground_key}] state={self._state} "
-            f"candidates={len(self._candidates)} inliers={n_inliers}"
+            f"candidates={len(self._candidates)} inliers={n_inliers} "
+            f"(in {n_lc_submaps} submaps)"
         )
 
         # POST uses the PGO chain, so the viz frame_align is PRE-only.
@@ -268,7 +277,7 @@ class IncrementalLocalization:
         attempt_wall_time: Optional[float] = None
         attempt_diag: Optional[AttemptDiagnostics] = None
         if self._state == "PRE":
-            if n_inliers >= self.incremental_params.consistent_loop_closure_thresh:
+            if n_lc_submaps >= self.incremental_params.consistent_loop_closure_thresh:
                 gate1_met = True
                 attempted = True
                 gate2_passed, attempt_diag, attempt_wall_time = (
@@ -633,13 +642,13 @@ class IncrementalLocalization:
         # Step 6: gate #2 check. Guard against eventual inlier accumulation in
         # long aerial runs: both an absolute count and an inliers-per-submap
         # fraction must be met.
-        n_inliers = len(rerun_inliers)
+        n_lc_submaps = _num_lc_submaps(rerun_candidates, rerun_inliers)
         n_submaps = len(all_ground_submaps)
-        inlier_frac = n_inliers / n_submaps if n_submaps > 0 else 0.0
-        if n_inliers < gate2_thresh or inlier_frac < gate2_frac:
+        inlier_frac = n_lc_submaps / n_submaps if n_submaps > 0 else 0.0
+        if n_lc_submaps < gate2_thresh or inlier_frac < gate2_frac:
             logger.warning(
-                f"[global-loc] gate-2 FAILED: rerun inliers={n_inliers}/"
-                f"{n_submaps} submaps ({inlier_frac:.1%}); requires >= "
+                f"[global-loc] gate-2 FAILED: submaps with rerun inliers="
+                f"{n_lc_submaps}/{n_submaps} ({inlier_frac:.1%}); requires >= "
                 f"rot_constrained_consistent_lc_thresh={gate2_thresh} AND "
                 f">= rot_constrained_consistent_lc_frac={gate2_frac:.2f}. "
                 f"Staying in PRE; preserving {len(self._candidates)} PRE candidates."
@@ -675,7 +684,8 @@ class IncrementalLocalization:
         wall_time = time.time() - wc_start
         logger.info(
             f"[global-loc] gate-2 PASSED: {len(rerun_candidates)} rerun candidates, "
-            f"{len(rerun_inliers)} inliers >= {gate2_thresh}, {wall_time:.2f}s"
+            f"{len(rerun_inliers)} inliers in {n_lc_submaps} submaps >= "
+            f"{gate2_thresh}, {wall_time:.2f}s"
         )
         return True, diag, wall_time
 

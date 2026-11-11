@@ -14,6 +14,7 @@ Usage:
 
 import argparse
 import logging
+import multiprocessing
 import pathlib
 import sys
 from concurrent.futures import ProcessPoolExecutor, as_completed
@@ -138,10 +139,14 @@ def aerial_patch_mapping(
 
     print(f"Saved {len(result.submaps)} aerial submaps to {segment_output_dir}")
 
-    # Parallel visualization
-    max_workers = conversion_params.sparse_conversion_max_threads
+    # Parallel visualization. Spawned (not forked) workers: forked children of
+    # this ~16 GB process copy its pages as they touch them and can OOM the
+    # machine. Each spawned worker costs ~1 GB of imports, so keep the pool small.
+    max_workers = min(conversion_params.sparse_conversion_max_threads, 2)
     futures = {}
-    with ProcessPoolExecutor(max_workers=max_workers) as executor:
+    with ProcessPoolExecutor(
+        max_workers=max_workers, mp_context=multiprocessing.get_context("spawn")
+    ) as executor:
         for crop, submap in result.submaps.items():
             if result.intermediates is None or crop not in result.intermediates:
                 continue
