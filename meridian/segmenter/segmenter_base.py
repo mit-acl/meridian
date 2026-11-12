@@ -487,39 +487,14 @@ class SegmenterBase:
 
         return frame_descriptor.cpu().detach().numpy()
 
-    # Weights shipped in third_party/vpr, used when $VPR_CKPT is unset.
-    _BUNDLED_WEIGHTS = {
-        "anyloc": "anyloc_c_centers.pt",
-        "meridian-vpr": "cvmnet_k64.pt",
-    }
-
     def _vpr_ckpt(self):
-        """`params.vpr_ckpt` if set, else the weights bundled with `vpr`."""
+        """`params.vpr_ckpt`, checked to exist."""
         path = self.params.vpr_ckpt
-        if path is None:
-            name = self._BUNDLED_WEIGHTS.get(self.frame_descriptor_type)
-            if name is None:
-                raise ValueError(
-                    f"frame_descriptor={self.frame_descriptor_type!r} has no "
-                    f"bundled weights -- set $VPR_CKPT "
-                    f"(params.vpr_ckpt = {path!r})."
-                )
-            try:
-                import vpr
-            except ImportError as e:
-                raise ImportError(
-                    f"frame_descriptor={self.frame_descriptor_type!r} needs "
-                    f"the vpr package: pip install -e third_party/vpr"
-                ) from e
-            path = os.path.join(
-                os.path.dirname(os.path.dirname(os.path.abspath(vpr.__file__))),
-                "weights",
-                name,
-            )
         if not os.path.exists(path):
             raise FileNotFoundError(
                 f"frame_descriptor={self.frame_descriptor_type!r} weights not "
-                f"found at {path}"
+                f"found at {path} (params.vpr_ckpt). Run install/install.sh, or "
+                f"copy third_party/vpr/weights/*.pt into $MERIDIAN_WEIGHTS."
             )
         return path
 

@@ -26,7 +26,10 @@ def load_centers(path: str) -> torch.Tensor:
     """Load cached cosine-kmeans cluster centers (K, D) straight off disk."""
     centers = torch.load(path, map_location="cpu")
     if not (torch.is_tensor(centers) and centers.dim() == 2):
-        raise ValueError(f"expected a (K, D) tensor at {path}, got {type(centers)}")
+        raise ValueError(
+            f"expected a (K, D) tensor at {path}, got {type(centers)} (for anyloc, "
+            f"set segmenter.vpr_ckpt to $MERIDIAN_WEIGHTS/anyloc_c_centers.pt)"
+        )
     return centers.float()
 
 
@@ -166,10 +169,11 @@ class MeridianVprPipeline(torch.nn.Module):
         ckpt = torch.load(
             resolve_vpr_checkpoint(ckpt_path), map_location="cpu", weights_only=False
         )
-        if "config" not in ckpt:
+        if not isinstance(ckpt, dict) or "config" not in ckpt:
             raise ValueError(
                 f"{ckpt_path} has no embedded config -- it is not a vpr "
-                f"cross-view checkpoint"
+                f"cross-view checkpoint (for meridian-vpr, set segmenter.vpr_ckpt "
+                f"to $MERIDIAN_WEIGHTS/cvmnet_k64.pt)"
             )
         bcfg, hcfg = ckpt["config"]["backbone"], ckpt["config"]["head"]
 
