@@ -149,13 +149,16 @@ def sort_time_intervals(
     return np.concatenate([contains_ref_indices, not_contains_ref_indices])
 
 
-def expandvars_recursive(source):
-    """Recursively expands environment variables in the given path."""
+def expandvars_recursive(source, required=False):
+    """Recursively expands environment variables in the given path. With
+    `required`, raises if a variable is unset."""
     if type(source) is str:
         path = source
         while True:
             expanded_path = expandvars(path)
             if expanded_path == path:
+                if required and "$" in path:
+                    raise ValueError(f"Unset environment variable in {source!r}")
                 return expanduser(expanded_path)
             path = expanded_path
 

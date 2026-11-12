@@ -53,13 +53,15 @@ export MERIDIAN_WEIGHTS=<path to meridian repo>/weights
 
 ### Place recognition weights
 
-Weights ship in `third_party/vpr/weights/`; `$VPR_CKPT` overrides with
-another file.
+Weights ship in `third_party/vpr/weights/`, and `install.sh` copies them
+into `$MERIDIAN_WEIGHTS`. `segmenter.vpr_ckpt` (and
+`aerial_segmenter.vpr_ckpt`) picks the file, defaulting to
+`$MERIDIAN_WEIGHTS/cvmnet_k64.pt`; set it for `anyloc` or to use other weights.
 
-| `frame_descriptor` | bundled weights | notes |
+| `frame_descriptor` | `vpr_ckpt` | notes |
 |---|---|---|
-| `meridian-vpr` | `cvmnet_k64.pt` | default; trained for this task |
-| `anyloc` | `anyloc_c_centers.pt` | AnyLoc's urban `l31_value_c32` vocabulary |
+| `meridian-vpr` | `$MERIDIAN_WEIGHTS/cvmnet_k64.pt` | default; trained for this task |
+| `anyloc` | `$MERIDIAN_WEIGHTS/anyloc_c_centers.pt` | AnyLoc's urban `l31_value_c32` vocabulary |
 | `dino-gem` | — | no weights, weakest on large maps |
 
 **meridian-vpr** is a two-tower NetVLAD head trained on VIGOR and CVUSA
@@ -70,6 +72,7 @@ is the whole model. From the [`vpr`](https://github.com/liqyn/vpr) submodule:
 ```
 git submodule update --init third_party/vpr
 pip install -e third_party/vpr
+cp third_party/vpr/weights/*.pt $MERIDIAN_WEIGHTS/
 ```
 
 To switch backends, set `segmenter.frame_descriptor` and
