@@ -1,4 +1,6 @@
 import logging
+import pickle
+
 import numpy as np
 from dataclasses import dataclass
 from typing import Union
@@ -233,6 +235,19 @@ class CrossViewLocalizationData:
         return ground_map
 
 
+# Loaded pose data, by its params. Pose data covers the whole bag and is small, but reading it
+# from a bag is slow (bag_tf scans all of the bag's TF), so load it once instead of once per
+# chunk of SegmentMappingData.
+_POSE_DATA_CACHE = {}
+
+
+def _load_pose_data(pose_data_dict: dict) -> PoseData:
+    key = pickle.dumps(pose_data_dict)
+    if key not in _POSE_DATA_CACHE:
+        _POSE_DATA_CACHE[key] = PoseData.from_dict(pose_data_dict)
+    return _POSE_DATA_CACHE[key]
+
+
 @dataclass
 class SegmentMappingData:
     img_data: ImgData
@@ -276,7 +291,7 @@ class SegmentMappingData:
         img_data = ImgData.from_dict(img_data_dict) if img_data_dict else None
         depth_data = ImgData.from_dict(depth_data_dict) if depth_data_dict else None
         camera_pose_data = (
-            PoseData.from_dict(camera_pose_data_dict) if camera_pose_data_dict else None
+            _load_pose_data(camera_pose_data_dict) if camera_pose_data_dict else None
         )
 
         # Point cloud support

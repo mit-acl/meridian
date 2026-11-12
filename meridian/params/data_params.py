@@ -3,7 +3,11 @@ import numpy as np
 from dataclasses import dataclass
 from typing import ClassVar
 from meridian.params.params_base import ParamsBase
-from meridian.params.params_checks import resolve_aerial_dir, resolve_T_camera_flu
+from meridian.params.params_checks import (
+    resolve_aerial_dir,
+    resolve_pose_data_transforms,
+    resolve_T_camera_flu,
+)
 from meridian.utils import expandvars_recursive
 
 
@@ -40,7 +44,9 @@ class CrossViewLocalizationDataParams(ParamsBase):
         if self.T_camera_flu is not None:
             self.T_camera_flu = np.array(self.T_camera_flu).reshape((4, 4))
         if self.gt_pose_data is not None:
-            self.gt_pose_data = expandvars_recursive(self.gt_pose_data)
+            self.gt_pose_data = resolve_pose_data_transforms(
+                expandvars_recursive(self.gt_pose_data)
+            )
 
     @classmethod
     def load(cls, source: str, run: str = None):
@@ -77,7 +83,9 @@ class SemanticMatchEvaluationDataParams(ParamsBase):
         if self.aerial_submap_dir:
             self.aerial_submap_dir = os.path.expandvars(self.aerial_submap_dir)
         if self.gt_pose_data:
-            self.gt_pose_data = expandvars_recursive(self.gt_pose_data)
+            self.gt_pose_data = resolve_pose_data_transforms(
+                expandvars_recursive(self.gt_pose_data)
+            )
 
 
 @dataclass
@@ -111,15 +119,8 @@ class LandmarkPoseEstimationDataParams(ParamsBase):
         else:
             self.camera_pose_data = expandvars_recursive(self.camera_pose_data)
 
-        if "T_premultiply" in self.camera_pose_data:
-            self.camera_pose_data["T_premultiply"] = np.array(
-                self.camera_pose_data["T_premultiply"]
-            ).reshape((4, 4))
-
-        if "T_postmultiply" in self.camera_pose_data:
-            self.camera_pose_data["T_postmultiply"] = np.array(
-                self.camera_pose_data["T_postmultiply"]
-            ).reshape((4, 4))
+        # 4x4 matrices, or looked up from the bag's TF (see params_checks.resolve_transform)
+        resolve_pose_data_transforms(self.camera_pose_data)
 
 
 @dataclass
@@ -164,12 +165,5 @@ class SegmentMappingDataParams(ParamsBase):
         else:
             self.camera_pose_data = expandvars_recursive(self.camera_pose_data)
 
-        if "T_premultiply" in self.camera_pose_data:
-            self.camera_pose_data["T_premultiply"] = np.array(
-                self.camera_pose_data["T_premultiply"]
-            ).reshape((4, 4))
-
-        if "T_postmultiply" in self.camera_pose_data:
-            self.camera_pose_data["T_postmultiply"] = np.array(
-                self.camera_pose_data["T_postmultiply"]
-            ).reshape((4, 4))
+        # 4x4 matrices, or looked up from the bag's TF (see params_checks.resolve_transform)
+        resolve_pose_data_transforms(self.camera_pose_data)
