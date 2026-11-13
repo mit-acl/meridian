@@ -1,5 +1,6 @@
 import logging
 import math
+import multiprocessing
 import os
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import dataclass
@@ -291,8 +292,12 @@ class AerialPatchPrimitiveMapping:
         max_workers = self.converter.params.sparse_conversion_max_threads
         patch_results = []  # list of (crop, submap, primitives)
         if max_workers > 1 and len(segmentation_results) > 1:
+            # Spawned (not forked) workers: forked children of this large process
+            # (all patches' segmentation results) copy its pages as they touch them
+            # and can OOM the machine. Each spawned worker costs ~1 GB of imports.
             with ProcessPoolExecutor(
-                max_workers=max_workers,
+                max_workers=min(max_workers, 6),
+                mp_context=multiprocessing.get_context("spawn"),
                 initializer=_patch_worker_init,
                 initargs=(self.converter,),
             ) as executor:
