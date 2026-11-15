@@ -144,6 +144,9 @@ class CrossViewIncremental:
     # _next_frame_k is the first frame not yet scheduled
     _frame_grid_t0: Optional[float] = field(default=None, init=False)
     _next_frame_k: int = field(default=0, init=False)
+    # Time of the last image processed: a frame whose nearest image is not newer (the image
+    # stream has a gap longer than dt) is skipped rather than processed twice
+    _last_img_t: Optional[float] = field(default=None, init=False)
     _timing: dict = field(
         default_factory=lambda: {
             "data": [],
@@ -195,6 +198,8 @@ class CrossViewIncremental:
             t_data_start = time.time()
             try:
                 img_t = data.img_data.nearest_time(t)
+                if self._last_img_t is not None and img_t <= self._last_img_t:
+                    continue
                 img = data.img_data.img(img_t)
                 pose = data.camera_pose_data.pose(img_t)
                 if self.data.T_camera_flu is not None:
@@ -210,6 +215,7 @@ class CrossViewIncremental:
                     depth = data.depth_data.img(img_t)
             except NoDataNearTimeException:
                 continue
+            self._last_img_t = img_t
 
             position = pose[:3, 3]
             should_compute_descriptor = (
