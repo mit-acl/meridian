@@ -256,7 +256,6 @@ class CrossViewIncremental:
             np.array(self.mapper.times_history),
         )
         match_result = result.match_result
-        inlier_indices = result.inlier_indices
 
         # Aggregate per-call timings measured inside the algorithm.
         for key in ("match", "outlier_rej", "pgo"):
@@ -277,8 +276,7 @@ class CrossViewIncremental:
             latest_pos = None
             latest_aerial_key = None
             latest_ground_key = -1
-            for i in inlier_indices:
-                cand = self.loc.candidates[int(i)]
+            for cand in result.inlier_candidates:
                 T = cand.get("T_utm_body_se2")
                 if T is None:
                     continue

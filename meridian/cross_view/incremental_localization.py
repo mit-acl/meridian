@@ -80,6 +80,8 @@ class IncrementalUpdateResult:
     state: str
     match_result: CrossViewMatchResult
     inlier_indices: np.ndarray
+    # Inlier candidate dicts, taken before commit pruning reindexes the pool.
+    inlier_candidates: List[dict]
     objective: Optional[float]
     # The viz pose belief is recomputed every update (PRE refreshes the rigid
     # frame-align; POST may re-run PGO), so the caller should rebuild its viz
@@ -253,6 +255,7 @@ class IncrementalLocalization:
         timings["outlier_rej"].append(time.time() - t_or_start)
 
         n_inliers = len(inlier_indices)
+        inlier_candidates = [self._candidates[int(i)] for i in inlier_indices]
         logger.info(
             f"[submap {ground_key}] state={self._state} "
             f"candidates={len(self._candidates)} inliers={n_inliers}"
@@ -278,6 +281,10 @@ class IncrementalLocalization:
                 )
                 if gate2_passed:
                     self._state = "POST"
+                    inlier_candidates = [
+                        attempt_diag.rerun_candidates[int(i)]
+                        for i in attempt_diag.rerun_inliers
+                    ]
         else:
             self._run_post_pgo(
                 inlier_indices, lc_obj, poses_cam_history, times_arr, timings
@@ -287,6 +294,7 @@ class IncrementalLocalization:
             state=self._state,
             match_result=match_result,
             inlier_indices=inlier_indices,
+            inlier_candidates=inlier_candidates,
             objective=lc_obj,
             transform_changed=True,
             gate1_met=gate1_met,
