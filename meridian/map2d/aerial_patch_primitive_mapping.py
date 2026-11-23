@@ -183,14 +183,20 @@ class AerialPatchPrimitiveMapping:
         img_origin: np.ndarray = None,
         return_intermediates: bool = False,
         show_progress: bool = False,
+        img_pose: np.ndarray = None,
     ) -> AerialSegmentationResult:
         """Segment an aerial image into patch-based sparse primitive submaps.
 
         Args:
             img: Full aerial image (BGR).
-            img_origin: UTM origin of the image top-left corner.
+            img_origin: UTM origin of the image top-left corner. Ignored when
+                img_pose is given.
             return_intermediates: Whether to return per-patch intermediates.
             show_progress: Whether to show progress bars.
+            img_pose: T_utm_image, the full 4x4 pose of the image frame in UTM
+                (CrossViewLocalizationData.T_utm_image), including any rotation
+                between the image axes and the UTM grid. Preferred over
+                img_origin, which assumes the image is axis-aligned with UTM.
 
         Returns:
             AerialSegmentationResult with submaps and optional intermediates.
@@ -218,12 +224,17 @@ class AerialPatchPrimitiveMapping:
             f"patch={patch_size_px}px ({patch_size_m}m), stride={stride}px, overlap={overlap}"
         )
 
-        # Build FLU pose
-        pose_flu = np.eye(4)
-        pose_flu[:3, :3] = np.array([[1, 0, 0], [0, -1, 0], [0, 0, -1]], dtype=float)
-        if img_origin is not None:
-            pose_flu[0, 3] = img_origin[0]
-            pose_flu[1, 3] = img_origin[1]
+        # Build FLU pose (shared by all patches)
+        if img_pose is not None:
+            pose_flu = np.array(img_pose, dtype=float)
+        else:
+            pose_flu = np.eye(4)
+            pose_flu[:3, :3] = np.array(
+                [[1, 0, 0], [0, -1, 0], [0, 0, -1]], dtype=float
+            )
+            if img_origin is not None:
+                pose_flu[0, 3] = img_origin[0]
+                pose_flu[1, 3] = img_origin[1]
 
         submaps: Dict[Crop, Submap] = {}
         intermediates: Dict[Crop, AerialPatchIntermediates] = (

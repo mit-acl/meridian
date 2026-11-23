@@ -341,9 +341,14 @@ class CrossViewMatchingPipeline:
         img: np.ndarray,
         output_dir: Union[str, pathlib.Path],
         img_origin: np.ndarray = None,
+        img_pose: np.ndarray = None,
     ) -> Dict[Crop, Submap]:
         result = self.aerial_mapping.run(
-            img, img_origin, return_intermediates=True, show_progress=True
+            img,
+            img_origin,
+            return_intermediates=True,
+            show_progress=True,
+            img_pose=img_pose,
         )
         self._save_aerial_results(result, output_dir)
         return result.submaps
@@ -962,7 +967,12 @@ def cross_view_matching(
 
     # Extract aerial segments
     if not skip_aerial:
-        pipeline.run_aerial(data.aerial_img, aerial_output_dir, data.aerial_img_origin)
+        pipeline.run_aerial(
+            data.aerial_img,
+            aerial_output_dir,
+            data.aerial_img_origin,
+            img_pose=data.T_utm_image,
+        )
 
     # Extract ground segments
     if not skip_ground:
@@ -984,6 +994,7 @@ def cross_view_matching(
             initial_aerial_segments = pipeline.load_submaps_from_dir(
                 os.path.join(aerial_output_dir, "segments")
             )
+            data.check_aerial_submaps(initial_aerial_segments)
         if initial_ground_segments is None:
             initial_ground_segments = pipeline.load_submaps_from_dir(
                 os.path.join(ground_output_dir, "segments")

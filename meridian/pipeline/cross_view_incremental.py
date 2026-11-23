@@ -1042,6 +1042,7 @@ def cross_view_incremental(
     print("Loading localization data...")
     loc_data = CrossViewLocalizationData.from_params(loc_data_params)
     matching_pipeline.algorithm.pixel_len_m = loc_data.aerial_img_scale
+    loc_data.check_aerial_submaps(aerial_submaps)
 
     print("Setting up segmenter and mapper...")
     segmenter = Segmenter(segmenter_params, depth_cam_params=camera_params)

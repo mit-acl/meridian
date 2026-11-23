@@ -111,6 +111,7 @@ def aerial_patch_mapping(
         data.aerial_img_origin,
         return_intermediates=True,
         show_progress=True,
+        img_pose=data.T_utm_image,
     )
 
     # Save results

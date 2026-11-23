@@ -950,6 +950,7 @@ def cross_view_localization(
         )
         aerial_submaps = pipeline.load_submaps_from_dir(aerial_seg_dir)
         ground_submaps = pipeline.load_submaps_from_dir(ground_seg_dir)
+        data.check_aerial_submaps(aerial_submaps)
 
     # Full-rate odometry (what the ground map trajectory was sampled from), used
     # to save a dense 3D trajectory

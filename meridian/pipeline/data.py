@@ -1,7 +1,7 @@
 import logging
 import numpy as np
 from dataclasses import dataclass
-from typing import Union
+from typing import Dict, Union
 from robotdatapy.data import PoseData, ImgData, PointCloudData
 import cv2 as cv
 import rasterio
@@ -36,31 +36,76 @@ class CrossViewLocalizationData:
     native_crs: object = None  # native CRS of the GeoTIFF
     utm_crs: object = None  # UTM CRS (used for reprojection when != native_crs)
 
-    def aerial_local_to_pixel(self, local_x: float, local_y: float):
-        """Convert aerial-local frame coordinates to image pixel (col, row).
+    # T_utm_image: pose of the aerial image frame in true UTM, used as the pose
+    # of every aerial submap. The image frame has its origin at the top-left
+    # pixel (centre), x along columns and y along rows (down), in metres
+    # (pixel index * aerial_img_scale); hence the diag(1, -1, -1) flip. For a
+    # non-UTM GeoTIFF (e.g. EPSG:3857) it also carries the rotation between the
+    # image axes and the UTM grid (meridian convergence, ~1.4 deg at MIT), from
+    # a similarity fit of image pixels to their exact UTM positions. None ->
+    # built from aerial_img_origin (no rotation) in __post_init__.
+    T_utm_image: np.ndarray = None
 
-        local_x: meters east from aerial_img_origin[0]
-        local_y: meters south from aerial_img_origin[1] (image-y direction)
+    def __post_init__(self):
+        if self.T_utm_image is None:
+            self.T_utm_image = self.axis_aligned_image_pose(self.aerial_img_origin)
+
+    @staticmethod
+    def axis_aligned_image_pose(origin_xy, R_2d: np.ndarray = None) -> np.ndarray:
+        """Image-frame pose with image x/y-down axes mapped by R_2d (default:
+        x -> east, y -> south) and the origin at `origin_xy`."""
+        R = np.eye(2) if R_2d is None else np.asarray(R_2d, dtype=float)
+        T = np.eye(4)
+        T[:2, :2] = R @ np.diag([1.0, -1.0])
+        T[2, 2] = -1.0
+        if origin_xy is not None:
+            T[:2, 3] = np.asarray(origin_xy, dtype=float)[:2]
+        return T
+
+    def check_aerial_submaps(
+        self,
+        aerial_submaps: Dict[str, object],
+        trans_tol_m: float = 0.05,
+        rot_tol_deg: float = 0.01,
+    ) -> bool:
+        """Warn if loaded aerial submaps were built with a different image pose
+        than this data's T_utm_image (e.g. primitives generated before the
+        image->UTM rotation fix, or from a different aerial image).
+
+        Returns True when all poses agree within tolerance.
+        """
+        if not aerial_submaps:
+            return True
+        pose = next(iter(aerial_submaps.values())).pose
+        dt = np.linalg.norm(pose[:2, 3] - self.T_utm_image[:2, 3])
+        R_rel = pose[:2, :2].T @ self.T_utm_image[:2, :2]
+        drot = np.rad2deg(abs(np.arctan2(R_rel[1, 0], R_rel[0, 0])))
+        if dt > trans_tol_m or drot > rot_tol_deg:
+            logger.warning(
+                "Aerial submap pose differs from the aerial image's T_utm_image "
+                "by %.3f m / %.3f deg. The aerial primitives were probably "
+                "generated with an older pipeline (before the image->UTM "
+                "rotation fix) or from a different aerial image; regenerate them "
+                "for exact UTM poses.",
+                dt,
+                drot,
+            )
+            return False
+        return True
+
+    def aerial_local_to_pixel(self, local_x: float, local_y: float):
+        """Convert aerial image-frame coordinates to image pixel (col, row).
+
+        local_x: metres along image columns from the top-left pixel
+        local_y: metres along image rows (down) from the top-left pixel
+
+        These are the coordinates of inv(T_utm_image) @ T_utm_*, i.e. the
+        aerial submap frame. T_utm_image already holds the exact image->UTM
+        geometry, so this is just a scale.
 
         Returns (col, row) as floats.
         """
-        utm_x = self.aerial_img_origin[0] + local_x
-        utm_y = self.aerial_img_origin[1] - local_y
-
-        if (
-            self.geotiff_transform is not None
-            and self.native_crs is not None
-            and self.utm_crs is not None
-            and self.native_crs != self.utm_crs
-        ):
-            xs, ys = warp_transform(self.utm_crs, self.native_crs, [utm_x], [utm_y])
-            native_x, native_y = float(xs[0]), float(ys[0])
-        else:
-            native_x, native_y = utm_x, utm_y
-
-        col = (native_x - self.geotiff_transform.c) / self.geotiff_transform.a
-        row = (native_y - self.geotiff_transform.f) / self.geotiff_transform.e
-        return col, row
+        return local_x / self.aerial_img_scale, local_y / self.aerial_img_scale
 
     def aerial_pixel_to_utm(self, col: float, row: float):
         """Convert image pixel (col, row) to absolute UTM (x, y)."""
@@ -120,6 +165,7 @@ class CrossViewLocalizationData:
             geotiff_transform = None
             native_crs = None
             utm_crs = None
+            T_utm_image = cls.axis_aligned_image_pose(aerial_img_origin)
             logger.info(
                 "Using PNG with top_left_utm=(%.1f, %.1f), scale=%.6f m/px",
                 aerial_img_origin[0],
@@ -151,6 +197,12 @@ class CrossViewLocalizationData:
                 else:
                     x_utm, y_utm = x_native, y_native
 
+                if utm_crs is not None and utm_crs != native_crs:
+                    T_utm_image, fit_scale = cls._fit_utm_image_pose(ds, utm_crs)
+                    geotiff_pixel_size = fit_scale
+                else:
+                    T_utm_image = cls.axis_aligned_image_pose([x_utm, y_utm])
+
             aerial_img = cv.imread(params.aerial_img_path)
             aerial_img_origin = np.array([x_utm, y_utm])
             aerial_img_scale = params.aerial_img_scale
@@ -158,6 +210,14 @@ class CrossViewLocalizationData:
                 aerial_img_scale = geotiff_pixel_size
                 logger.info(
                     f"Auto-detected aerial pixel size: {aerial_img_scale:.6f} m/px"
+                )
+            elif abs(aerial_img_scale / geotiff_pixel_size - 1.0) > 0.005:
+                logger.warning(
+                    "aerial_img_scale=%.6f m/px differs from the GeoTIFF's "
+                    "%.6f m/px by more than 0.5%%; aerial primitive UTM "
+                    "positions will be scaled wrong.",
+                    aerial_img_scale,
+                    geotiff_pixel_size,
                 )
 
         gt_pose_data = (
@@ -180,7 +240,50 @@ class CrossViewLocalizationData:
             geotiff_transform=geotiff_transform,
             native_crs=native_crs,
             utm_crs=utm_crs,
+            T_utm_image=T_utm_image,
         )
+
+    @staticmethod
+    def _fit_utm_image_pose(ds, utm_crs, n_grid: int = 9):
+        """Fit image pixels -> true UTM with a 2D similarity (rotation, uniform
+        scale, translation).
+
+        For a conformal CRS such as Web Mercator the map is locally exactly a
+        similarity; over a ~1 km image the residual is centimetres. Pixel
+        (col, row) is taken at its centre, matching aerial_img_origin.
+
+        Returns (T_utm_image, metres_per_pixel).
+        """
+        cols = np.linspace(0, ds.width - 1, n_grid)
+        rows = np.linspace(0, ds.height - 1, n_grid)
+        cc, rr = [a.ravel() for a in np.meshgrid(cols, rows)]
+        T = ds.transform
+        native_x = T.c + (cc + 0.5) * T.a + (rr + 0.5) * T.b
+        native_y = T.f + (cc + 0.5) * T.d + (rr + 0.5) * T.e
+        xs, ys = warp_transform(ds.crs, utm_crs, native_x, native_y)
+        dst = np.column_stack([xs, ys])
+        # Image axes in a right-handed (x east-ish, y north-ish) pixel frame.
+        src = np.column_stack([cc, -rr])
+
+        # Umeyama similarity: dst ~= s * R @ src + t
+        mu_s, mu_d = src.mean(0), dst.mean(0)
+        S, D = src - mu_s, dst - mu_d
+        U, sig, Vt = np.linalg.svd(D.T @ S / len(src))
+        E = np.diag([1.0, np.sign(np.linalg.det(U @ Vt))])
+        R = U @ E @ Vt
+        s = np.trace(np.diag(sig) @ E) / (S**2).sum(1).mean()
+        t = mu_d - s * R @ mu_s
+
+        resid = np.linalg.norm(dst - (s * (R @ src.T).T + t), axis=1)
+        logger.info(
+            "Aerial image -> %s similarity fit: rotation %.4f deg, %.6f m/px, "
+            "residual max %.3f m",
+            utm_crs,
+            np.rad2deg(np.arctan2(R[1, 0], R[0, 0])),
+            s,
+            resid.max(),
+        )
+        return CrossViewLocalizationData.axis_aligned_image_pose(t, R), float(s)
 
     @staticmethod
     def _utm_crs_for_ds(ds) -> "CRS | None":
