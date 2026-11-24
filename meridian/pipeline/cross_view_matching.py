@@ -1,7 +1,7 @@
 import io
 import logging
 import numpy as np
-from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, as_completed, wait
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from typing import List, Tuple, Dict, Union
 import cv2 as cv
@@ -39,6 +39,7 @@ from meridian.map2d.ground_submap_primitive_mapping import (
     GroundSubmapPrimitiveMapping,
     GroundSegmentationResult,
 )
+from meridian.pipeline.aerial_patch_mapping import segment_and_save_aerial
 from meridian.match.primitive_matcher import PrimitiveMatcher
 from meridian.register.registerer import Registerer2D
 from meridian.map3d.submap import Submap
@@ -46,8 +47,6 @@ from meridian.viz.cross_view_viz import (
     viz_cross_view_matches,
     viz_registration_alignment,
     viz_alignment_fitness,
-    viz_aerial_segments,
-    viz_general_segments_img,
     viz_ground_segments,
     downsample_to_target_size,
 )
@@ -65,168 +64,6 @@ Crop = Tuple[int, int, int, int]
 # ---------------------------------------------------------------------------
 # Module-level worker functions for ProcessPoolExecutor (must be picklable)
 # ---------------------------------------------------------------------------
-
-
-def _aerial_viz_worker(
-    patch_img,
-    aerial_segments,
-    general_segments,
-    sparse_segments,
-    crop,
-    i,
-    j,
-    pixel_len_m,
-    segment_border_type,
-    segment_border_grid_downsample,
-    segment_border_max_n_pts,
-    concave_hull_ratio,
-    alpha_shape_alpha,
-    alpha_shape_ref_size_m,
-    aerial_viz_downsample,
-    aerial_viz_line_width_m,
-    aerial_viz_target_size_kb,
-    px_per_m,
-):
-    """Render 3 aerial viz images for one patch. Returns list of (filename, bytes)."""
-    results = []
-
-    aerial_viz = viz_aerial_segments(
-        patch_img,
-        aerial_segments,
-        crop,
-        pixel_len_m,
-        alpha_shape_alpha,
-        segment_border_grid_downsample,
-        segment_border_max_n_pts,
-        alpha_shape_ref_size_m,
-        aerial_viz_downsample,
-        line_width_m=aerial_viz_line_width_m,
-        segment_border_type=segment_border_type,
-        concave_hull_ratio=concave_hull_ratio,
-    )
-    viz_bytes = downsample_to_target_size(aerial_viz, aerial_viz_target_size_kb)
-    results.append((f"{i}_{j}_segments.jpg", viz_bytes))
-
-    general_viz = viz_general_segments_img(
-        patch_img,
-        general_segments,
-        crop=crop,
-        px_per_m=px_per_m,
-        downsample_factor=aerial_viz_downsample,
-        line_width_m=aerial_viz_line_width_m,
-    )
-    viz_bytes = downsample_to_target_size(general_viz, aerial_viz_target_size_kb)
-    results.append((f"{i}_{j}_fine.jpg", viz_bytes))
-
-    sparse_viz = viz_general_segments_img(
-        patch_img,
-        sparse_segments,
-        crop=crop,
-        px_per_m=px_per_m,
-        downsample_factor=aerial_viz_downsample,
-        line_width_m=aerial_viz_line_width_m,
-    )
-    viz_bytes = downsample_to_target_size(sparse_viz, aerial_viz_target_size_kb)
-    results.append((f"{i}_{j}_sparse.jpg", viz_bytes))
-
-    return results
-
-
-class AerialPatchWriter:
-    """Saves aerial submaps and renders their visualizations as patches finish.
-
-    Pass as `on_patch_done` to `AerialPatchPrimitiveMapping.run` so each patch
-    is written out (and its dense intermediates released) while segmentation of
-    later patches continues, instead of holding every patch's intermediates
-    until the end. Visualization runs in its own process pool with at most
-    `max_pending` patches in flight. Use as a context manager (or call
-    `close()`) to wait for the remaining visualizations.
-    """
-
-    def __init__(
-        self,
-        output_dir,
-        pixel_len_m: float,
-        stride_px: int,
-        conv_params: SegmentToPrimitiveConversionParams,
-        viz_params: CrossViewVisualizationParams,
-        max_workers: int,
-        max_pending: int = None,
-    ):
-        output_dir = pathlib.Path(output_dir)
-        self.segment_output_dir = output_dir / "segments"
-        self.viz_output_dir = output_dir / "viz"
-        self.segment_output_dir.mkdir(parents=True, exist_ok=True)
-        self.viz_output_dir.mkdir(parents=True, exist_ok=True)
-        self.pixel_len_m = pixel_len_m
-        self.stride_px = stride_px
-        self.conv_params = conv_params
-        self.viz_params = viz_params
-        self.max_pending = max_pending or 2 * max(1, max_workers)
-        self.n_saved = 0
-        self._pending = set()
-        self._executor = ProcessPoolExecutor(max_workers=max(1, max_workers))
-
-    def __call__(self, crop, submap, intermediates):
-        x1, y1, _, _ = crop
-        i, j = x1 // self.stride_px, y1 // self.stride_px
-        submap.save(self.segment_output_dir / f"{i}_{j}.pkl")
-        self.n_saved += 1
-        if intermediates is None:
-            return
-        c = self.conv_params
-        self._pending.add(
-            self._executor.submit(
-                _aerial_viz_worker,
-                intermediates.patch_img,
-                intermediates.aerial_segments,
-                intermediates.general_segments,
-                submap.segments,
-                crop,
-                i,
-                j,
-                self.pixel_len_m,
-                c.segment_border_type,
-                c.segment_border_grid_downsample,
-                c.segment_border_max_n_pts,
-                c.concave_hull_ratio,
-                c.alpha_shape_alpha,
-                c.alpha_shape_ref_size_m,
-                max(
-                    1,
-                    round(self.viz_params.aerial_viz_pixel_size_m / self.pixel_len_m),
-                ),
-                self.viz_params.aerial_viz_line_width_m,
-                self.viz_params.aerial_viz_target_size_kb,
-                1.0 / self.pixel_len_m,
-            )
-        )
-        self._write_done(block=len(self._pending) >= self.max_pending)
-
-    def _write_done(self, block: bool = False):
-        if block:
-            done, _ = wait(self._pending, return_when=FIRST_COMPLETED)
-        else:
-            done = {f for f in self._pending if f.done()}
-        for fut in done:
-            self._pending.discard(fut)
-            for fname, viz_bytes in fut.result():
-                with open(str(self.viz_output_dir / fname), "wb") as f:
-                    f.write(viz_bytes)
-
-    def close(self):
-        while self._pending:
-            self._write_done(block=True)
-        self._executor.shutdown()
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, exc_type, exc, tb):
-        if exc_type is None:
-            self.close()
-        else:
-            self._executor.shutdown(wait=False, cancel_futures=True)
 
 
 def _ground_viz_worker(
@@ -438,28 +275,9 @@ class CrossViewMatchingPipeline:
         output_dir: Union[str, pathlib.Path],
         img_origin: np.ndarray = None,
     ) -> Dict[Crop, Submap]:
-        patch_params = self.aerial_mapping.patch_params
-        pixel_len_m = self.aerial_mapping.aerial_segmenter.params.pixel_len_m
-        # Same expressions as AerialPatchPrimitiveMapping.run, so (i, j) match.
-        patch_size_px = int(
-            patch_params.aerial_img_patch_side_len_m * (1.0 / pixel_len_m)
+        result = segment_and_save_aerial(
+            self.aerial_mapping, img, img_origin, output_dir, self._viz_params
         )
-        stride = int(patch_size_px * (1.0 - patch_params.aerial_img_patch_overlap))
-
-        # Save + visualize each patch as it finishes so its dense intermediates
-        # are released right away (holding them all needs tens of GB on a large
-        # image).
-        with AerialPatchWriter(
-            output_dir,
-            pixel_len_m=pixel_len_m,
-            stride_px=stride,
-            conv_params=self._conversion_params,
-            viz_params=self._viz_params,
-            max_workers=self._conversion_params.sparse_conversion_max_threads,
-        ) as writer:
-            result = self.aerial_mapping.run(
-                img, img_origin, show_progress=True, on_patch_done=writer
-            )
         return result.submaps
 
     # ------------------------------------------------------------------
