@@ -34,12 +34,12 @@ from meridian.segmenter.aerial_segmenter import AerialSegmenter
 from meridian.map2d.segment_to_primitive import SegmentToPrimitiveConverter
 from meridian.map2d.aerial_patch_primitive_mapping import (
     AerialPatchPrimitiveMapping,
-    AerialSegmentationResult,
 )
 from meridian.map2d.ground_submap_primitive_mapping import (
     GroundSubmapPrimitiveMapping,
     GroundSegmentationResult,
 )
+from meridian.pipeline.aerial_patch_mapping import segment_and_save_aerial
 from meridian.match.primitive_matcher import PrimitiveMatcher
 from meridian.register.registerer import Registerer2D
 from meridian.map3d.submap import Submap
@@ -47,8 +47,6 @@ from meridian.viz.cross_view_viz import (
     viz_cross_view_matches,
     viz_registration_alignment,
     viz_alignment_fitness,
-    viz_aerial_segments,
-    viz_general_segments_img,
     viz_ground_segments,
     downsample_to_target_size,
 )
@@ -66,71 +64,6 @@ Crop = Tuple[int, int, int, int]
 # ---------------------------------------------------------------------------
 # Module-level worker functions for ProcessPoolExecutor (must be picklable)
 # ---------------------------------------------------------------------------
-
-
-def _aerial_viz_worker(
-    patch_img,
-    aerial_segments,
-    general_segments,
-    sparse_segments,
-    crop,
-    i,
-    j,
-    pixel_len_m,
-    segment_border_type,
-    segment_border_grid_downsample,
-    segment_border_max_n_pts,
-    concave_hull_ratio,
-    alpha_shape_alpha,
-    alpha_shape_ref_size_m,
-    aerial_viz_downsample,
-    aerial_viz_line_width_m,
-    aerial_viz_target_size_kb,
-    px_per_m,
-):
-    """Render 3 aerial viz images for one patch. Returns list of (filename, bytes)."""
-    results = []
-
-    aerial_viz = viz_aerial_segments(
-        patch_img,
-        aerial_segments,
-        crop,
-        pixel_len_m,
-        alpha_shape_alpha,
-        segment_border_grid_downsample,
-        segment_border_max_n_pts,
-        alpha_shape_ref_size_m,
-        aerial_viz_downsample,
-        line_width_m=aerial_viz_line_width_m,
-        segment_border_type=segment_border_type,
-        concave_hull_ratio=concave_hull_ratio,
-    )
-    viz_bytes = downsample_to_target_size(aerial_viz, aerial_viz_target_size_kb)
-    results.append((f"{i}_{j}_segments.jpg", viz_bytes))
-
-    general_viz = viz_general_segments_img(
-        patch_img,
-        general_segments,
-        crop=crop,
-        px_per_m=px_per_m,
-        downsample_factor=aerial_viz_downsample,
-        line_width_m=aerial_viz_line_width_m,
-    )
-    viz_bytes = downsample_to_target_size(general_viz, aerial_viz_target_size_kb)
-    results.append((f"{i}_{j}_fine.jpg", viz_bytes))
-
-    sparse_viz = viz_general_segments_img(
-        patch_img,
-        sparse_segments,
-        crop=crop,
-        px_per_m=px_per_m,
-        downsample_factor=aerial_viz_downsample,
-        line_width_m=aerial_viz_line_width_m,
-    )
-    viz_bytes = downsample_to_target_size(sparse_viz, aerial_viz_target_size_kb)
-    results.append((f"{i}_{j}_sparse.jpg", viz_bytes))
-
-    return results
 
 
 def _ground_viz_worker(
@@ -342,75 +275,10 @@ class CrossViewMatchingPipeline:
         output_dir: Union[str, pathlib.Path],
         img_origin: np.ndarray = None,
     ) -> Dict[Crop, Submap]:
-        result = self.aerial_mapping.run(
-            img, img_origin, return_intermediates=True, show_progress=True
+        result = segment_and_save_aerial(
+            self.aerial_mapping, img, img_origin, output_dir, self._viz_params
         )
-        self._save_aerial_results(result, output_dir)
         return result.submaps
-
-    def _save_aerial_results(self, result: AerialSegmentationResult, output_dir):
-        output_dir = pathlib.Path(output_dir)
-        viz_output_dir = output_dir / "viz"
-        segment_output_dir = output_dir / "segments"
-        viz_output_dir.mkdir(parents=True, exist_ok=True)
-        segment_output_dir.mkdir(parents=True, exist_ok=True)
-
-        conv_params = self._conversion_params
-        patch_params = self.aerial_mapping.patch_params
-        pixel_len_m = self.aerial_mapping.aerial_segmenter.params.pixel_len_m
-        px_per_m = 1.0 / pixel_len_m
-
-        max_workers = conv_params.sparse_conversion_max_threads
-        patch_size_px = int(patch_params.aerial_img_patch_side_len_m * px_per_m)
-        stride = int(patch_size_px * (1.0 - patch_params.aerial_img_patch_overlap))
-
-        # Save submaps (fast I/O, keep serial)
-        crop_ij = {}
-        for crop, submap in result.submaps.items():
-            x1, y1, x2, y2 = crop
-            i = x1 // stride
-            j = y1 // stride
-            crop_ij[crop] = (i, j)
-            fname_segment = segment_output_dir / f"{i}_{j}.pkl"
-            submap.save(fname_segment)
-
-        # Parallel visualization
-        futures = {}
-        with ProcessPoolExecutor(max_workers=max_workers) as executor:
-            for crop, submap in result.submaps.items():
-                if result.intermediates is None or crop not in result.intermediates:
-                    continue
-                intermediates = result.intermediates[crop]
-                i, j = crop_ij[crop]
-                future = executor.submit(
-                    _aerial_viz_worker,
-                    intermediates.patch_img,
-                    intermediates.aerial_segments,
-                    intermediates.general_segments,
-                    submap.segments,
-                    crop,
-                    i,
-                    j,
-                    pixel_len_m,
-                    conv_params.segment_border_type,
-                    conv_params.segment_border_grid_downsample,
-                    conv_params.segment_border_max_n_pts,
-                    conv_params.concave_hull_ratio,
-                    conv_params.alpha_shape_alpha,
-                    conv_params.alpha_shape_ref_size_m,
-                    max(
-                        1, round(self._viz_params.aerial_viz_pixel_size_m / pixel_len_m)
-                    ),
-                    self._viz_params.aerial_viz_line_width_m,
-                    self._viz_params.aerial_viz_target_size_kb,
-                    px_per_m,
-                )
-                futures[future] = crop
-
-            for future in as_completed(futures):
-                for fname, viz_bytes in future.result():
-                    with open(str(viz_output_dir / fname), "wb") as f:
-                        f.write(viz_bytes)
 
     # ------------------------------------------------------------------
     # Ground segmentation with I/O
