@@ -16,7 +16,6 @@ import argparse
 import logging
 import pathlib
 import sys
-from concurrent.futures import ProcessPoolExecutor, as_completed
 
 from meridian.params import (
     AerialSegmenterParams,
@@ -34,7 +33,7 @@ from meridian.map2d.segment_to_primitive import SegmentToPrimitiveConverter
 from meridian.map2d.aerial_patch_primitive_mapping import (
     AerialPatchPrimitiveMapping,
 )
-from meridian.pipeline.cross_view_matching import _aerial_viz_worker
+from meridian.pipeline.cross_view_matching import AerialPatchWriter
 from meridian.pipeline.data import CrossViewLocalizationData
 from meridian.utils import save_commit_hash, save_params
 
@@ -104,78 +103,38 @@ def aerial_patch_mapping(
         aerial_segmenter=aerial_segmenter,
     )
 
-    # Run segmentation
-    print("Running aerial patch segmentation...")
-    result = aerial_mapping.run(
-        data.aerial_img,
-        data.aerial_img_origin,
-        return_intermediates=True,
-        show_progress=True,
-    )
-
-    # Save results
-    output_dir = pathlib.Path(output_dir)
-    output_dir.mkdir(parents=True, exist_ok=True)
-    viz_output_dir = output_dir / "viz"
-    segment_output_dir = output_dir / "segments"
-    viz_output_dir.mkdir(parents=True, exist_ok=True)
-    segment_output_dir.mkdir(parents=True, exist_ok=True)
-
     pixel_len_m = aerial_segmenter_params.pixel_len_m
     px_per_m = 1.0 / pixel_len_m
     patch_size_px = int(aerial_patch_params.aerial_img_patch_side_len_m * px_per_m)
     stride = int(patch_size_px * (1.0 - aerial_patch_params.aerial_img_patch_overlap))
 
-    # Save submaps
-    crop_ij = {}
-    for crop, submap in result.submaps.items():
-        x1, y1, x2, y2 = crop
-        i = x1 // stride
-        j = y1 // stride
-        crop_ij[crop] = (i, j)
-        fname = segment_output_dir / f"{i}_{j}.pkl"
-        submap.save(fname)
-
-    print(f"Saved {len(result.submaps)} aerial submaps to {segment_output_dir}")
-
-    # Parallel visualization
-    max_workers = conversion_params.sparse_conversion_max_threads
-    futures = {}
-    with ProcessPoolExecutor(max_workers=max_workers) as executor:
-        for crop, submap in result.submaps.items():
-            if result.intermediates is None or crop not in result.intermediates:
-                continue
-            intermediates = result.intermediates[crop]
-            i, j = crop_ij[crop]
-            future = executor.submit(
-                _aerial_viz_worker,
-                intermediates.patch_img,
-                intermediates.aerial_segments,
-                intermediates.general_segments,
-                submap.segments,
-                crop,
-                i,
-                j,
-                pixel_len_m,
-                conversion_params.segment_border_type,
-                conversion_params.segment_border_grid_downsample,
-                conversion_params.segment_border_max_n_pts,
-                conversion_params.concave_hull_ratio,
-                conversion_params.alpha_shape_alpha,
-                conversion_params.alpha_shape_ref_size_m,
-                max(1, round(viz_params.aerial_viz_pixel_size_m / pixel_len_m)),
-                viz_params.aerial_viz_line_width_m,
-                viz_params.aerial_viz_target_size_kb,
-                px_per_m,
-            )
-            futures[future] = crop
-
-        for future in as_completed(futures):
-            for fname, viz_bytes in future.result():
-                with open(str(viz_output_dir / fname), "wb") as f:
-                    f.write(viz_bytes)
-
-    print(f"Saved visualizations to {viz_output_dir}")
+    # Run segmentation, saving + visualizing each patch as it finishes so its
+    # dense intermediates are released right away (holding them all needs tens
+    # of GB on a large image).
+    print("Running aerial patch segmentation...")
+    output_dir = pathlib.Path(output_dir)
+    with AerialPatchWriter(
+        output_dir,
+        pixel_len_m=pixel_len_m,
+        stride_px=stride,
+        conv_params=conversion_params,
+        viz_params=viz_params,
+        max_workers=conversion_params.sparse_conversion_max_threads,
+    ) as writer:
+        result = aerial_mapping.run(
+            data.aerial_img,
+            data.aerial_img_origin,
+            show_progress=True,
+            on_patch_done=writer,
+        )
+    print(f"Saved {writer.n_saved} aerial submaps to {writer.segment_output_dir}")
+    print(f"Saved visualizations to {writer.viz_output_dir}")
+    t = result.timing
+    print(
+        f"Timing: {len(result.submaps)} patches in {t['total']:.0f} s; GPU "
+        f"segmentation {t['segmentation']:.0f} s, paused waiting on conversion "
+        f"{t['blocked']:.0f} s, conversion tail {t['conversion_tail']:.0f} s"
+    )
 
     # Save params and commit hash
     all_params = [
