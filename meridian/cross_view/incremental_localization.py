@@ -174,11 +174,18 @@ class IncrementalLocalization:
         ground_key: str,
         poses_cam_history: List[np.ndarray],
         times_history: np.ndarray,
+        allow_attempt: bool = True,
     ) -> IncrementalUpdateResult:
         """Ingest one new ground submap and advance the localization state.
 
         `poses_cam_history` / `times_history` are the full robot trajectory
         (T_odom_camera per frame) and timestamps as of this submap.
+
+        `allow_attempt=False` skips the PRE->POST attempt even when gate #1 is
+        met (the result then has gate1_met=True, attempted=False). Used online
+        to defer the attempt while more submaps are queued: nothing is lost,
+        since the next attempt runs over all accumulated candidates. No effect
+        in POST.
         """
         times_arr = np.asarray(times_history)
         self._ground_submaps[ground_key] = new_submap
@@ -270,14 +277,15 @@ class IncrementalLocalization:
         if self._state == "PRE":
             if n_inliers >= self.incremental_params.consistent_loop_closure_thresh:
                 gate1_met = True
-                attempted = True
-                gate2_passed, attempt_diag, attempt_wall_time = (
-                    self._attempt_global_localization(
-                        ground_key, poses_cam_history, times_arr, timings
+                if allow_attempt:
+                    attempted = True
+                    gate2_passed, attempt_diag, attempt_wall_time = (
+                        self._attempt_global_localization(
+                            ground_key, poses_cam_history, times_arr, timings
+                        )
                     )
-                )
-                if gate2_passed:
-                    self._state = "POST"
+                    if gate2_passed:
+                        self._state = "POST"
         else:
             self._run_post_pgo(
                 inlier_indices, lc_obj, poses_cam_history, times_arr, timings
